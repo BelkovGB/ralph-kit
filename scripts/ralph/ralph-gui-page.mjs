@@ -116,6 +116,45 @@ a { color: var(--accent); }
   border-bottom-color: var(--accent);
 }
 
+/* Вкладки внутри настроек. Они намеренно тише главных: ни акцентной черты, ни
+   жирного начертания — два одинаковых по силе ряда не дают понять, что чему
+   подчинено. Прозрачная рамка стоит и у невыбранных, чтобы выбор не сдвигал
+   соседей на пиксель. */
+.subtabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 20px 0 16px;
+}
+
+.subtab {
+  appearance: none;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  padding: 4px 10px;
+}
+
+.subtab:hover { color: var(--text); background: var(--hover); }
+
+.subtab[aria-selected='true'] {
+  background: var(--subtle);
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.subtab.is-warn { color: var(--warn); }
+
+.settings-warn {
+  margin: -6px 0 14px;
+  color: var(--warn);
+  font-size: 12px;
+}
+
 /* Полоса состояния: высота фиксирована, чтобы опрос не дёргал вёрстку */
 .status {
   display: flex;
@@ -331,6 +370,8 @@ tr:last-child td { border-bottom: 0; }
   font-size: 12px;
 }
 
+.field-hint.is-warn { color: var(--warn); }
+
 input[type='text'],
 input[type='number'],
 select,
@@ -446,6 +487,7 @@ const script = `
   var tab = 'usage';
   var stateData = null;
   var tasksData = null;
+  var tasksStamp = '';
   var tasksError = '';
   var configData = null;
   var configError = '';
@@ -455,6 +497,14 @@ const script = `
   var saving = false;
   var expanded = Object.create(null);
   var lastLocked = null;
+  // Селекты с allowCustom, переведённые пунктом «Другая…» в ручной ввод.
+  var customOpen = Object.create(null);
+  var customMarker = '__ralph_custom__';
+  // Выбранная вкладка настроек переживает сохранение и перезагрузку страницы.
+  var settingsTabKey = 'ralph-gui-settings-tab';
+  var settingsTab = readSettingsTab();
+  // Пути полей, от значения которых зависят чужие списки вариантов.
+  var dependencyPaths = Object.create(null);
 
   var panel = document.getElementById('panel');
   var statusDot = document.getElementById('status-dot');
@@ -679,19 +729,32 @@ const script = `
 
   /* --- вкладка «Расход» --- */
 
+  /* Опрос повторяет этот запрос, а renderPanel строит таблицу заново и теряет
+     прокрутку и фокус. Поэтому ответ сравнивается с предыдущим и панель
+     перерисовывается только когда журнал действительно дописали. */
   function loadTasks() {
     return api('/api/tasks').then(function (res) {
+      var changed;
       if (!res.ok) {
-        tasksError = (res.body && res.body.error) || 'Не удалось прочитать журнал расхода';
+        var message = (res.body && res.body.error) || 'Не удалось прочитать журнал расхода';
+        changed = tasksError !== message || tasksData !== null;
+        tasksError = message;
         tasksData = null;
+        tasksStamp = '';
       } else {
+        var next = JSON.stringify(res.body);
+        changed = tasksError !== '' || next !== tasksStamp;
         tasksError = '';
         tasksData = res.body;
+        tasksStamp = next;
       }
-      if (tab === 'usage') renderPanel();
+      if (changed && tab === 'usage') renderPanel();
     }).catch(function () {
+      var failed = tasksError !== 'Не удалось прочитать журнал расхода' || tasksData !== null;
       tasksError = 'Не удалось прочитать журнал расхода';
-      if (tab === 'usage') renderPanel();
+      tasksData = null;
+      tasksStamp = '';
+      if (failed && tab === 'usage') renderPanel();
     });
   }
 
@@ -728,10 +791,19 @@ const script = `
     return box;
   }
 
-  function renderRun(run) {
+  /* Номер строки — порядок попытки внутри задачи: он сходится с колонкой
+     «Попытки». Номер итерации сквозной по всему прогону и идёт с пропусками,
+     поэтому остаётся справочной пометкой. */
+  function renderRun(run, index) {
     var box = el('div', 'run');
     var head = el('div', 'run-head');
-    head.appendChild(el('span', 'run-title', 'Попытка ' + (run.iteration || '—')));
+    head.appendChild(
+      el(
+        'span',
+        'run-title',
+        'Попытка ' + (index + 1) + (run.iteration ? ' · итерация ' + run.iteration : '')
+      )
+    );
     var when = [];
     var from = clock(run.startedAt);
     var to = clock(run.finishedAt);
@@ -761,7 +833,9 @@ const script = `
         row.appendChild(el('span', '', left.join(' · ')));
         var right = [];
         if (tokensOf(agent.tokens)) right.push(tokens(agent.tokens));
-        right.push(money(agent.costUsd));
+        // Цену присылает не всякая сессия: убитая лимитом шагов и весь backend
+        // Codex её не отдают. Ноль вместо неё читался бы как «бесплатно».
+        right.push(typeof agent.costUsd === 'number' ? money(agent.costUsd) : 'цена не пришла');
         row.appendChild(el('span', 'agent-right', right.join(' · ')));
         list.appendChild(row);
       });
@@ -785,6 +859,20 @@ const script = `
     var totals = tasksData.totals || {};
     var period = tasksData.period || {};
     var tasks = Array.isArray(tasksData.tasks) ? tasksData.tasks : [];
+
+    /* Битый журнал даёт те же нули, что и новый проект. Без этой ветки экран
+       врал бы «прогонов ещё не было» поверх лежащей на диске истории. */
+    if (totals.metricsUnreadable) {
+      frag.appendChild(
+        el(
+          'div',
+          'empty',
+          'Журнал расхода .git/ralph-loop/issue-metrics.json есть, но не разбирается. ' +
+            'Расход показать не из чего, пока файл не починят или не удалят.'
+        )
+      );
+      return frag;
+    }
 
     var summary = el('div', 'summary');
     var line = el('div', 'summary-line');
@@ -815,6 +903,22 @@ const script = `
         '.';
     }
     summary.appendChild(el('div', 'note', warn));
+    /* Сессии без цены складываются в итог как ноль, поэтому итог занижен и об
+       этом надо сказать: у Codex цену не присылает ни одна сессия. */
+    var noCost = Number(totals.sessionsWithoutCost) || 0;
+    if (noCost) {
+      summary.appendChild(
+        el(
+          'div',
+          'note',
+          'У ' +
+            num(noCost) +
+            ' ' +
+            plural(noCost, 'сессии', 'сессий', 'сессий') +
+            ' CLI не прислал цену — итог занижен.'
+        )
+      );
+    }
     frag.appendChild(summary);
 
     if (!tasks.length) {
@@ -886,7 +990,7 @@ const script = `
         if (!runs.length) {
           cell.appendChild(el('div', 'run-meta', 'Попыток не записано'));
         } else {
-          runs.forEach(function (run) { cell.appendChild(renderRun(run)); });
+          runs.forEach(function (run, index) { cell.appendChild(renderRun(run, index)); });
         }
         detailRow.appendChild(cell);
         tbody.appendChild(detailRow);
@@ -966,26 +1070,38 @@ const script = `
     var isGrouped = source.some(function (item) {
       return item && Array.isArray(item.fields);
     });
+    var groups;
     if (isGrouped) {
-      return source.map(function (group) {
+      groups = source.map(function (group) {
+        var title = group.title || group.label || group.name || 'Настройки';
         return {
-          title: group.title || group.label || group.name || 'Настройки',
+          id: String(group.id || title),
+          title: title,
           fields: (group.fields || []).map(normalizeField)
         };
       });
+    } else {
+      var order = [];
+      var byTitle = Object.create(null);
+      source.forEach(function (item) {
+        var field = normalizeField(item);
+        var title = item.group || item.section || 'Настройки';
+        if (!byTitle[title]) {
+          byTitle[title] = { id: title, title: title, fields: [] };
+          order.push(byTitle[title]);
+        }
+        byTitle[title].fields.push(field);
+      });
+      groups = order;
     }
-    var order = [];
-    var byTitle = Object.create(null);
-    source.forEach(function (item) {
-      var field = normalizeField(item);
-      var title = item.group || item.section || 'Настройки';
-      if (!byTitle[title]) {
-        byTitle[title] = { title: title, fields: [] };
-        order.push(byTitle[title]);
-      }
-      byTitle[title].fields.push(field);
+    // Смена такого поля перерисовывает экран: от него зависят чужие списки.
+    dependencyPaths = Object.create(null);
+    groups.forEach(function (group) {
+      group.fields.forEach(function (field) {
+        if (field.optionsDependOn) dependencyPaths[field.optionsDependOn] = true;
+      });
     });
-    return order;
+    return groups;
   }
 
   function normalizeField(item) {
@@ -1008,8 +1124,12 @@ const script = `
       type: type,
       hint: source.hint || source.help || source.description || source.note || '',
       options: source.options || null,
-      optionsBy:
-        source.optionsBy || source.optionsByAgentCli || source.optionsFor || source.agentOptions || null,
+      // Имена ровно те, что кладёт ralph-gui-fields.mjs: синоним здесь молча
+      // оставил бы зависимые селекты пустыми.
+      optionsDependOn: source.optionsDependOn || null,
+      allowCustom: source.allowCustom === true,
+      hasDefault: Object.prototype.hasOwnProperty.call(source, 'default'),
+      fallback: source.default,
       min: source.min,
       max: source.max,
       step: source.step
@@ -1018,9 +1138,9 @@ const script = `
 
   function optionList(field) {
     var raw = field.options;
-    if (field.optionsBy) {
-      var agent = draft ? getPath(draft, 'agentCli') : '';
-      raw = field.optionsBy[agent] || field.optionsBy['*'] || [];
+    if (field.optionsDependOn) {
+      var key = draft ? getPath(draft, field.optionsDependOn) : '';
+      raw = (field.options || {})[key] || [];
     }
     if (!Array.isArray(raw)) return [];
     return raw.map(function (option) {
@@ -1028,6 +1148,29 @@ const script = `
         return { value: String(option.value), label: String(option.label || option.value) };
       }
       return { value: String(option), label: String(option) };
+    });
+  }
+
+  /* Значение вне списка. Имя модели код списком не ограничивает — там это
+     просто своё значение. Усилие проверяется по списку CLI (validateAgentRoles
+     в ralph-config.mjs), и чужое значение остановит прогон, о чём надо сказать
+     прямо. */
+  function outsideWord(field) {
+    if (field.allowCustom) return 'своё значение';
+    var key = field.optionsDependOn ? getPath(draft, field.optionsDependOn) : '';
+    return key ? 'недопустимо для ' + key : 'нет в списке';
+  }
+
+  // Поля с недопустимым значением. Такое поле может лежать на соседней вкладке
+  // — после смены CLI агента человек обязан узнать о нём, не открывая её.
+  function badFields(group) {
+    return group.fields.filter(function (field) {
+      if (field.type !== 'select' || field.allowCustom) return false;
+      var stored = draft ? getPath(draft, field.path) : undefined;
+      if (isUnset(stored)) return false;
+      var current = String(stored);
+      if (!current) return false;
+      return !optionList(field).some(function (option) { return option.value === current; });
     });
   }
 
@@ -1046,13 +1189,34 @@ const script = `
     return !!(configData && configData.locked);
   }
 
+  function isUnset(value) {
+    return value === undefined || value === null;
+  }
+
+  /* Значения в файле может не быть — тогда его подставит сам Ralph. Форма
+     показывает это значение и подписывает поле, но в draft не пишет: иначе
+     кнопка «Сохранить» оживала бы без правки, а файл распухал бы всеми ключами.
+     Про null и списки ничего не пишем: там умолчания нет или оно пустое. */
+  function defaultNote(field, stored) {
+    if (!isUnset(stored) || !field.hasDefault) return '';
+    var fallback = field.fallback;
+    if (isUnset(fallback) || Array.isArray(fallback)) return '';
+    var text = fallback === true ? 'включено' : fallback === false ? 'выключено' : String(fallback);
+    return 'Значение не задано — Ralph подставит: ' + text + '.';
+  }
+
   function renderField(field) {
     var box = el('div', 'field');
-    var wide = field.type === 'phases' || field.type === 'list';
+    var wide = field.type === 'phases' || field.type === 'list' || field.type === 'textarea';
     if (wide) box.className = 'field is-wide';
 
-    var value = draft ? getPath(draft, field.path) : undefined;
+    var stored = draft ? getPath(draft, field.path) : undefined;
+    var value = isUnset(stored) && field.hasDefault ? field.fallback : stored;
+    var note = defaultNote(field, stored);
+    var hintText = field.hint;
+    if (note) hintText = hintText ? hintText + ' ' + note : note;
     var locked = isLocked();
+    var warnText = '';
 
     if (field.type === 'boolean') {
       var check = el('label', 'check');
@@ -1067,7 +1231,7 @@ const script = `
       check.appendChild(input);
       check.appendChild(el('span', '', field.label));
       box.appendChild(check);
-      if (field.hint) box.appendChild(el('div', 'field-hint', field.hint));
+      if (hintText) box.appendChild(el('div', 'field-hint', hintText));
       return box;
     }
 
@@ -1078,7 +1242,8 @@ const script = `
       var select = document.createElement('select');
       select.disabled = locked;
       var options = optionList(field);
-      var current = value === undefined || value === null ? '' : String(value);
+      var current = isUnset(value) ? '' : String(value);
+      var custom = customOpen[field.path] === true;
       var known = false;
       options.forEach(function (option) {
         var node = document.createElement('option');
@@ -1087,20 +1252,70 @@ const script = `
         if (option.value === current) known = true;
         select.appendChild(node);
       });
-      if (!known) {
+      if (!known && !custom) {
+        // Значение вне списка не теряется: оно остаётся выбранным первым
+        // пунктом и подписано — своё оно или недопустимое для текущего CLI.
         var extra = document.createElement('option');
         extra.value = current;
-        extra.textContent = current || '—';
+        extra.textContent = current ? current + ' — ' + outsideWord(field) : '—';
         select.insertBefore(extra, select.firstChild);
       }
-      select.value = current;
+      if (field.allowCustom) {
+        var other = document.createElement('option');
+        other.value = customMarker;
+        other.textContent = 'Другая…';
+        select.appendChild(other);
+      }
+      select.value = custom ? customMarker : current;
       select.addEventListener('change', function () {
+        if (select.value === customMarker) {
+          customOpen[field.path] = true;
+          renderPanel();
+          return;
+        }
+        // Выбор готового пункта закрывает режим «Другая…», а его поле ввода
+        // убирает перерисовка: без неё оно осталось бы на экране и следующий
+        // символ в нём вернул бы старое значение.
+        var wasCustom = customOpen[field.path] === true;
+        delete customOpen[field.path];
         setPath(draft, field.path, select.value);
         markChanged();
-        // Значения зависимых селектов зависят от agentCli: перерисовываем секции.
-        if (field.path === 'agentCli') renderPanel();
+        // От этого поля зависят чужие списки — перерисовываем экран целиком.
+        if (wasCustom || dependencyPaths[field.path]) renderPanel();
       });
       label.appendChild(select);
+      if (custom) {
+        /* «Другая…» открывает поле рядом со списком, а не вместо него: список
+           остаётся на экране и возвращает к готовым вариантам одним выбором.
+           Введённое имя сохраняется как есть — код проверяет только символы. */
+        var free = document.createElement('input');
+        free.type = 'text';
+        free.disabled = locked;
+        free.value = current;
+        free.placeholder = 'Своё значение';
+        free.style.marginTop = '6px';
+        free.setAttribute('aria-label', field.label + ', своё значение');
+        free.addEventListener('input', function () {
+          setPath(draft, field.path, free.value);
+          markChanged();
+        });
+        box.appendChild(free);
+      }
+      if (!known && !custom && current && !field.allowCustom) {
+        warnText =
+          'Значение «' + current + '» ' + outsideWord(field) +
+          ': выберите другое, иначе прогон остановится на проверке настроек.';
+      }
+    } else if (field.type === 'textarea') {
+      var multi = document.createElement('textarea');
+      multi.disabled = locked;
+      // Многострочный текст: однострочный input вырезал бы переводы строк.
+      multi.value = value === undefined || value === null ? '' : String(value);
+      multi.addEventListener('input', function () {
+        setPath(draft, field.path, multi.value);
+        markChanged();
+      });
+      label.appendChild(multi);
     } else if (field.type === 'list') {
       var area = document.createElement('textarea');
       area.disabled = locked;
@@ -1111,7 +1326,7 @@ const script = `
         markChanged();
       });
       label.appendChild(area);
-      if (!field.hint) field.hint = 'Одна строка — одна команда.';
+      if (!hintText) hintText = 'Одна строка — одна команда.';
     } else if (field.type === 'phases') {
       label.appendChild(renderPhases(field, Array.isArray(value) ? value : []));
     } else {
@@ -1124,7 +1339,9 @@ const script = `
       text.value = value === undefined || value === null ? '' : String(value);
       text.addEventListener('input', function () {
         if (field.type === 'number') {
-          setPath(draft, field.path, text.value === '' ? '' : Number(text.value));
+          // Пустое поле — это «убрать значение, пусть работает умолчание»:
+          // null проходит слияние на сервере, пустая строка ломала проверку.
+          setPath(draft, field.path, text.value === '' ? null : Number(text.value));
         } else {
           setPath(draft, field.path, text.value);
         }
@@ -1133,7 +1350,8 @@ const script = `
       label.appendChild(text);
     }
 
-    if (field.hint) box.appendChild(el('div', 'field-hint', field.hint));
+    if (hintText) box.appendChild(el('div', 'field-hint', hintText));
+    if (warnText) box.appendChild(el('div', 'field-hint is-warn', warnText));
     return box;
   }
 
@@ -1163,11 +1381,19 @@ const script = `
         input.disabled = locked;
         input.setAttribute('aria-label', column[1] + ', строка ' + (index + 1));
         input.value = row && row[column[0]] !== undefined && row[column[0]] !== null ? String(row[column[0]]) : '';
+        /* Пустая база — это «наследовать базу прогона»: подсказка показывает,
+           что подставится, иначе клетка читается как «база не задана». */
+        if (column[0] === 'baseBranch') {
+          input.placeholder = String((draft && draft.baseBranch) || 'main');
+        }
         input.addEventListener('input', function () {
           var list = getPath(draft, field.path);
           if (!Array.isArray(list)) return;
           if (!list[index] || typeof list[index] !== 'object') list[index] = {};
-          list[index][column[0]] = input.value;
+          // Ключ с пустой строкой конфигурация отвергает, отсутствие ключа —
+          // разрешает и подставляет базу прогона.
+          if (column[0] === 'baseBranch' && input.value === '') delete list[index].baseBranch;
+          else list[index][column[0]] = input.value;
           markChanged();
         });
         td.appendChild(input);
@@ -1200,7 +1426,7 @@ const script = `
         list = [];
         setPath(draft, field.path, list);
       }
-      list.push({ milestone: '', branch: '', baseBranch: '' });
+      list.push({ milestone: '', branch: '' });
       renderPanel();
     });
     wrap.appendChild(add);
@@ -1257,9 +1483,11 @@ const script = `
           refreshHash();
           loadState();
         } else {
+          /* Отказ ничего не перечитывает: правки остаются на экране вместе с
+             объяснением, а отпечаток остаётся прежним — обновить его значило бы
+             дать следующему сохранению молча затереть чужую правку. */
           var text = (res.body && res.body.error) || 'Сохранить не удалось';
           showMessage('bad', text);
-          if (res.status === 409) loadConfig();
         }
       })
       .catch(function () {
@@ -1277,6 +1505,50 @@ const script = `
     }
     var button = document.getElementById('save-button');
     if (button) button.disabled = !isDirty() || saving || isLocked();
+  }
+
+  /* Выбранная вкладка настроек хранится в localStorage: после сохранения и
+     перезагрузки человек остаётся там же. В приватном окне доступ к хранилищу
+     бросает исключение, поэтому обе стороны в try. */
+  function readSettingsTab() {
+    try {
+      return window.localStorage.getItem(settingsTabKey) || '';
+    } catch (error) {
+      return '';
+    }
+  }
+
+  function writeSettingsTab(id) {
+    try {
+      window.localStorage.setItem(settingsTabKey, id);
+    } catch (error) {}
+  }
+
+  function selectSettingsTab(id) {
+    if (settingsTab === id) return;
+    settingsTab = id;
+    writeSettingsTab(id);
+    // Черновик один на весь экран, поэтому несохранённые правки соседних
+    // вкладок переживают переключение.
+    renderPanel();
+  }
+
+  function renderSubtabs(groups, active) {
+    var nav = el('nav', 'subtabs');
+    nav.setAttribute('role', 'tablist');
+    nav.setAttribute('aria-label', 'Разделы настроек');
+    groups.forEach(function (group, index) {
+      var button = el('button', badFields(group).length ? 'subtab is-warn' : 'subtab', group.title);
+      button.type = 'button';
+      button.id = 'subtab-' + index;
+      button.setAttribute('role', 'tab');
+      button.setAttribute('aria-selected', index === active ? 'true' : 'false');
+      button.addEventListener('click', function () {
+        selectSettingsTab(group.id);
+      });
+      nav.appendChild(button);
+    });
+    return nav;
   }
 
   function renderSettings() {
@@ -1308,18 +1580,36 @@ const script = `
     var groups = normalizeGroups(configData.fields);
     if (!groups.length) {
       frag.appendChild(el('div', 'empty', 'Описание полей не пришло с сервера'));
-    }
-    groups.forEach(function (group) {
-      var section = el('section', 'section');
-      section.appendChild(el('h2', 'section-title', group.title));
-      section.appendChild(el('div', 'section-rule'));
+    } else {
+      var active = 0;
+      groups.forEach(function (group, index) {
+        if (group.id === settingsTab) active = index;
+      });
+      frag.appendChild(renderSubtabs(groups, active));
+      // Недопустимое значение на закрытой вкладке иначе осталось бы незамеченным.
+      var trouble = [];
+      groups.forEach(function (group, index) {
+        if (index === active) return;
+        badFields(group).forEach(function (field) {
+          trouble.push(field.label + ' — вкладка «' + group.title + '»');
+        });
+      });
+      if (trouble.length) {
+        frag.appendChild(
+          el('div', 'settings-warn', 'Недопустимые значения: ' + trouble.join('; ') + '.')
+        );
+      }
+      // Заголовок группы не дублируется: её называет выбранная вкладка.
+      var box = el('div');
+      box.setAttribute('role', 'tabpanel');
+      box.setAttribute('aria-labelledby', 'subtab-' + active);
       var grid = el('div', 'grid');
-      group.fields.forEach(function (field) {
+      groups[active].fields.forEach(function (field) {
         grid.appendChild(renderField(field));
       });
-      section.appendChild(grid);
-      frag.appendChild(section);
-    });
+      box.appendChild(grid);
+      frag.appendChild(box);
+    }
 
     var unknown = Array.isArray(configData.unknownKeys) ? configData.unknownKeys : [];
     if (unknown.length) frag.appendChild(renderUnknown(unknown));
@@ -1355,7 +1645,9 @@ const script = `
     Array.prototype.forEach.call(document.querySelectorAll('.tab'), function (button) {
       button.setAttribute('aria-selected', button.getAttribute('data-tab') === tab ? 'true' : 'false');
     });
-    if (tab === 'usage' && !tasksData && !tasksError) loadTasks();
+    // Неудачный запрос повторяется при возврате на вкладку: иначе одна ошибка
+    // держится до перезагрузки страницы.
+    if (tab === 'usage' && !tasksData) loadTasks();
     if (tab === 'settings' && (!configData || !isDirty())) loadConfig();
     renderPanel();
   }
@@ -1370,7 +1662,12 @@ const script = `
   renderPanel();
   loadState();
   loadTasks();
-  setInterval(loadState, 5000);
+  /* Один таймер на обе вкладки: журнал дописывается после каждой попытки, и без
+     опроса цифры расхода застывали бы на моменте открытия страницы. */
+  setInterval(function () {
+    loadState();
+    if (tab === 'usage') loadTasks();
+  }, 15000);
 })();
 `;
 

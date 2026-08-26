@@ -179,9 +179,18 @@ function normalizeRun(entry) {
   };
 }
 
-function emptySpend() {
+function emptySpend(metricsUnreadable = false) {
   return {
-    totals: { costUsd: 0, tasks: 0, attempts: 0, wallMs: 0, tokens: 0, missesMilestoneReview },
+    totals: {
+      costUsd: 0,
+      tasks: 0,
+      attempts: 0,
+      wallMs: 0,
+      tokens: 0,
+      sessionsWithoutCost: 0,
+      missesMilestoneReview,
+      metricsUnreadable,
+    },
     period: { fromIso: null, toIso: null, storedAttempts: 0, maxStored: maxStoredIssueRecords },
     tasks: [],
   };
@@ -199,9 +208,20 @@ export function readTaskSpend(dependencies = {}) {
   const metricsPath =
     dependencies.metricsPath ??
     path.join(resolveRuntimeDirectory(dependencies), 'issue-metrics.json');
-  const stored = readJsonSafely(metricsPath, null);
+  // Битый журнал и пустая история — разные беды, а выглядели одинаково. Файла
+  // нет — `readJsonFile` вернёт `null`; файл есть и не разбирается — бросит, и
+  // страница должна сказать про поломку, а не про то, что прогонов не было.
+  let stored = null;
+  let metricsUnreadable = false;
+  try {
+    stored = readJsonFile(metricsPath, null);
+  } catch {
+    metricsUnreadable = true;
+  }
+  if (stored !== null && !Array.isArray(stored.entries)) metricsUnreadable = true;
+
   const entries = Array.isArray(stored?.entries) ? stored.entries : [];
-  if (entries.length === 0) return emptySpend();
+  if (entries.length === 0) return emptySpend(metricsUnreadable);
 
   const byIssue = new Map();
   for (const entry of entries) {
@@ -216,6 +236,8 @@ export function readTaskSpend(dependencies = {}) {
         lastOutcome: null,
         lastReason: null,
         costUsd: 0,
+        // Сессии, у которых CLI не прислал цену: их ноль занижает и строку, и итог.
+        sessionsWithoutCost: 0,
         tokens: 0,
         wallMs: 0,
         runs: [],
@@ -226,6 +248,7 @@ export function readTaskSpend(dependencies = {}) {
     task.attempts += 1;
     task.wallMs += run.wallMs;
     for (const agent of run.agents) {
+      if (agent.costUsd === null) task.sessionsWithoutCost += 1;
       task.costUsd += numberOrZero(agent.costUsd);
       task.tokens += agent.tokens;
     }
@@ -252,12 +275,18 @@ export function readTaskSpend(dependencies = {}) {
       attempts: sum.attempts + task.attempts,
       wallMs: sum.wallMs + task.wallMs,
       tokens: sum.tokens + task.tokens,
+      sessionsWithoutCost: sum.sessionsWithoutCost + task.sessionsWithoutCost,
     }),
-    { costUsd: 0, tasks: 0, attempts: 0, wallMs: 0, tokens: 0 },
+    { costUsd: 0, tasks: 0, attempts: 0, wallMs: 0, tokens: 0, sessionsWithoutCost: 0 },
   );
 
   return {
-    totals: { ...totals, costUsd: roundMoney(totals.costUsd), missesMilestoneReview },
+    totals: {
+      ...totals,
+      costUsd: roundMoney(totals.costUsd),
+      missesMilestoneReview,
+      metricsUnreadable,
+    },
     period: {
       fromIso: startTimes[0] ?? null,
       toIso: startTimes.at(-1) ?? null,

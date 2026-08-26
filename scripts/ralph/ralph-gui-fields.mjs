@@ -12,25 +12,46 @@
  * - `type`     — 'boolean' | 'number' | 'text' | 'textarea' | 'select' |
  *                'list' | 'phases'. 'list' — массив строк, по строке на
  *                элемент.
- * - `options`  — только у 'select'. Обычно массив значений; если задан
- *                `optionsDependOn`, то это объект-карта: ключ — значение поля,
- *                названного в `optionsDependOn`, значение — массив допустимых
- *                вариантов.
+ * - `options`  — только у 'select'. Простой массив значений, когда список ни от
+ *                чего не зависит; объект-карта, когда зависит: ключ — значение
+ *                поля, названного в `optionsDependOn`, значение — массив
+ *                вариантов. `optionsDependOn` задаётся только вместе с картой.
+ * - `allowCustom` — только у 'select': форма разрешает ввести своё значение
+ *                пунктом «Другая…». Ставится там, где код проверяет не список,
+ *                а форму значения.
  * - `unit`     — 'мс' или null; единица дописывается к полю ввода.
  * - `default`  — значение по умолчанию из кода. null означает, что умолчания
- *                нет и поле обязательно (`prompt`, `phases`) либо оно
- *                вычисляется при загрузке (`validationContainer.image`).
+ *                нет: поле обязательно (`prompt`, `phases`), вычисляется при
+ *                загрузке (`validationContainer.image`) или подставляется
+ *                только вместе со всем родительским объектом. Третий случай —
+ *                ключи внутри `review`, `milestoneReview` и
+ *                `validationContainer`: `applyValidationAndReviewDefaults`
+ *                в `ralph-config.mjs` заполняет эти объекты целиком, а
+ *                одиночный удалённый ключ внутри них останавливает прогон, и
+ *                обещать умолчание форме нельзя.
+ *
+ * Групп ровно пять, и каждая становится вкладкой формы; `id` группы — якорь
+ * вкладки.
  */
 
-// Наборы reasoning effort различаются у двух CLI: массивы взяты из
-// `ralph-codex-session.mjs` и `ralph-claude-session.mjs`, а проверка стоит в
-// `validateAgentRoles`, который берёт набор у `reasoningEffortsFor` из
-// `ralph-agent-backends.mjs`. Здесь наборы скопированы, а не импортированы:
-// импорт втянул бы в процесс пульта весь стек запуска агента.
-const effortOptions = {
-  codex: ['minimal', 'low', 'medium', 'high'],
-  claude: ['low', 'medium', 'high', 'xhigh', 'max'],
-};
+import { agentClis, reasoningEffortsFor } from './ralph-agent-backends.mjs';
+
+// Наборы reasoning effort различаются у двух CLI. Здесь они не копируются, а
+// берутся у того же источника, что и проверка конфигурации в
+// `validateAgentRoles`, — иначе списки разойдутся в день, когда у CLI появится
+// новое значение. Цепочка импорта уже загружена процессом пульта через
+// `ralph-config.mjs`, так что она ничего не стоит.
+const effortOptions = Object.fromEntries(agentClis.map((cli) => [cli, reasoningEffortsFor(cli)]));
+
+// Имена моделей код списком не ограничивает: `validateAgentRoles` проверяет
+// только безопасность символов. Поэтому у полей модели стоит `allowCustom` —
+// список здесь подсказка, а не запрет, и новая модель вводится руками.
+const claudeModels = [
+  'claude-opus-5',
+  'claude-sonnet-5',
+  'claude-fable-5',
+  'claude-haiku-4-5-20251001',
+];
 
 export const fieldGroups = [
   {
@@ -66,7 +87,7 @@ export const fieldGroups = [
         path: 'draftPullRequest',
         label: 'PR черновиком',
         type: 'boolean',
-        hint: 'Создавать pull request как draft, пока веха не закрыта.',
+        hint: 'Создавать pull request черновиком. Ralph сам его из черновика не выводит — это делает человек перед мержем.',
         unit: null,
         default: true,
       },
@@ -74,7 +95,7 @@ export const fieldGroups = [
         path: 'stopAfterFirstIssue',
         label: 'Остановка после первой issue',
         type: 'boolean',
-        hint: 'Прогон завершается после одной задачи и не делает push и PR — режим для проверки настроек.',
+        hint: 'Прогон завершается после одной задачи: коммит и push ветки выполняются, PR и ревью вехи — нет. Режим для проверки настроек.',
         unit: null,
         default: false,
       },
@@ -90,7 +111,7 @@ export const fieldGroups = [
         path: 'autoApproveConfiguredIssues',
         label: 'Автоодобрение issues',
         type: 'boolean',
-        hint: 'До старта фиксируются точные title и body issues доверенных авторов; при false каждую issue вносят в файл snapshots вручную.',
+        hint: 'До старта фиксируются точные title и body issues доверенных авторов; при false каждую issue вносят в файл snapshots вручную и обновляют контрольную сумму approvedIssueSnapshotsHash в scripts/ralph/ralph-config.mjs, иначе прогон не стартует.',
         unit: null,
         default: true,
       },
@@ -120,7 +141,7 @@ export const fieldGroups = [
         path: 'phases',
         label: 'Фазы прогона',
         type: 'phases',
-        hint: 'Упорядоченный список: точное имя вехи GitHub, рабочая ветка и необязательная своя база; имена вех и веток уникальны, ветка не может совпадать с базой.',
+        hint: 'Упорядоченный список: точное имя вехи GitHub, рабочая ветка и своя база; пустая клетка базы означает базовую ветку прогона. Имена вех и веток уникальны, ветка не может совпадать с базой.',
         unit: null,
         default: null,
       },
@@ -128,13 +149,13 @@ export const fieldGroups = [
   },
   {
     id: 'limits',
-    title: 'Лимиты',
+    title: 'Лимиты и тайминги',
     fields: [
       {
         path: 'maxIterations',
         label: 'Итераций на прогон',
         type: 'number',
-        hint: 'Сколько задач подряд берёт один прогон; на пределе PR остаётся черновиком.',
+        hint: 'Сколько задач подряд берёт один прогон; на пределе прогон останавливается с ошибкой, работа остаётся в ветке фазы, PR не создаётся.',
         unit: null,
         default: 20,
       },
@@ -186,6 +207,46 @@ export const fieldGroups = [
         unit: null,
         default: 20,
       },
+      {
+        path: 'runtime.commandTimeoutMs',
+        label: 'Таймаут одной команды',
+        type: 'number',
+        hint: 'Бюджет обычной команды вроде git или gh; 300000 = 5 минут.',
+        unit: 'мс',
+        default: 300000,
+      },
+      {
+        path: 'runtime.validationTimeoutMs',
+        label: 'Таймаут сборки образа',
+        type: 'number',
+        hint: 'Бюджет docker build образа проверок; 1800000 = 30 минут.',
+        unit: 'мс',
+        default: 1800000,
+      },
+      {
+        path: 'runtime.validationRunTimeoutMs',
+        label: 'Таймаут прогона проверок',
+        type: 'number',
+        hint: 'Бюджет всего набора проверок в одном контейнере; 3600000 = 1 час.',
+        unit: 'мс',
+        default: 3600000,
+      },
+      {
+        path: 'runtime.agentTimeoutMs',
+        label: 'Таймаут сессии агента',
+        type: 'number',
+        hint: 'Бюджет одной сессии CLI агента; 5400000 = 1 час 30 минут.',
+        unit: 'мс',
+        default: 5400000,
+      },
+      {
+        path: 'runtime.networkRetryBaseDelayMs',
+        label: 'Базовая пауза перед повтором',
+        type: 'number',
+        hint: 'Пауза перед первым повтором сетевой команды, дальше растёт; 2000 = 2 секунды.',
+        unit: 'мс',
+        default: 2000,
+      },
     ],
   },
   {
@@ -195,8 +256,11 @@ export const fieldGroups = [
       {
         path: 'developmentModel',
         label: 'Модель разработки',
-        type: 'text',
-        hint: 'Имя модели для сессии реализации; допустимы буквы, цифры, точка, дефис и подчёркивание.',
+        type: 'select',
+        options: { codex: ['gpt-5.6-terra'], claude: claudeModels },
+        optionsDependOn: 'agentCli',
+        allowCustom: true,
+        hint: 'Модель для сессии реализации. Список не ограничивает выбор: новую модель вводят пунктом «Другая…».',
         unit: null,
         default: 'gpt-5.6-terra',
       },
@@ -206,7 +270,7 @@ export const fieldGroups = [
         type: 'select',
         options: effortOptions,
         optionsDependOn: 'agentCli',
-        hint: 'Набор значений зависит от CLI: codex принимает minimal/low/medium/high, claude — low/medium/high/xhigh/max.',
+        hint: 'Список зависит от поля «CLI агента» и перерисовывается при его смене; чем выше усилие, тем дороже сессия.',
         unit: null,
         default: 'medium',
       },
@@ -223,15 +287,18 @@ export const fieldGroups = [
         path: 'review.enabled',
         label: 'Ревью каждой issue',
         type: 'boolean',
-        hint: 'Отдельная сессия проверяет реализацию задачи перед коммитом в очередь.',
+        hint: 'Отдельная сессия проверяет уже закоммиченную и запушенную работу: при отказе коммит остаётся в ветке, а issue переоткрывается с замечаниями.',
         unit: null,
-        default: true,
+        default: null,
       },
       {
         path: 'review.model',
         label: 'Модель ревью issue',
-        type: 'text',
-        hint: 'Имя модели для ревью одной задачи.',
+        type: 'select',
+        options: { codex: ['gpt-5.6-terra'], claude: claudeModels },
+        optionsDependOn: 'agentCli',
+        allowCustom: true,
+        hint: 'Имя модели для ревью одной задачи; список не ограничивает выбор, своё имя вводят пунктом «Другая…».',
         unit: null,
         default: 'gpt-5.6-terra',
       },
@@ -251,7 +318,7 @@ export const fieldGroups = [
         type: 'text',
         hint: 'JSON-схема внутри проекта, по которой разбирается результат ревью.',
         unit: null,
-        default: '.agents/review.schema.json',
+        default: null,
       },
       {
         path: 'review.outputFile',
@@ -259,7 +326,7 @@ export const fieldGroups = [
         type: 'text',
         hint: 'Куда пишется последний отчёт ревью issue.',
         unit: null,
-        default: '.agents/last-review.json',
+        default: null,
       },
       {
         path: 'milestoneReview.enabled',
@@ -267,15 +334,18 @@ export const fieldGroups = [
         type: 'boolean',
         hint: 'Общий аудит всей вехи перед её закрытием.',
         unit: null,
-        default: true,
+        default: null,
       },
       {
         path: 'milestoneReview.model',
         label: 'Модель ревью вехи',
-        type: 'text',
-        hint: 'Имя модели для аудита вехи; обычно сильнее, чем для одной задачи.',
+        type: 'select',
+        options: { codex: ['gpt-5.6-sol'], claude: claudeModels },
+        optionsDependOn: 'agentCli',
+        allowCustom: true,
+        hint: 'Имя модели для аудита вехи, обычно сильнее, чем для одной задачи; список не ограничивает выбор, своё имя вводят пунктом «Другая…».',
         unit: null,
-        default: 'gpt-5.6-sol',
+        default: null,
       },
       {
         path: 'milestoneReview.effort',
@@ -317,7 +387,7 @@ export const fieldGroups = [
         type: 'text',
         hint: 'JSON-схема внутри проекта для результата аудита вехи.',
         unit: null,
-        default: '.agents/review.schema.json',
+        default: null,
       },
       {
         path: 'milestoneReview.outputFile',
@@ -325,7 +395,23 @@ export const fieldGroups = [
         type: 'text',
         hint: 'Куда пишется последний отчёт аудита вехи.',
         unit: null,
-        default: '.agents/last-milestone-review.json',
+        default: null,
+      },
+      {
+        path: 'prompt',
+        label: 'Текст задания',
+        type: 'textarea',
+        hint: 'Подстановки: {issue_number}, {issue_title}, {issue_url}, {milestone}, {branch}, {max_turns}, {max_test_fix_attempts}.',
+        unit: null,
+        default: null,
+      },
+      {
+        path: 'rulesFile',
+        label: 'Файл правил сессии',
+        type: 'text',
+        hint: 'Путь внутри проекта к правилам, которые дописываются к заданию; те же подстановки действуют и там.',
+        unit: null,
+        default: '.agents/ralph-rules.md',
       },
     ],
   },
@@ -347,7 +433,7 @@ export const fieldGroups = [
         type: 'text',
         hint: 'Путь внутри проекта к Dockerfile, из которого собирается образ проверок.',
         unit: null,
-        default: 'scripts/ralph/Dockerfile.validation',
+        default: null,
       },
       {
         path: 'preflightScripts',
@@ -372,74 +458,6 @@ export const fieldGroups = [
         hint: 'Относительные пути к манифестам и lock-файлам, которые копируются в слой зависимостей образа.',
         unit: null,
         default: [],
-      },
-    ],
-  },
-  {
-    id: 'prompt',
-    title: 'Задание агенту',
-    fields: [
-      {
-        path: 'prompt',
-        label: 'Текст задания',
-        type: 'textarea',
-        hint: 'Подстановки: {issue_number}, {issue_title}, {issue_url}, {milestone}, {branch}, {max_turns}, {max_test_fix_attempts}.',
-        unit: null,
-        default: null,
-      },
-      {
-        path: 'rulesFile',
-        label: 'Файл правил сессии',
-        type: 'text',
-        hint: 'Путь внутри проекта к правилам, которые дописываются к заданию; те же подстановки действуют и там.',
-        unit: null,
-        default: '.agents/ralph-rules.md',
-      },
-    ],
-  },
-  {
-    id: 'timings',
-    title: 'Тайминги',
-    fields: [
-      {
-        path: 'runtime.commandTimeoutMs',
-        label: 'Таймаут одной команды',
-        type: 'number',
-        hint: 'Бюджет обычной команды вроде git или gh; 300000 = 5 минут.',
-        unit: 'мс',
-        default: 300000,
-      },
-      {
-        path: 'runtime.validationTimeoutMs',
-        label: 'Таймаут сборки образа',
-        type: 'number',
-        hint: 'Бюджет docker build образа проверок; 1800000 = 30 минут.',
-        unit: 'мс',
-        default: 1800000,
-      },
-      {
-        path: 'runtime.validationRunTimeoutMs',
-        label: 'Таймаут прогона проверок',
-        type: 'number',
-        hint: 'Бюджет всего набора проверок в одном контейнере; 3600000 = 1 час.',
-        unit: 'мс',
-        default: 3600000,
-      },
-      {
-        path: 'runtime.agentTimeoutMs',
-        label: 'Таймаут сессии агента',
-        type: 'number',
-        hint: 'Бюджет одной сессии CLI агента; 5400000 = 1 час 30 минут.',
-        unit: 'мс',
-        default: 5400000,
-      },
-      {
-        path: 'runtime.networkRetryBaseDelayMs',
-        label: 'Базовая пауза перед повтором',
-        type: 'number',
-        hint: 'Пауза перед первым повтором сетевой команды, дальше растёт; 2000 = 2 секунды.',
-        unit: 'мс',
-        default: 2000,
       },
     ],
   },

@@ -1,10 +1,24 @@
 import { spawn } from 'node:child_process';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
-import { copyFileSync, existsSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { createServer } from 'node:http';
+import path from 'node:path';
 
 import { configPath, prepareConfig } from './ralph-config.mjs';
-import { describeOutcome, readRunState, readTaskSpend } from './ralph-gui-data.mjs';
+import {
+  describeOutcome,
+  readRunState,
+  readTaskSpend,
+  runtimeDirectory,
+} from './ralph-gui-data.mjs';
 import { fieldGroups } from './ralph-gui-fields.mjs';
 import { renderPage } from './ralph-gui-page.mjs';
 
@@ -12,9 +26,11 @@ import { renderPage } from './ralph-gui-page.mjs';
  * Пульт Ralph: локальный HTTP-сервер, который показывает состояние прогона,
  * расходы по задачам и даёт править `.agents/ralph.config.json`.
  *
- * Сервер только читает `.git/ralph-loop`: единственный файл, который он пишет —
- * конфиг и его резервная копия. Запись в каталог прогона означала бы, что пульт
- * вмешивается в идущую итерацию, а он для этого не предназначен.
+ * Единственный файл, который сервер меняет, — сам конфиг. Резервная копия и
+ * временный файл записи ложатся в `.git/ralph-loop`, а не рядом с конфигом:
+ * в рабочем дереве они остались бы неотслеживаемым мусором, и следующий прогон
+ * отказался бы стартовать с «Рабочее дерево не чистое». Состояние прогона —
+ * `state.json` и лок — сервер по-прежнему только читает.
  */
 
 // -----------------------------------------------------------------------------
@@ -29,9 +45,15 @@ const maxBodyBytes = 1024 * 1024;
 // доступ, и ключ не переживает процесс ни в каком файле.
 const token = randomBytes(16).toString('hex');
 
+// Длины сравниваются в байтах, а не в символах: `timingSafeEqual` требует
+// равной длины буферов, и ключ из тридцати двух кириллических букв прошёл бы
+// проверку по `length`, а на сравнении уронил бы обработчик в 500 вместо 403.
 function tokenMatches(candidate) {
-  if (typeof candidate !== 'string' || candidate.length !== token.length) return false;
-  return timingSafeEqual(Buffer.from(candidate, 'utf8'), Buffer.from(token, 'utf8'));
+  if (typeof candidate !== 'string') return false;
+  const presented = Buffer.from(candidate, 'utf8');
+  const expected = Buffer.from(token, 'utf8');
+  if (presented.length !== expected.length) return false;
+  return timingSafeEqual(presented, expected);
 }
 
 // -----------------------------------------------------------------------------
@@ -74,8 +96,11 @@ function readBody(request) {
     request.on('data', (chunk) => {
       size += chunk.length;
       if (size > maxBodyBytes) {
+        // Накопленное отпускается сразу — ради этого и стоит лимит, — но сам
+        // запрос не рвётся: оборванному соединению ответ 413 уже не доставить,
+        // и человек увидит «сеть не отвечает» вместо причины отказа.
+        chunks.length = 0;
         reject(new Error('Тело запроса больше допустимого размера.'));
-        request.destroy();
         return;
       }
       chunks.push(chunk);
@@ -166,16 +191,72 @@ function mergePreservingUnknown(draft, stored) {
   return result;
 }
 
+/**
+ * Очищенное числовое поле приходит со страницы как null: так форма говорит
+ * «значения нет». В файле null оседать не должен — `prepareConfig` подставляет
+ * умолчание только на отсутствующий ключ, а человек, открывший конфиг руками,
+ * увидел бы значение, которого не вводил. Пустые ключи вырезаются после
+ * слияния с диском: до него отсутствие ключа в черновике вернуло бы прежнее
+ * значение, и стереть настройку через пульт было бы нельзя.
+ */
+function dropNullValues(value) {
+  if (Array.isArray(value)) {
+    for (const item of value) dropNullValues(item);
+    return value;
+  }
+  if (!isPlainObject(value)) return value;
+  for (const [key, nested] of Object.entries(value)) {
+    if (nested === null) delete value[key];
+    else dropNullValues(nested);
+  }
+  return value;
+}
+
 function readConfigText() {
   return readFileSync(configPath, 'utf8');
 }
 
 /**
- * Запись через временный файл рядом: прерванный процесс оставляет прошлый
- * конфиг целым, а не его половину, которую следующий прогон не разберёт.
+ * Чтение и разбор конфига одним шагом. Обе беды — файла нет и файл не
+ * разбирается — человек чинит руками, поэтому им нужен русский текст с путём,
+ * а не ENOENT из общего обработчика. Ответ отправляется здесь же, а наружу
+ * уходит `null`: вызывающему остаётся только выйти.
+ */
+function readConfigOrExplain(response) {
+  let text;
+  try {
+    text = readConfigText();
+  } catch (error) {
+    sendJson(response, 400, {
+      error:
+        error.code === 'ENOENT'
+          ? `Файла настроек нет: ${configPath}. Создайте его — без него пульту нечего показывать.`
+          : `Файл настроек ${configPath} не читается: ${error.message}`,
+    });
+    return null;
+  }
+  try {
+    return { text, config: JSON.parse(text) };
+  } catch (error) {
+    sendJson(response, 400, {
+      error:
+        `Файл настроек ${configPath} не разбирается как JSON: ${error.message}. ` +
+        'Поправьте его руками.',
+    });
+    return null;
+  }
+}
+
+/**
+ * Запись через временный файл: прерванный процесс оставляет прошлый конфиг
+ * целым, а не его половину, которую следующий прогон не разберёт. Временный
+ * файл лежит в `.git/ralph-loop` — на том же томе, что и `.agents`, поэтому
+ * `renameSync` остаётся атомарным, — и переживший сбой огрызок не попадает в
+ * рабочее дерево.
  */
 function writeConfigAtomic(config) {
-  const temporaryPath = `${configPath}.${process.pid}.tmp`;
+  mkdirSync(runtimeDirectory, { recursive: true });
+  const temporaryPath = path.join(runtimeDirectory, `ralph.config.json.${process.pid}.tmp`);
   try {
     writeFileSync(temporaryPath, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
     renameSync(temporaryPath, configPath);
@@ -215,8 +296,9 @@ function handleTasks(response) {
 }
 
 function handleConfigRead(response) {
-  const text = readConfigText();
-  const config = JSON.parse(text);
+  const stored = readConfigOrExplain(response);
+  if (stored === null) return;
+  const { text, config } = stored;
   const state = readRunState();
   sendJson(response, 200, {
     config,
@@ -242,9 +324,18 @@ async function handleConfigWrite(request, response) {
     return;
   }
 
+  // Тело читается отдельно от разбора: превышение лимита размера — не «кривой
+  // JSON», и путать эти два отказа значит послать человека искать опечатку.
+  let raw;
+  try {
+    raw = await readBody(request);
+  } catch (error) {
+    sendJson(response, 413, { error: error.message });
+    return;
+  }
   let body;
   try {
-    body = JSON.parse(await readBody(request));
+    body = JSON.parse(raw);
   } catch {
     sendJson(response, 400, { error: 'Тело запроса — не корректный JSON.' });
     return;
@@ -254,8 +345,10 @@ async function handleConfigWrite(request, response) {
     return;
   }
 
-  const storedText = readConfigText();
-  const draft = mergePreservingUnknown(structuredClone(body.config), JSON.parse(storedText));
+  const stored = readConfigOrExplain(response);
+  if (stored === null) return;
+  const storedText = stored.text;
+  const draft = dropNullValues(mergePreservingUnknown(structuredClone(body.config), stored.config));
 
   // Отказ второй: черновик не проходит проверки Ralph. Текст ошибки отдаётся
   // как есть — своя формулировка разошлась бы с тем, что скажет сам прогон.
@@ -279,7 +372,12 @@ async function handleConfigWrite(request, response) {
     return;
   }
 
-  if (existsSync(configPath)) copyFileSync(configPath, `${configPath}.bak`);
+  // Копия прошлого конфига — тоже в `.git/ralph-loop`: рядом с конфигом она
+  // осталась бы в рабочем дереве и заблокировала бы следующий прогон.
+  if (existsSync(configPath)) {
+    mkdirSync(runtimeDirectory, { recursive: true });
+    copyFileSync(configPath, path.join(runtimeDirectory, 'ralph.config.json.bak'));
+  }
   writeConfigAtomic(draft);
 
   // Блокировка перечитывается после записи: прогон мог стартовать в те доли
