@@ -32,6 +32,10 @@
  *
  * Групп ровно пять, и каждая становится вкладкой формы; `id` группы — якорь
  * вкладки.
+ *
+ * Необязательное поле `section` собирает соседние поля в озаглавленный блок
+ * внутри вкладки. Порядок полей в массиве и есть порядок блоков: поля одного
+ * блока идут подряд.
  */
 
 import { agentClis, reasoningEffortsFor } from './ralph-agent-backends.mjs';
@@ -56,78 +60,87 @@ const claudeModels = [
 export const fieldGroups = [
   {
     id: 'run',
-    title: 'Прогон',
+    title: 'Основное',
     fields: [
       {
         path: 'active',
+        section: 'Запуск',
         label: 'Ralph включён',
         type: 'boolean',
-        hint: 'Выключенный Ralph не запускается даже командой --run.',
+        hint: 'Пока выключен, команда запуска ничего не сделает.',
         unit: null,
         default: null,
       },
       {
         path: 'agentCli',
-        label: 'CLI агента',
+        section: 'Запуск',
+        label: 'Агент',
         type: 'select',
         options: ['codex', 'claude'],
-        hint: 'Чем запускать сессии разработки и ревью; от этого зависит набор значений effort.',
+        hint: 'Кто пишет код и делает ревью: Claude Code или Codex. От выбора зависит, какие значения усилия доступны.',
         unit: null,
         default: 'codex',
       },
       {
-        path: 'baseBranch',
-        label: 'Базовая ветка',
-        type: 'text',
-        hint: 'От неё создаются ветки фаз и в неё нацелены PR, если фаза не задала свою базу.',
-        unit: null,
-        default: 'main',
-      },
-      {
-        path: 'draftPullRequest',
-        label: 'PR черновиком',
-        type: 'boolean',
-        hint: 'Создавать pull request черновиком. Ralph сам его из черновика не выводит — это делает человек перед мержем.',
-        unit: null,
-        default: true,
-      },
-      {
         path: 'stopAfterFirstIssue',
-        label: 'Остановка после первой issue',
+        section: 'Запуск',
+        label: 'Остановиться после первой задачи',
         type: 'boolean',
-        hint: 'Прогон завершается после одной задачи: коммит и push ветки выполняются, PR и ревью вехи — нет. Режим для проверки настроек.',
+        hint: 'Ralph выполнит одну задачу и остановится. Коммит сделает, ветку отправит, pull request создавать не станет. Режим для проверки настроек.',
         unit: null,
         default: false,
       },
       {
+        path: 'baseBranch',
+        section: 'Ветки и pull request',
+        label: 'Базовая ветка',
+        type: 'text',
+        hint: 'От неё Ralph создаёт ветку каждой фазы и в неё же направляет pull request. Фаза может задать свою базу вместо этой.',
+        unit: null,
+        default: 'main',
+      },
+      {
         path: 'syncBaseBranch',
-        label: 'Вливать базу перед фазой',
+        section: 'Ветки и pull request',
+        label: 'Подтягивать базовую ветку',
         type: 'boolean',
-        hint: 'Перед началом фазы её база вливается в рабочую ветку, чтобы разработка шла на актуальном коде.',
+        hint: 'Перед началом фазы Ralph вливает базовую ветку в рабочую, чтобы код писался поверх свежего.',
+        unit: null,
+        default: true,
+      },
+      {
+        path: 'draftPullRequest',
+        section: 'Ветки и pull request',
+        label: 'Pull request черновиком',
+        type: 'boolean',
+        hint: 'Ralph открывает pull request черновиком и сам его оттуда не выводит. Снять черновик и слить — ваша работа.',
         unit: null,
         default: true,
       },
       {
         path: 'autoApproveConfiguredIssues',
-        label: 'Автоодобрение issues',
+        section: 'Откуда берутся задачи',
+        label: 'Одобрять задачи автоматически',
         type: 'boolean',
-        hint: 'До старта фиксируются точные title и body issues доверенных авторов; при false каждую issue вносят в файл snapshots вручную и обновляют контрольную сумму approvedIssueSnapshotsHash в scripts/ralph/ralph-config.mjs, иначе прогон не стартует.',
+        hint: 'Ralph запоминает текст задач доверенных авторов при старте. Правка задачи на GitHub после этого останавливает прогон. Выключите — и каждую задачу придётся вносить в файл вручную и править контрольную сумму в коде.',
         unit: null,
         default: true,
       },
       {
         path: 'trustedIssueAuthors',
-        label: 'Доверенные авторы issues',
+        section: 'Откуда берутся задачи',
+        label: 'Доверенные авторы задач',
         type: 'list',
-        hint: 'GitHub-логины, чьи issues одобряются автоматически; владелец репозитория доверен всегда.',
+        hint: 'Логины на GitHub, чьи задачи Ralph берёт без ручного одобрения. Владелец репозитория доверен всегда, вписывать его не нужно.',
         unit: null,
         default: [],
       },
       {
         path: 'approvedIssueSnapshotsFile',
-        label: 'Файл одобренных snapshots',
+        section: 'Откуда берутся задачи',
+        label: 'Файл одобренных задач',
         type: 'text',
-        hint: 'Путь внутри проекта, где хранятся зафиксированные title и body одобренных issues.',
+        hint: 'Здесь Ralph хранит запомненный текст задач. Путь считается от корня проекта.',
         unit: null,
         default: 'scripts/ralph/approved-issues.json',
       },

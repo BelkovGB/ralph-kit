@@ -376,6 +376,21 @@ tr:last-child td { border-bottom: 0; }
   .shell { padding: 0 16px 48px; }
 }
 
+/* Над заголовком блока воздуха больше, чем под ним: иначе заголовок читается
+   как подпись к полям сверху, а не как название того, что под ним. */
+.section-title {
+  margin: 32px 0 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.section-title:first-child { margin-top: 4px; }
+
 .field.is-wide { grid-column: 1 / -1; }
 
 .field-label {
@@ -408,6 +423,10 @@ textarea {
 }
 
 textarea { min-height: 92px; resize: vertical; }
+
+/* Список строк задаёт высоту атрибутом rows: поле под нуль-два логина иначе
+   занимало бы столько же места, сколько поле под десяток команд. */
+textarea.is-rows { min-height: 0; }
 
 input:focus-visible,
 select:focus-visible,
@@ -1198,6 +1217,7 @@ const script = `
     if (type === 'checkbox') type = 'boolean';
     return {
       path: path,
+      section: source.section || '',
       label: source.label || source.title || path,
       type: type,
       hint: source.hint || source.help || source.description || source.note || '',
@@ -1398,6 +1418,11 @@ const script = `
       var area = document.createElement('textarea');
       area.disabled = locked;
       area.value = Array.isArray(value) ? value.join('\\n') : value === undefined ? '' : String(value);
+      // Поле под нуль-два логина не должно занимать столько же, сколько поле
+      // под десяток команд: высота идёт от содержимого.
+      area.rows = Math.min(8, Math.max(2, area.value.split('\\n').length + 1));
+      area.className = 'is-rows';
+      area.placeholder = 'по одной строке';
       area.addEventListener('input', function () {
         var lines = area.value.split('\\n').map(function (line) { return line.trim(); });
         setPath(draft, field.path, lines.filter(function (line) { return line !== ''; }));
@@ -1681,11 +1706,19 @@ const script = `
       var box = el('div');
       box.setAttribute('role', 'tabpanel');
       box.setAttribute('aria-labelledby', 'subtab-' + active);
-      var grid = el('div', 'grid');
+      // Поля с одинаковым именем секции, стоящие подряд, образуют озаглавленный
+      // блок. Вкладка без секций рисуется одной сеткой, как раньше.
+      var grid = null;
+      var currentSection = null;
       groups[active].fields.forEach(function (field) {
+        if (!grid || field.section !== currentSection) {
+          currentSection = field.section;
+          if (currentSection) box.appendChild(el('h2', 'section-title', currentSection));
+          grid = el('div', 'grid');
+          box.appendChild(grid);
+        }
         grid.appendChild(renderField(field));
       });
-      box.appendChild(grid);
       frag.appendChild(box);
     }
 
