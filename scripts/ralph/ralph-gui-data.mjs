@@ -26,14 +26,18 @@ const configFilePath = path.join(projectRoot, '.agents', 'ralph.config.json');
 // экспортируется, а число нужно, чтобы честно сказать, что журнал обрезан.
 const maxStoredIssueRecords = 200;
 
-// В метриках нет роли `milestone-review`: ревью всей вехи идёт вне цикла issue
-// и в расход не попадает. Признак уходит на страницу, чтобы сумма не выдавала
-// себя за полную стоимость прогона.
-const missesMilestoneReview = true;
+// Ревью всей вехи цикл пишет записью без номера issue. Пока такой записи в
+// журнале нет, сумма не покрывает самую дорогую сессию прогона, и страница
+// обязана об этом сказать, чтобы итог не выдавал себя за полную стоимость.
+// Старые журналы состоят только из таких записей.
+const milestoneReviewKeyPrefix = 'milestone-review:';
 
 const outcomeDescriptions = {
   completed: 'задача закрыта',
   'review-failed': 'ревью не пропустило',
+  'review-parked': 'ревью отклоняло подряд до предела; задача отложена',
+  'iteration-limit': 'кончился бюджет итераций до начала задачи',
+  'milestone-review': 'ревью вехи отработало',
   'agent-failed': 'агент не справился',
   'validation-failed': 'валидация не прошла',
   RALPH_COMMAND_FAILED: 'упала команда прогона',
@@ -185,10 +189,11 @@ function emptySpend(metricsUnreadable = false) {
       costUsd: 0,
       tasks: 0,
       attempts: 0,
+      milestoneReviews: 0,
       wallMs: 0,
       tokens: 0,
       sessionsWithoutCost: 0,
-      missesMilestoneReview,
+      missesMilestoneReview: true,
       metricsUnreadable,
     },
     period: { fromIso: null, toIso: null, storedAttempts: 0, maxStored: maxStoredIssueRecords },
@@ -198,8 +203,12 @@ function emptySpend(metricsUnreadable = false) {
 
 /**
  * Одна запись метрик — одна попытка, а не задача, поэтому попытки группируются
- * по номеру issue. Заголовка задачи в метриках нет, и поле `title` здесь не
- * появляется: выдумывать его нельзя.
+ * по номеру issue. `title` берётся из первой записи, где он есть: у попыток,
+ * сделанных до появления поля, заголовка нет, и тогда он остаётся `null`.
+ *
+ * Запись без номера issue — это ревью вехи, а не задача. Такие записи стоят в
+ * списке отдельной строкой с `issue: null` и группируются по вехе: два ревью
+ * разных вех — разные строки и разная цена.
  *
  * @returns {{ totals: object, period: object, tasks: object[] }} задачи по
  * убыванию стоимости.
@@ -226,11 +235,13 @@ export function readTaskSpend(dependencies = {}) {
   const byIssue = new Map();
   for (const entry of entries) {
     const issue = entry.issue ?? null;
-    const key = String(issue);
+    const key =
+      issue === null ? `${milestoneReviewKeyPrefix}${entry.milestone ?? ''}` : String(issue);
     let task = byIssue.get(key);
     if (!task) {
       task = {
         issue,
+        title: null,
         milestone: entry.milestone ?? null,
         attempts: 0,
         lastOutcome: null,
@@ -243,6 +254,9 @@ export function readTaskSpend(dependencies = {}) {
         runs: [],
       };
       byIssue.set(key, task);
+    }
+    if (task.title === null && typeof entry.issueTitle === 'string' && entry.issueTitle !== '') {
+      task.title = entry.issueTitle;
     }
     const run = normalizeRun(entry);
     task.attempts += 1;
@@ -268,23 +282,34 @@ export function readTaskSpend(dependencies = {}) {
   });
   tasks.sort((a, b) => b.costUsd - a.costUsd);
 
+  // Ревью вехи считается отдельно от задач и попыток: это цена прогона, а не
+  // работы над issue. В деньги, время и токены оно входит — их прогон потратил.
   const totals = tasks.reduce(
     (sum, task) => ({
       costUsd: sum.costUsd + task.costUsd,
-      tasks: sum.tasks + 1,
-      attempts: sum.attempts + task.attempts,
+      tasks: sum.tasks + (task.issue === null ? 0 : 1),
+      attempts: sum.attempts + (task.issue === null ? 0 : task.attempts),
+      milestoneReviews: sum.milestoneReviews + (task.issue === null ? task.attempts : 0),
       wallMs: sum.wallMs + task.wallMs,
       tokens: sum.tokens + task.tokens,
       sessionsWithoutCost: sum.sessionsWithoutCost + task.sessionsWithoutCost,
     }),
-    { costUsd: 0, tasks: 0, attempts: 0, wallMs: 0, tokens: 0, sessionsWithoutCost: 0 },
+    {
+      costUsd: 0,
+      tasks: 0,
+      attempts: 0,
+      milestoneReviews: 0,
+      wallMs: 0,
+      tokens: 0,
+      sessionsWithoutCost: 0,
+    },
   );
 
   return {
     totals: {
       ...totals,
       costUsd: roundMoney(totals.costUsd),
-      missesMilestoneReview,
+      missesMilestoneReview: totals.milestoneReviews === 0,
       metricsUnreadable,
     },
     period: {

@@ -252,6 +252,22 @@ tr:last-child td { border-bottom: 0; }
 
 .task-id { font-weight: 500; }
 
+/* Заголовок задачи длиннее номера и не должен растягивать таблицу. Обрезает
+   inline-block: на ячейке таблицы max-width авто-раскладка вправе не соблюдать. */
+.task-title {
+  display: inline-block;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+  margin-left: 6px;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+/* Строка ревью вехи: это цена прогона, а не задача, и номера у неё нет. */
+.task-kind { font-weight: 500; color: var(--muted); }
+
 .marker {
   display: inline-block;
   width: 12px;
@@ -260,6 +276,11 @@ tr:last-child td { border-bottom: 0; }
 
 .bad { color: var(--bad); }
 .ok { color: var(--ok); }
+/* Отложенная задача и упёршийся в лимит прогон — не провал и не успех: работа
+   цела и ждёт человека. Тот же янтарный, что у брошенного лока и у полей,
+   требующих внимания. */
+.warn { color: var(--warn); }
+.muted { color: var(--muted); }
 
 .detail-cell { background: var(--subtle); padding: 4px 12px 14px; }
 
@@ -613,6 +634,9 @@ const script = `
   var outcomeWords = {
     completed: 'успех',
     'review-failed': 'ревью не пропустило',
+    'review-parked': 'отложена после серии отказов',
+    'iteration-limit': 'кончился бюджет итераций',
+    'milestone-review': 'ревью вехи',
     'validation-failed': 'проверки не прошли',
     'agent-failed': 'агент не справился',
     RALPH_COMMAND_FAILED: 'упала команда',
@@ -634,6 +658,10 @@ const script = `
 
   var successOutcomes = { success: 1, ok: 1, done: 1, completed: 1, passed: 1 };
 
+  /* Ни успех, ни провал: задача цела, но ждёт решения человека. Красный тут
+     соврал бы — работа не потеряна и не сломана. */
+  var pendingOutcomes = { 'review-parked': 1, 'iteration-limit': 1 };
+
   function outcomeWord(value) {
     if (!value) return '—';
     return outcomeWords[String(value)] || String(value);
@@ -641,6 +669,15 @@ const script = `
 
   function isSuccess(value) {
     return !!successOutcomes[String(value)];
+  }
+
+  /* Класс ячейки исхода: зелёный по умолчанию не ставится, красный — только на
+     то, что действительно провалилось. */
+  function outcomeClass(value) {
+    if (isSuccess(value)) return '';
+    if (pendingOutcomes[String(value)]) return 'warn';
+    if (String(value) === 'milestone-review') return 'muted';
+    return 'bad';
   }
 
   var phaseWords = {
@@ -655,17 +692,30 @@ const script = `
     return phaseWords[String(value)] || String(value);
   }
 
+  /* Метрики пишут три роли: development, review и milestone-review. Остальные
+     оставлены на случай чужого журнала. */
   var roleWords = {
+    development: 'реализация',
     implementation: 'реализация',
     validation: 'проверка',
     review: 'ревью',
-    milestoneReview: 'ревью вехи',
+    'milestone-review': 'ревью вехи',
     summary: 'итог'
   };
 
   function roleWord(value) {
     if (!value) return 'агент';
     return roleWords[String(value)] || String(value);
+  }
+
+  /* Запись без номера issue — ревью вехи: цикл пишет его отдельной строкой,
+     потому что оно оплачено прогоном, а не какой-то одной задачей. */
+  function isReviewRow(task) {
+    return task.issue === null || task.issue === undefined;
+  }
+
+  function cut(text, limit) {
+    return text.length > limit ? text.slice(0, limit - 1) + '…' : text;
   }
 
   /* --- DOM --- */
@@ -811,9 +861,7 @@ const script = `
     if (run.wallMs) when.push(duration(run.wallMs));
     if (run.agentCli) when.push(run.agentCli);
     if (when.length) head.appendChild(el('span', 'run-meta', when.join(' · ')));
-    head.appendChild(
-      el('span', isSuccess(run.outcome) ? '' : 'bad', outcomeWord(run.outcome))
-    );
+    head.appendChild(el('span', outcomeClass(run.outcome), outcomeWord(run.outcome)));
     box.appendChild(head);
 
     if (run.reason) box.appendChild(el('div', 'run-meta', run.reason));
@@ -877,11 +925,15 @@ const script = `
     var summary = el('div', 'summary');
     var line = el('div', 'summary-line');
     line.appendChild(el('span', 'summary-total', money(totals.costUsd)));
+    var reviews = Number(totals.milestoneReviews) || 0;
     var counts = [
       num(totals.tasks) + ' ' + plural(totals.tasks, 'задача', 'задачи', 'задач'),
-      num(totals.attempts) + ' ' + plural(totals.attempts, 'попытка', 'попытки', 'попыток'),
-      hours(totals.wallMs)
+      num(totals.attempts) + ' ' + plural(totals.attempts, 'попытка', 'попытки', 'попыток')
     ];
+    /* Ревью вехи оплачено прогоном, а не задачей, поэтому оно стоит рядом с
+       попытками отдельным числом, а не приписано к последней задаче вехи. */
+    if (reviews) counts.push(num(reviews) + ' ревью вехи');
+    counts.push(hours(totals.wallMs));
     if (tokensOf(totals.tokens)) counts.push(tokens(totals.tokens) + ' токенов');
     line.appendChild(el('span', 'summary-counts', counts.join(' · ')));
     summary.appendChild(line);
@@ -891,18 +943,22 @@ const script = `
         el('div', 'note', 'Период: ' + (stamp(period.fromIso) || '—') + ' — ' + (stamp(period.toIso) || '—'))
       );
     }
-    var warn = 'Ревью вехи в расход не попадает.';
+    var warn = [];
+    /* Пока цикл не писал запись ревью вехи, сумма его не покрывает. Появилась
+       запись — предупреждение врало бы: ревью уже в итоге. */
+    if (totals.missesMilestoneReview) warn.push('Ревью вехи в расход не попадает.');
     if (period.maxStored) {
-      warn +=
-        ' Журнал хранит последние ' +
-        num(period.maxStored) +
-        ' ' +
-        plural(period.maxStored, 'попытку', 'попытки', 'попыток') +
-        ', сейчас записано ' +
-        num(period.storedAttempts || 0) +
-        '.';
+      warn.push(
+        'Журнал хранит последние ' +
+          num(period.maxStored) +
+          ' ' +
+          plural(period.maxStored, 'попытку', 'попытки', 'попыток') +
+          ', сейчас записано ' +
+          num(period.storedAttempts || 0) +
+          '.'
+      );
     }
-    summary.appendChild(el('div', 'note', warn));
+    if (warn.length) summary.appendChild(el('div', 'note', warn.join(' ')));
     /* Сессии без цены складываются в итог как ноль, поэтому итог занижен и об
        этом надо сказать: у Codex цену не присылает ни одна сессия. */
     var noCost = Number(totals.sessionsWithoutCost) || 0;
@@ -945,8 +1001,15 @@ const script = `
     table.appendChild(thead);
 
     var tbody = el('tbody');
-    tasks.forEach(function (task) {
-      var key = String(task.issue);
+    /* Ревью вехи стоит выше задач: это цена всего прогона, и в сортировке по
+       стоимости оно иначе встаёт первой строкой, читаясь как самая дорогая
+       задача. Порядок задач между собой сервер уже задал. */
+    var ordered = tasks.filter(isReviewRow).concat(tasks.filter(function (task) {
+      return !isReviewRow(task);
+    }));
+    ordered.forEach(function (task) {
+      var review = isReviewRow(task);
+      var key = review ? 'milestone-review:' + (task.milestone || '') : String(task.issue);
       var open = !!expanded[key];
       var row = el('tr', 'task-row');
       row.tabIndex = 0;
@@ -954,12 +1017,27 @@ const script = `
 
       var first = el('td', 'task-id');
       first.appendChild(el('span', 'marker', open ? '−' : '+'));
-      first.appendChild(document.createTextNode('#' + (task.issue !== undefined ? task.issue : '—')));
+      if (review) {
+        first.appendChild(el('span', 'task-kind', 'Ревью вехи'));
+      } else {
+        first.appendChild(document.createTextNode('#' + task.issue));
+        /* Заголовка нет у попыток, записанных до появления поля. Прочерк на его
+           месте занял бы колонку молчанием: номер уже сказал, о чём строка. */
+        if (task.title) {
+          var titleSpan = el('span', 'task-title', task.title);
+          titleSpan.title = String(task.title);
+          first.appendChild(titleSpan);
+        }
+      }
       row.appendChild(first);
       row.appendChild(el('td', '', task.milestone || '—'));
-      row.appendChild(el('td', 'num', num(task.attempts)));
+      row.appendChild(el('td', 'num', review ? '—' : num(task.attempts)));
 
-      var outcomeCell = el('td', isSuccess(task.lastOutcome) ? '' : 'bad', outcomeWord(task.lastOutcome));
+      /* У ревью вехи исход всегда один, а знать надо вердикт: он в reason. */
+      var outcomeText = review && task.lastReason
+        ? cut(String(task.lastReason), 40)
+        : outcomeWord(task.lastOutcome);
+      var outcomeCell = el('td', outcomeClass(task.lastOutcome), outcomeText);
       if (task.lastReason) outcomeCell.title = String(task.lastReason);
       row.appendChild(outcomeCell);
 

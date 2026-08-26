@@ -66,6 +66,9 @@ export function beginIssueMetrics(context, dependencies = {}) {
   const startedMs = now();
   activeIssueMetrics = {
     issue: context.issue,
+    // Заголовок нужен строке расхода: «#84» не говорит, о чём была задача.
+    // Приходит от цикла — тот уже получил его для prompt.
+    issueTitle: context.issueTitle ?? null,
     milestone: context.milestone ?? null,
     branch: context.branch ?? null,
     iteration: context.iteration ?? null,
@@ -166,6 +169,7 @@ export function summarizeIssueMetrics(metrics, outcome) {
   return {
     version: metricsVersion,
     issue: metrics.issue,
+    issueTitle: metrics.issueTitle ?? null,
     milestone: metrics.milestone,
     branch: metrics.branch,
     iteration: metrics.iteration,
@@ -300,6 +304,19 @@ function formatTokenVolume(record) {
   );
 }
 
+/**
+ * Чью стоимость называет строка. Заголовка может не быть — записи прежних
+ * прогонов его не несут, — а номера issue нет у ревью всей вехи: оно оплачено
+ * прогоном, а не задачей.
+ */
+function metricsSubject(record) {
+  if (record.issue == null) {
+    return `ревью вехи${record.milestone ? ` «${record.milestone}»` : ''}`;
+  }
+
+  return `issue #${record.issue}${record.issueTitle ? ` «${record.issueTitle}»` : ''}`;
+}
+
 export function formatIssueMetrics(record) {
   const stages = Object.entries(record.stages)
     .map(([name, stage]) => {
@@ -315,7 +332,7 @@ export function formatIssueMetrics(record) {
     `${typeof toolResults === 'number' ? `, вызовов инструментов ${toolResults}` : ''}`;
 
   return [
-    `Стоимость issue #${record.issue}: ${formatDuration(record.wallMs)} — ${stages || 'без стадий'}`,
+    `Стоимость ${metricsSubject(record)}: ${formatDuration(record.wallMs)} — ${stages || 'без стадий'}`,
     work,
     formatTokenVolume(record),
     `итог: ${record.reason ?? record.outcome}`,

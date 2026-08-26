@@ -149,6 +149,11 @@ function assertValidationLeftTree(expected, message) {
 const incompleteIssueOutcomes = [
   ['agentFailed', 'agent-failed', 'сессия агента не завершилась'],
   ['validationFailed', 'validation-failed', 'валидация не прошла'],
+  // Отложенная issue стоит дороже рядового круга исправлений и заканчивается
+  // иначе — она уходит из очереди прогона. Пока обе писались как
+  // `review-failed`, журнал их не различал. Стоит выше `reviewFailed` не
+  // случайно: последняя строка служит значением по умолчанию.
+  ['parked', 'review-parked', 'ревью отклонило работу подряд до предела; issue отложена'],
   ['reviewFailed', 'review-failed', 'независимое ревью вернуло замечания'],
 ];
 
@@ -1131,6 +1136,20 @@ export function printCheck(
 // Главный цикл Ralph Loop: --check и --run
 // -----------------------------------------------------------------------------
 
+// Запись метрик открывается из трёх мест цикла — запуск задачи, остановка по
+// лимиту итераций, ревью вехи. Поля собраны здесь, чтобы они не разъехались:
+// запись без `iteration` или без `agentCli` выглядит как запись другого рода.
+function issueMetricsContext(config, issue, iteration) {
+  return {
+    issue: issue?.number ?? null,
+    issueTitle: issue?.title ?? null,
+    milestone: config.milestone,
+    branch: config.branch,
+    iteration,
+    agentCli: config.agentCli,
+  };
+}
+
 export async function runContinuousLoop(context, actions) {
   const { config, repository, milestone, rules } = context;
   const stateStore = context.stateStore ?? activeStateStore();
@@ -1214,7 +1233,26 @@ export async function runContinuousLoop(context, actions) {
         return { mode: 'run', completed: 0 };
       }
       const pullRequest = actions.createPullRequest(config, repository);
-      const review = await actions.runMilestoneReview(config, repository, milestone, pullRequest);
+      // Телеметрия роли `milestone-review` снимается только внутри активной
+      // записи, а между задачами её нет: самая дорогая сессия прогона не
+      // попадала в журнал вовсе. Запись отдельная, без номера issue —
+      // приписать её последней задаче вехи значило бы завысить именно ту
+      // задачу, которой не повезло закрыться последней.
+      actions.beginIssueMetrics?.(issueMetricsContext(config, null, iteration));
+      let review;
+      try {
+        review = await actions.runMilestoneReview(config, repository, milestone, pullRequest);
+      } catch (error) {
+        actions.reportIssueMetrics?.({
+          outcome: error.code ?? 'aborted',
+          reason: error.message?.slice(0, 200) ?? null,
+        });
+        throw error;
+      }
+      actions.reportIssueMetrics?.({
+        outcome: 'milestone-review',
+        reason: `вердикт ${review.verdict}, замечаний ${review.findings.length}`,
+      });
       if (review.verdict === 'pass' && review.findings.length === 0) {
         const appearedIssues = actions
           .openIssues(repository, milestone)
@@ -1307,8 +1345,18 @@ export async function runContinuousLoop(context, actions) {
       !committedRecoveryPhases.includes(storedPhase) && !linkedCommit;
 
     if (needsDevelopmentIteration && iteration >= config.maxIterations) {
+      // Запись до остановки: иначе прогон обрывается молча, и в журнале
+      // расхода нет строки о том, на какой задаче кончился бюджет.
+      actions.beginIssueMetrics?.(issueMetricsContext(config, currentIssue, iteration));
+      actions.reportIssueMetrics?.({
+        outcome: 'iteration-limit',
+        reason: `бюджет ${config.maxIterations} итераций исчерпан до начала задачи`,
+      });
       fail(
-        `Достигнут лимит ${config.maxIterations} итераций; осталось открытых issues: ${issues.length}. PR остаётся draft.`,
+        `Достигнут лимит ${config.maxIterations} итераций; ` +
+          `осталось открытых issues: ${issues.length}. PR цикл здесь не создаёт и не трогает: ` +
+          'он открывается только когда открытых issues не остаётся. Состояние сохранено — ' +
+          'увеличьте maxIterations, и следующий --run продолжит с него.',
       );
     }
 
@@ -1320,13 +1368,7 @@ export async function runContinuousLoop(context, actions) {
         `осталось issues: ${issues.length}.`,
     );
     let result;
-    actions.beginIssueMetrics?.({
-      issue: currentIssue.number,
-      milestone: config.milestone,
-      branch: config.branch,
-      iteration,
-      agentCli: config.agentCli,
-    });
+    actions.beginIssueMetrics?.(issueMetricsContext(config, currentIssue, iteration));
     try {
       result = await actions.runAgentOnIssue(config, repository, currentIssue, rules);
     } catch (error) {
