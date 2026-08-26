@@ -692,6 +692,14 @@ function resolveControlPlanePaths(config) {
   }
 }
 
+// Модули GUI ставятся не в каждую копию набора. Их отсутствие исключает файл из
+// доверенного набора, а не роняет загрузку конфигурации.
+const optionalTrustedControlFiles = new Set(
+  ['ralph-gui.mjs', 'ralph-gui-data.mjs', 'ralph-gui-fields.mjs', 'ralph-gui-page.mjs'].map((name) =>
+    path.join(scriptDirectory, name),
+  ),
+);
+
 function collectTrustedControlFileHashes(config) {
   const trustedControlFiles = [
     configPath,
@@ -710,6 +718,10 @@ function collectTrustedControlFileHashes(config) {
     path.join(scriptDirectory, 'ralph-failure-summary.mjs'),
     path.join(scriptDirectory, 'ralph-git.mjs'),
     path.join(scriptDirectory, 'ralph-github-client.mjs'),
+    path.join(scriptDirectory, 'ralph-gui.mjs'),
+    path.join(scriptDirectory, 'ralph-gui-data.mjs'),
+    path.join(scriptDirectory, 'ralph-gui-fields.mjs'),
+    path.join(scriptDirectory, 'ralph-gui-page.mjs'),
     path.join(scriptDirectory, 'ralph-issue-contract.mjs'),
     path.join(scriptDirectory, 'ralph-loop.mjs'),
     path.join(scriptDirectory, 'ralph-milestone-review.mjs'),
@@ -728,18 +740,31 @@ function collectTrustedControlFileHashes(config) {
   if (config.review.enabled) trustedControlFiles.push(config.review.schemaPath);
   if (config.milestoneReview.enabled) trustedControlFiles.push(config.milestoneReview.schemaPath);
   return new Map(
-    [...new Set(trustedControlFiles)].map((file) => {
+    [...new Set(trustedControlFiles)].flatMap((file) => {
       if (!existsSync(file)) {
+        // Необязательный модуль просто не входит в набор: GUI ставится не в
+        // каждую копию набора, и его отсутствие не должно ронять загрузку
+        // конфигурации. Для остальных файлов отсутствие остаётся ошибкой.
+        if (optionalTrustedControlFiles.has(file)) return [];
         fail(`Доверенный control-plane файл недоступен: ${file}`);
       }
-      return [file, trustedFileHash(file)];
+      return [[file, trustedFileHash(file)]];
     }),
   );
 }
 
-export function loadConfig() {
-  const config = parseJson(readFileSync(configPath, 'utf8'), configPath);
-
+/**
+ * Проверки и обогащение уже разобранного объекта настроек.
+ *
+ * Отделено от `loadConfig`, чтобы черновик из формы можно было проверить, не
+ * записывая его на диск. Ошибка сообщается вызовом `fail`, то есть исключением:
+ * вызывающий ловит его и показывает текст человеку.
+ *
+ * `applyRuntimeSettings` сюда не входит намеренно: она меняет глобальные
+ * таймауты процесса, и проверка черновика переписала бы таймауты идущего
+ * прогона.
+ */
+export function prepareConfig(config) {
   requirePromptTemplate(config);
   applyLoopDefaults(config);
   readApprovedIssueSnapshots(config);
@@ -752,6 +777,12 @@ export function loadConfig() {
   validateAgentRoles(config);
   resolveControlPlanePaths(config);
   Object.assign(config, controlPlaneSnapshot(config));
+
+  return config;
+}
+
+export function loadConfig() {
+  const config = prepareConfig(parseJson(readFileSync(configPath, 'utf8'), configPath));
 
   applyRuntimeSettings(config.runtime);
   return config;
