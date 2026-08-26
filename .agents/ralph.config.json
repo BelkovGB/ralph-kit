@@ -1,0 +1,71 @@
+{
+  "active": true,
+  "agentCli": "claude",
+  "baseBranch": "master",
+  "draftPullRequest": true,
+  "stopAfterFirstIssue": false,
+  "phases": [
+    {
+      "milestone": "Phase 5: User Identity in Shared Activity API",
+      "branch": "features/profile-phase-5",
+      "baseBranch": "master"
+    },
+    {
+      "milestone": "Phase 6: User Identity in Shared Activity UI",
+      "branch": "features/profile-phase-6",
+      "baseBranch": "features/profile-phase-5"
+    }
+  ],
+  "maxIterations": 36,
+  "maxTurns": 100,
+  "maxTestFixAttempts": 5,
+  "runtime": {
+    "commandTimeoutMs": 300000,
+    "validationTimeoutMs": 1800000,
+    "validationRunTimeoutMs": 3600000,
+    "agentTimeoutMs": 5400000,
+    "networkRetryAttempts": 30,
+    "networkRetryBaseDelayMs": 2000,
+    "maxPages": 20,
+    "reviewRetryAttempts": 3
+  },
+  "developmentModel": "claude-opus-5",
+  "developmentEffort": "medium",
+  "reviewSeverityFloor": "P1",
+  "commentOnlyValidation": true,
+  "autoApproveConfiguredIssues": true,
+  "trustedIssueAuthors": [
+    "codex-ai-Goo",
+    "cloude-ai-Goo"
+  ],
+  "rulesFile": ".agents/ralph-rules.md",
+  "prompt": "Возьми issue #{issue_number} «{issue_title}» из milestone «{milestone}» и реализуй её. Твой полный контракт — правила Ralph Loop, переданные ниже в этом же prompt, и AGENTS.md. Не читай .agents/RALPH.md: это операторская документация, она не нужна для реализации.",
+  "preflightScripts": [
+    "db:ready",
+    "db:migrate"
+  ],
+  "validationScripts": [
+    "format:check",
+    "lint",
+    "build",
+    "test:ralph",
+    "test:e2e:api"
+  ],
+  "review": {
+    "enabled": true,
+    "model": "claude-opus-5",
+    "effort": "high",
+    "schemaFile": ".agents/review.schema.json",
+    "outputFile": ".agents/last-review.json"
+  },
+  "milestoneReview": {
+    "enabled": true,
+    "model": "claude-opus-5",
+    "effort": "max",
+    "maxTurns": 75,
+    "maxFindings": 10,
+    "incremental": true,
+    "schemaFile": ".agents/review.schema.json",
+    "outputFile": ".agents/last-milestone-review.json"
+  }
+}
