@@ -26,37 +26,51 @@ const configFilePath = path.join(projectRoot, '.agents', 'ralph.config.json');
 // экспортируется, а число нужно, чтобы честно сказать, что журнал обрезан.
 const maxStoredIssueRecords = 200;
 
-// Ревью всей вехи цикл пишет записью без номера issue. Пока такой записи в
+// Ревью всего milestone цикл пишет записью без номера issue. Пока такой записи в
 // журнале нет, сумма не покрывает самую дорогую сессию прогона, и страница
 // обязана об этом сказать, чтобы итог не выдавал себя за полную стоимость.
 // Старые журналы состоят только из таких записей.
 const milestoneReviewKeyPrefix = 'milestone-review:';
 
+// Итоги попытки: слева — что цикл пишет в журнал, справа — что это значит.
+// Значения сверены с `ralph-loop.mjs`: первые семь пишет сам цикл, остальные
+// приходят кодом упавшего исключения.
+//
+// Тот же список слово в слово повторён в `outcomeWords` на странице:
+// страница подписывает ячейку, сервер — подсказку к ней, и расхождение читалось
+// бы как два разных события. Меняете здесь — правьте и там.
 const outcomeDescriptions = {
-  completed: 'задача закрыта',
-  'review-failed': 'ревью не пропустило',
-  'review-parked': 'ревью отклоняло подряд до предела; задача отложена',
-  'iteration-limit': 'кончился бюджет итераций до начала задачи',
-  'milestone-review': 'ревью вехи отработало',
-  'agent-failed': 'агент не справился',
-  'validation-failed': 'валидация не прошла',
-  RALPH_COMMAND_FAILED: 'упала команда прогона',
-  RALPH_AGENT_AUTH: 'агент не авторизован',
-  aborted: 'прогон прерван',
+  completed: 'Ralph закрыл issue',
+  'review-failed': 'ревью вернуло замечания',
+  'review-parked': 'Ralph отложил issue после отказов ревью',
+  'iteration-limit': 'итерации кончились до начала issue',
+  'milestone-review': 'Ralph отревьюил milestone',
+  'validation-failed': 'проверки не прошли',
+  'agent-failed': 'сессия агента оборвалась, наработки сохранены',
+  RALPH_VALIDATION_FAILED: 'проверки не прошли, попытки кончились',
+  RALPH_MAX_TURNS: 'сессия упёрлась в лимит шагов',
+  RALPH_AGENT_TIMEOUT: 'сессия не уложилась в срок',
+  RALPH_AGENT_AUTH: 'CLI агента не авторизован',
+  RALPH_AGENT_REJECTED: 'CLI отклонил запрос',
+  RALPH_AGENT_WRITE_ACCESS: 'агент не смог писать файлы',
+  RALPH_UNTRUSTED_ISSUE: 'автор issue не доверенный',
+  RALPH_COMMAND_FAILED: 'команда прогона вернула ошибку',
+  RALPH_COMMAND_NOT_FOUND: 'Ralph не нашёл команду прогона',
+  RALPH_COMMAND_TIMEOUT: 'команда прогона не уложилась в срок',
+  RALPH_COMMAND_TERMINATED: 'команду прогона прервали снаружи',
+  aborted: 'прогон прервали',
 };
 
 const stageNames = ['implementation', 'validation', 'review'];
 
-// Поле входа переименовалось: старые записи хранят `inputTokens`, новые —
-// `uncachedInputTokens`. В одной записи оба не встречаются, поэтому читаются
-// оба имени.
-const tokenFields = [
-  'inputTokens',
-  'uncachedInputTokens',
-  'outputTokens',
-  'cacheReadTokens',
-  'cacheCreationTokens',
-];
+/**
+ * Виды токенов. Пять слагаемых не пересекаются и в сумме дают весь объём
+ * сессии, поэтому страница вправе показывать и части, и итог.
+ *
+ * `reasoning` и `answer` — две половины `outputTokens`: CLI кладёт рассуждения
+ * внутрь выхода, а сокращаются они разными средствами, поэтому считаются врозь.
+ */
+const tokenKinds = ['uncachedInput', 'cacheCreation', 'cacheRead', 'reasoning', 'answer'];
 
 function resolveRuntimeDirectory(dependencies) {
   return dependencies.runtimeDir ?? runtimeDirectory;
@@ -132,18 +146,98 @@ export function readRunState(dependencies = {}) {
 // Расход по задачам
 // -----------------------------------------------------------------------------
 
-function agentTokens(agent) {
-  return tokenFields.reduce((total, field) => total + numberOrZero(agent[field]), 0);
+function emptyTokens() {
+  return Object.fromEntries(tokenKinds.map((kind) => [kind, 0]));
 }
 
-function normalizeAgent(agent) {
+function addTokens(target, source) {
+  for (const kind of tokenKinds) target[kind] += source[kind];
+
+  return target;
+}
+
+export function totalTokens(tokens) {
+  return tokenKinds.reduce((total, kind) => total + numberOrZero(tokens?.[kind]), 0);
+}
+
+const tokenCounterFields = [
+  'uncachedInputTokens',
+  'inputTokens',
+  'outputTokens',
+  'cacheReadTokens',
+  'cacheCreationTokens',
+];
+
+function hasTokenCounters(agent) {
+  return tokenCounterFields.some((field) => typeof agent[field] === 'number');
+}
+
+function agentTokens(agent) {
+  const output = numberOrZero(agent.outputTokens);
+  // Рассуждения не могут превышать выход: иначе `answer` уйдёт в минус и сумма
+  // частей разойдётся с итогом.
+  const reasoning = Math.min(numberOrZero(agent.thinkingTokens), output);
+
   return {
-    role: agent.role ?? null,
-    costUsd: typeof agent.costUsd === 'number' ? roundMoney(agent.costUsd) : null,
-    turns: typeof agent.turns === 'number' ? agent.turns : null,
-    models: Array.isArray(agent.models) ? agent.models : [],
-    tokens: agentTokens(agent),
+    // Поле входа переименовалось: старые записи хранят `inputTokens`, новые —
+    // `uncachedInputTokens`. Смысл один — вход мимо кэша, — и в одной записи
+    // оба имени не встречаются, поэтому читаются оба.
+    uncachedInput: numberOrZero(agent.uncachedInputTokens) + numberOrZero(agent.inputTokens),
+    cacheCreation: numberOrZero(agent.cacheCreationTokens),
+    cacheRead: numberOrZero(agent.cacheReadTokens),
+    reasoning,
+    answer: output - reasoning,
   };
+}
+
+/**
+ * Роль — это операция прогона: реализация, ревью задачи, ревью вехи. Сессии
+ * одной роли складываются: попытка вправе запустить их несколько, и человеку
+ * нужна цена операции, а не порядковый номер сессии.
+ *
+ * `costUsd` складывается только по сессиям, которые его прислали, а их число
+ * едет рядом: у Codex цену не присылает ни одна сессия, и ноль читался бы как
+ * «бесплатно».
+ */
+function groupAgentsByRole(agents) {
+  const byRole = new Map();
+  for (const agent of agents) {
+    const role = agent.role ?? null;
+    const key = String(role);
+    let group = byRole.get(key);
+    if (!group) {
+      group = {
+        role,
+        sessions: 0,
+        turns: 0,
+        models: [],
+        tokens: emptyTokens(),
+        sessionsWithoutTokens: 0,
+        costUsd: null,
+        costReportedBy: 0,
+      };
+      byRole.set(key, group);
+    }
+    group.sessions += 1;
+    group.turns += numberOrZero(agent.turns);
+    // Считается отсутствие счётчиков, а не нулевой объём: сессия, оборвавшаяся
+    // до первого запроса, честно присылает нули, а убитая лимитом шагов не
+    // присылает ничего — и её объём в итог не попадает вовсе.
+    if (!hasTokenCounters(agent)) group.sessionsWithoutTokens += 1;
+    for (const model of Array.isArray(agent.models) ? agent.models : []) {
+      if (!group.models.includes(model)) group.models.push(model);
+    }
+    addTokens(group.tokens, agentTokens(agent));
+    if (typeof agent.costUsd === 'number') {
+      group.costUsd = roundMoney(numberOrZero(group.costUsd) + agent.costUsd);
+      group.costReportedBy += 1;
+    }
+  }
+
+  return [...byRole.values()].map((group) => ({
+    ...group,
+    tokensTotal: totalTokens(group.tokens),
+  }));
 }
 
 /** Стадии выравниваются до трёх известных: страница показывает пропуск, а не дыру. */
@@ -168,7 +262,9 @@ function normalizeStages(stages) {
 }
 
 function normalizeRun(entry) {
-  const agents = (Array.isArray(entry.agents) ? entry.agents : []).map(normalizeAgent);
+  const roles = groupAgentsByRole(Array.isArray(entry.agents) ? entry.agents : []);
+  const tokens = roles.reduce((sum, role) => addTokens(sum, role.tokens), emptyTokens());
+  const silentSessions = roles.reduce((count, role) => count + role.sessionsWithoutTokens, 0);
 
   return {
     iteration: entry.iteration ?? null,
@@ -179,20 +275,24 @@ function normalizeRun(entry) {
     wallMs: numberOrZero(entry.wallMs),
     agentCli: entry.agentCli ?? null,
     stages: normalizeStages(entry.stages),
-    agents,
+    roles,
+    tokens,
+    tokensTotal: totalTokens(tokens),
+    sessionsWithoutTokens: silentSessions,
   };
 }
 
 function emptySpend(metricsUnreadable = false) {
   return {
     totals: {
-      costUsd: 0,
       tasks: 0,
       attempts: 0,
       milestoneReviews: 0,
       wallMs: 0,
-      tokens: 0,
-      sessionsWithoutCost: 0,
+      sessions: 0,
+      sessionsWithoutTokens: 0,
+      tokens: emptyTokens(),
+      tokensTotal: 0,
       missesMilestoneReview: true,
       metricsUnreadable,
     },
@@ -211,7 +311,7 @@ function emptySpend(metricsUnreadable = false) {
  * разных вех — разные строки и разная цена.
  *
  * @returns {{ totals: object, period: object, tasks: object[] }} задачи по
- * убыванию стоимости.
+ * убыванию объёма токенов.
  */
 export function readTaskSpend(dependencies = {}) {
   const metricsPath =
@@ -246,10 +346,9 @@ export function readTaskSpend(dependencies = {}) {
         attempts: 0,
         lastOutcome: null,
         lastReason: null,
-        costUsd: 0,
-        // Сессии, у которых CLI не прислал цену: их ноль занижает и строку, и итог.
-        sessionsWithoutCost: 0,
-        tokens: 0,
+        sessions: 0,
+        sessionsWithoutTokens: 0,
+        tokens: emptyTokens(),
         wallMs: 0,
         runs: [],
       };
@@ -261,11 +360,9 @@ export function readTaskSpend(dependencies = {}) {
     const run = normalizeRun(entry);
     task.attempts += 1;
     task.wallMs += run.wallMs;
-    for (const agent of run.agents) {
-      if (agent.costUsd === null) task.sessionsWithoutCost += 1;
-      task.costUsd += numberOrZero(agent.costUsd);
-      task.tokens += agent.tokens;
-    }
+    task.sessions += run.roles.reduce((count, role) => count + role.sessions, 0);
+    task.sessionsWithoutTokens += run.sessionsWithoutTokens;
+    addTokens(task.tokens, run.tokens);
     task.runs.push(run);
   }
 
@@ -276,39 +373,39 @@ export function readTaskSpend(dependencies = {}) {
     const last = task.runs.at(-1);
     task.lastOutcome = last?.outcome ?? null;
     task.lastReason = last?.reason ?? null;
-    task.costUsd = roundMoney(task.costUsd);
+    task.tokensTotal = totalTokens(task.tokens);
 
     return task;
   });
-  tasks.sort((a, b) => b.costUsd - a.costUsd);
+  tasks.sort((a, b) => b.tokensTotal - a.tokensTotal);
 
-  // Ревью вехи считается отдельно от задач и попыток: это цена прогона, а не
-  // работы над issue. В деньги, время и токены оно входит — их прогон потратил.
+  // Ревью вехи считается отдельно от задач и попыток: это объём прогона, а не
+  // работы над issue. Во время и токены оно входит — их прогон потратил.
   const totals = tasks.reduce(
     (sum, task) => ({
-      costUsd: sum.costUsd + task.costUsd,
       tasks: sum.tasks + (task.issue === null ? 0 : 1),
       attempts: sum.attempts + (task.issue === null ? 0 : task.attempts),
       milestoneReviews: sum.milestoneReviews + (task.issue === null ? task.attempts : 0),
       wallMs: sum.wallMs + task.wallMs,
-      tokens: sum.tokens + task.tokens,
-      sessionsWithoutCost: sum.sessionsWithoutCost + task.sessionsWithoutCost,
+      sessions: sum.sessions + task.sessions,
+      sessionsWithoutTokens: sum.sessionsWithoutTokens + task.sessionsWithoutTokens,
+      tokens: addTokens(sum.tokens, task.tokens),
     }),
     {
-      costUsd: 0,
       tasks: 0,
       attempts: 0,
       milestoneReviews: 0,
       wallMs: 0,
-      tokens: 0,
-      sessionsWithoutCost: 0,
+      sessions: 0,
+      sessionsWithoutTokens: 0,
+      tokens: emptyTokens(),
     },
   );
 
   return {
     totals: {
       ...totals,
-      costUsd: roundMoney(totals.costUsd),
+      tokensTotal: totalTokens(totals.tokens),
       missesMilestoneReview: totals.milestoneReviews === 0,
       metricsUnreadable,
     },

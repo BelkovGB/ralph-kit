@@ -290,7 +290,7 @@ function handleTasks(response) {
         reason: run.reason ?? describeOutcome(run.outcome),
       })),
     }))
-    .sort((first, second) => (second.costUsd ?? 0) - (first.costUsd ?? 0));
+    .sort((first, second) => (second.tokensTotal ?? 0) - (first.tokensTotal ?? 0));
 
   sendJson(response, 200, { totals: spend.totals, period: spend.period, tasks });
 }

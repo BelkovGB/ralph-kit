@@ -212,7 +212,13 @@ a { color: var(--accent); }
   font-size: 12px;
 }
 
-/* Таблица задач */
+.kinds {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* Таблица issues */
 .table-wrap {
   margin-top: 16px;
   background: var(--surface);
@@ -223,7 +229,7 @@ a { color: var(--accent); }
 }
 
 table { width: 100%; border-collapse: collapse; }
-/* Колонки задач не переносятся, чтобы числа не расползались на две строки. */
+/* Колонки не переносятся, чтобы числа не расползались на две строки. */
 .tasks th, .tasks td { white-space: nowrap; }
 .tasks td:nth-child(2), .tasks td.detail-cell { white-space: normal; }
 
@@ -252,7 +258,7 @@ tr:last-child td { border-bottom: 0; }
 
 .task-id { font-weight: 500; }
 
-/* Заголовок задачи длиннее номера и не должен растягивать таблицу. Обрезает
+/* Заголовок issue длиннее номера и не должен растягивать таблицу. Обрезает
    inline-block: на ячейке таблицы max-width авто-раскладка вправе не соблюдать. */
 .task-title {
   display: inline-block;
@@ -265,7 +271,7 @@ tr:last-child td { border-bottom: 0; }
   color: var(--muted);
 }
 
-/* Строка ревью вехи: это цена прогона, а не задача, и номера у неё нет. */
+/* Строка ревью milestone: это цена прогона, а не issue, и номера у неё нет. */
 .task-kind { font-weight: 500; color: var(--muted); }
 
 .marker {
@@ -276,7 +282,7 @@ tr:last-child td { border-bottom: 0; }
 
 .bad { color: var(--bad); }
 .ok { color: var(--ok); }
-/* Отложенная задача и упёршийся в лимит прогон — не провал и не успех: работа
+/* Отложенная issue и упёршийся в лимит прогон — не провал и не успех: работа
    цела и ждёт человека. Тот же янтарный, что у брошенного лока и у полей,
    требующих внимания. */
 .warn { color: var(--warn); }
@@ -319,6 +325,9 @@ tr:last-child td { border-bottom: 0; }
 .legend { color: var(--muted); font-size: 12px; }
 
 .agents { margin-top: 8px; }
+
+/* Роль внутри попытки: строка-заголовок, под ней виды токенов и цена от CLI. */
+.role { padding: 4px 0 6px; }
 
 .agent {
   display: flex;
@@ -610,6 +619,52 @@ const script = `
     return num(n, 0);
   }
 
+  /* Доля, которая округлилась бы в ноль, пишется как «<1%»: ноль рядом с
+     непустым числом читается как «ничего», а «1%» завысил бы её в разы. */
+  function share(part, total) {
+    if (!total) return '';
+    var percent = ((Number(part) || 0) / total) * 100;
+    return percent > 0 && percent < 0.5 ? '<1%' : num(percent, 0) + '%';
+  }
+
+  /* Пять видов токенов не пересекаются и в сумме дают весь объём. Порядок —
+     путь текста через модель: сначала то, что агент загрузил, потом то, что
+     написал сам. */
+  var tokenKinds = [
+    ['cacheRead', 'чтение кэша'],
+    ['cacheCreation', 'запись в кэш'],
+    ['uncachedInput', 'новый текст'],
+    ['reasoning', 'рассуждения'],
+    ['answer', 'ответ']
+  ];
+
+  function kindSum(value, keys) {
+    var t = value || {};
+    return keys.reduce(function (sum, key) { return sum + (Number(t[key]) || 0); }, 0);
+  }
+
+  function loadedTokens(value) {
+    return kindSum(value, ['cacheRead', 'cacheCreation', 'uncachedInput']);
+  }
+
+  function writtenTokens(value) {
+    return kindSum(value, ['reasoning', 'answer']);
+  }
+
+  /* Вид с нулём пропускается: строка и так длинная, а ноль ничего не решает. */
+  function tokenKindList(value, withShare) {
+    var t = value || {};
+    var total = tokensOf(t);
+    var parts = tokenKinds
+      .map(function (kind) { return { label: kind[1], value: Number(t[kind[0]]) || 0 }; })
+      .filter(function (part) { return part.value > 0; });
+    if (withShare) parts.sort(function (a, b) { return b.value - a.value; });
+    return parts.map(function (part) {
+      var percent = withShare ? ' · ' + share(part.value, total) : '';
+      return part.label + ' ' + tokens(part.value) + percent;
+    });
+  }
+
   function duration(ms) {
     var total = Math.max(0, Math.round((Number(ms) || 0) / 1000));
     if (total < 60) return total + ' с';
@@ -647,37 +702,38 @@ const script = `
     });
   }
 
-  /* Семь верхних значений — те, что Ralph реально пишет в журнал попыток;
-     остальные оставлены на случай чужого журнала. Незнакомое значение
-     показывается как есть. */
+  /* Итог попытки в одну строку: колонка не переносится. Семь верхних значений
+     пишет сам цикл, остальные приходят кодом упавшего исключения. Незнакомое
+     значение показывается как есть — подмена скрыла бы новый код.
+
+     Список повторяет outcomeDescriptions из ralph-gui-data.mjs слово в слово:
+     сервер той же парой заполняет reason, и разные формулировки читались бы
+     как два разных события. Меняете здесь — правьте и там. */
   var outcomeWords = {
-    completed: 'успех',
-    'review-failed': 'ревью не пропустило',
-    'review-parked': 'отложена после серии отказов',
-    'iteration-limit': 'кончился бюджет итераций',
-    'milestone-review': 'ревью вехи',
+    completed: 'Ralph закрыл issue',
+    'review-failed': 'ревью вернуло замечания',
+    'review-parked': 'Ralph отложил issue после отказов ревью',
+    'iteration-limit': 'итерации кончились до начала issue',
+    'milestone-review': 'Ralph отревьюил milestone',
     'validation-failed': 'проверки не прошли',
-    'agent-failed': 'агент не справился',
-    RALPH_COMMAND_FAILED: 'упала команда',
-    RALPH_AGENT_AUTH: 'нет авторизации',
-    aborted: 'обрыв',
-    success: 'успех',
-    ok: 'успех',
-    done: 'успех',
-    passed: 'успех',
-    failure: 'провал',
-    failed: 'провал',
-    error: 'ошибка',
-    blocked: 'блок',
-    timeout: 'таймаут',
-    skipped: 'пропуск',
-    cancelled: 'отмена',
-    canceled: 'отмена'
+    'agent-failed': 'сессия агента оборвалась, наработки сохранены',
+    RALPH_VALIDATION_FAILED: 'проверки не прошли, попытки кончились',
+    RALPH_MAX_TURNS: 'сессия упёрлась в лимит шагов',
+    RALPH_AGENT_TIMEOUT: 'сессия не уложилась в срок',
+    RALPH_AGENT_AUTH: 'CLI агента не авторизован',
+    RALPH_AGENT_REJECTED: 'CLI отклонил запрос',
+    RALPH_AGENT_WRITE_ACCESS: 'агент не смог писать файлы',
+    RALPH_UNTRUSTED_ISSUE: 'автор issue не доверенный',
+    RALPH_COMMAND_FAILED: 'команда прогона вернула ошибку',
+    RALPH_COMMAND_NOT_FOUND: 'Ralph не нашёл команду прогона',
+    RALPH_COMMAND_TIMEOUT: 'команда прогона не уложилась в срок',
+    RALPH_COMMAND_TERMINATED: 'команду прогона прервали снаружи',
+    aborted: 'прогон прервали'
   };
 
-  var successOutcomes = { success: 1, ok: 1, done: 1, completed: 1, passed: 1 };
+  var successOutcomes = { completed: 1 };
 
-  /* Ни успех, ни провал: задача цела, но ждёт решения человека. Красный тут
+  /* Ни успех, ни провал: issue цела, но ждёт решения человека. Красный тут
      соврал бы — работа не потеряна и не сломана. */
   var pendingOutcomes = { 'review-parked': 1, 'iteration-limit': 1 };
 
@@ -699,11 +755,19 @@ const script = `
     return 'bad';
   }
 
+  /* Стадия текущей issue из state.json. Значения выписаны из
+     ralph-state-store.mjs: цикл пишет в phase только их, и старые ключи
+     implementation/validation/review сюда никогда не приходили — полоса
+     состояния показывала вместо слов сырое agent-running. */
   var phaseWords = {
-    implementation: 'реализация',
-    validation: 'проверка',
-    review: 'ревью',
-    code: 'реализация'
+    'agent-running': 'идёт разработка',
+    'working-tree': 'правки не закоммичены',
+    validating: 'идут проверки',
+    staging: 'Ralph готовит коммит',
+    committed: 'коммит сделан',
+    pushed: 'ветка отправлена',
+    reviewing: 'идёт ревью',
+    'review-failed': 'ревью вернуло замечания'
   };
 
   function phaseWord(value) {
@@ -714,11 +778,11 @@ const script = `
   /* Метрики пишут три роли: development, review и milestone-review. Остальные
      оставлены на случай чужого журнала. */
   var roleWords = {
-    development: 'реализация',
-    implementation: 'реализация',
+    development: 'разработка',
+    implementation: 'разработка',
     validation: 'проверка',
     review: 'ревью',
-    'milestone-review': 'ревью вехи',
+    'milestone-review': 'ревью milestone',
     summary: 'итог'
   };
 
@@ -727,8 +791,8 @@ const script = `
     return roleWords[String(value)] || String(value);
   }
 
-  /* Запись без номера issue — ревью вехи: цикл пишет его отдельной строкой,
-     потому что оно оплачено прогоном, а не какой-то одной задачей. */
+  /* Запись без номера issue — ревью milestone: цикл пишет его отдельной
+     строкой, потому что оно оплачено прогоном, а не какой-то одной issue. */
   function isReviewRow(task) {
     return task.issue === null || task.issue === undefined;
   }
@@ -753,12 +817,12 @@ const script = `
   /* --- полоса состояния --- */
 
   function statusLine(data) {
-    if (!data) return 'Состояние загружается';
-    if (data.staleLock && !data.running) return 'Остался лок от упавшего прогона';
+    if (!data) return 'Данные загружаются';
+    if (data.staleLock && !data.running) return 'Прошлый прогон упал, не закрывшись. Следующий запуск начнётся как обычно';
     var run = data.run;
     if (!data.running || !run) return 'Прогона нет';
     var parts = [];
-    if (run.issueNumber) parts.push('Задача #' + run.issueNumber);
+    if (run.issueNumber) parts.push('Issue #' + run.issueNumber);
     var phase = phaseWord(run.issuePhase);
     if (phase) parts.push(phase);
     if (run.branch) parts.push('ветка ' + run.branch);
@@ -766,7 +830,7 @@ const script = `
       parts.push('фаза ' + (run.phaseIndex + 1) + ' из ' + run.phaseCount);
     }
     if (run.maxIterations) {
-      parts.push('попытка ' + (run.iterationsUsed || 0) + ' из ' + run.maxIterations);
+      parts.push('итерация ' + (run.iterationsUsed || 0) + ' из ' + run.maxIterations);
     }
     var started = parseDate(run.startedAt);
     if (started) {
@@ -801,11 +865,15 @@ const script = `
   /* Опрос повторяет этот запрос, а renderPanel строит таблицу заново и теряет
      прокрутку и фокус. Поэтому ответ сравнивается с предыдущим и панель
      перерисовывается только когда журнал действительно дописали. */
+  /* Один текст на два места: он же служит признаком «ошибка та же самая», по
+     которому опрос решает не перерисовывать панель. */
+  var tasksUnreachable = 'Пульт не получил журнал расхода от сервера.';
+
   function loadTasks() {
     return api('/api/tasks').then(function (res) {
       var changed;
       if (!res.ok) {
-        var message = (res.body && res.body.error) || 'Не удалось прочитать журнал расхода';
+        var message = (res.body && res.body.error) || tasksUnreachable;
         changed = tasksError !== message || tasksData !== null;
         tasksError = message;
         tasksData = null;
@@ -819,8 +887,8 @@ const script = `
       }
       if (changed && tab === 'usage') renderPanel();
     }).catch(function () {
-      var failed = tasksError !== 'Не удалось прочитать журнал расхода' || tasksData !== null;
-      tasksError = 'Не удалось прочитать журнал расхода';
+      var failed = tasksError !== tasksUnreachable || tasksData !== null;
+      tasksError = tasksUnreachable;
       tasksData = null;
       tasksStamp = '';
       if (failed && tab === 'usage') renderPanel();
@@ -838,7 +906,7 @@ const script = `
   function renderBar(stages) {
     var s = stages || {};
     var parts = [
-      { cls: 's1', label: 'код', ms: stageMs(s.implementation) },
+      { cls: 's1', label: 'разработка', ms: stageMs(s.implementation) },
       { cls: 's2', label: 'проверки', ms: stageMs(s.validation) },
       { cls: 's3', label: 'ревью', ms: stageMs(s.review) }
     ];
@@ -860,7 +928,7 @@ const script = `
     return box;
   }
 
-  /* Номер строки — порядок попытки внутри задачи: он сходится с колонкой
+  /* Номер строки — порядок попытки внутри issue: он сходится с колонкой
      «Попытки». Номер итерации сквозной по всему прогону и идёт с пропусками,
      поэтому остаётся справочной пометкой. */
   function renderRun(run, index) {
@@ -880,34 +948,73 @@ const script = `
     if (run.wallMs) when.push(duration(run.wallMs));
     if (run.agentCli) when.push(run.agentCli);
     if (when.length) head.appendChild(el('span', 'run-meta', when.join(' · ')));
-    head.appendChild(el('span', outcomeClass(run.outcome), outcomeWord(run.outcome)));
+    var outcomeText = outcomeWord(run.outcome);
+    head.appendChild(el('span', outcomeClass(run.outcome), outcomeText));
     box.appendChild(head);
 
-    if (run.reason) box.appendChild(el('div', 'run-meta', run.reason));
+    /* Свой reason от цикла добавляет подробность, подставленный сервером —
+       повторяет подпись справа. Повтор читался бы как второе объяснение. */
+    var reasonText = run.reason ? String(run.reason) : '';
+    if (reasonText && reasonText !== outcomeText) {
+      box.appendChild(el('div', 'run-meta', reasonText));
+    }
 
     var bar = renderBar(run.stages);
     if (bar) box.appendChild(bar);
 
-    var agents = Array.isArray(run.agents) ? run.agents : [];
-    if (agents.length) {
+    var roles = Array.isArray(run.roles) ? run.roles : [];
+    if (roles.length) {
       var list = el('div', 'agents');
-      agents.forEach(function (agent) {
-        var row = el('div', 'agent');
-        var left = [roleWord(agent.role)];
-        var models = Array.isArray(agent.models) ? agent.models : agent.models ? [agent.models] : [];
-        if (models.length) left.push(models.join(', '));
-        if (agent.turns) left.push(agent.turns + ' ' + plural(agent.turns, 'ход', 'хода', 'ходов'));
-        row.appendChild(el('span', '', left.join(' · ')));
-        var right = [];
-        if (tokensOf(agent.tokens)) right.push(tokens(agent.tokens));
-        // Цену присылает не всякая сессия: убитая лимитом шагов и весь backend
-        // Codex её не отдают. Ноль вместо неё читался бы как «бесплатно».
-        right.push(typeof agent.costUsd === 'number' ? money(agent.costUsd) : 'цена не пришла');
-        row.appendChild(el('span', 'agent-right', right.join(' · ')));
-        list.appendChild(row);
-      });
+      roles.forEach(function (role) { list.appendChild(renderRole(role)); });
       box.appendChild(list);
     }
+    return box;
+  }
+
+  /* Цену присылает не всякая сессия: сессия, убитая лимитом шагов, и весь
+     backend Codex её не отдают. Поэтому подпись называет источник и говорит,
+     за сколько сессий число посчитано. */
+  function costLine(role) {
+    var sessions = Number(role.sessions) || 0;
+    var reported = Number(role.costReportedBy) || 0;
+    if (!reported) return 'CLI цену не прислал';
+    var text = 'CLI насчитал ' + money(role.costUsd);
+    if (reported < sessions) {
+      text += ' за ' + num(reported) + ' ' + plural(reported, 'сессию', 'сессии', 'сессий') +
+        ' из ' + num(sessions);
+    }
+    return text;
+  }
+
+  /* Роль — это операция попытки: разработка, ревью issue, ревью milestone. Внутри
+     роли объём разложен по видам токенов, стадии же показывает полоска
+     времени выше, и повторять их здесь незачем. */
+  function renderRole(role) {
+    var box = el('div', 'role');
+    var head = el('div', 'agent');
+    var left = [roleWord(role.role)];
+    var models = Array.isArray(role.models) ? role.models : role.models ? [role.models] : [];
+    if (role.sessions > 1) {
+      left.push(num(role.sessions) + ' ' + plural(role.sessions, 'сессия', 'сессии', 'сессий'));
+    }
+    if (role.turns) left.push(num(role.turns) + ' ' + plural(role.turns, 'ход', 'хода', 'ходов'));
+    if (models.length) left.push(models.join(', '));
+    head.appendChild(el('span', '', left.join(' · ')));
+    /* Ни одной сессии со счётчиками — объёма нет вовсе, и ноль соврал бы:
+       сессия, убитая лимитом шагов, отдаёт пустую телеметрию. */
+    var silent = role.sessionsWithoutTokens >= role.sessions;
+    head.appendChild(
+      el(
+        'span',
+        'agent-right',
+        silent ? 'CLI не прислал счётчики' : tokens(role.tokensTotal) + ' токенов'
+      )
+    );
+    box.appendChild(head);
+
+    var kinds = tokenKindList(role.tokens);
+    if (kinds.length) box.appendChild(el('div', 'legend', kinds.join(' · ')));
+    box.appendChild(el('div', 'legend', costLine(role)));
     return box;
   }
 
@@ -934,28 +1041,54 @@ const script = `
         el(
           'div',
           'empty',
-          'Журнал расхода .git/ralph-loop/issue-metrics.json есть, но не разбирается. ' +
-            'Расход показать не из чего, пока файл не починят или не удалят.'
+          'Журнал .git/ralph-loop/issue-metrics.json лежит на месте, но не разбирается. ' +
+            'Расход не показать, пока файл не почините или не удалите.'
         )
       );
       return frag;
     }
 
+    /* Пустой журнал проверяется до сводки: нули и примечания к ним человеку,
+       который ещё не запускал Ralph, сказать нечего. */
+    if (!tasks.length) {
+      frag.appendChild(el('div', 'empty', 'Ralph ещё не сделал ни одной попытки'));
+      return frag;
+    }
+
+    /* Ни одной сессии со счётчиками — объёма нет вовсе, и ноль соврал бы. Так
+       выглядит любой журнал прогона на Codex: этот CLI счётчики не присылает. */
+    var mute = Number(totals.sessionsWithoutTokens) || 0;
+    var silent = totals.sessions ? mute >= totals.sessions : false;
+
     var summary = el('div', 'summary');
     var line = el('div', 'summary-line');
-    line.appendChild(el('span', 'summary-total', money(totals.costUsd)));
+    line.appendChild(
+      el(
+        'span',
+        'summary-total',
+        silent ? 'CLI не прислал счётчики' : tokens(totals.tokensTotal) + ' токенов'
+      )
+    );
     var reviews = Number(totals.milestoneReviews) || 0;
     var counts = [
-      num(totals.tasks) + ' ' + plural(totals.tasks, 'задача', 'задачи', 'задач'),
+      num(totals.tasks) + ' ' + plural(totals.tasks, 'issue', 'issues', 'issues'),
       num(totals.attempts) + ' ' + plural(totals.attempts, 'попытка', 'попытки', 'попыток')
     ];
-    /* Ревью вехи оплачено прогоном, а не задачей, поэтому оно стоит рядом с
-       попытками отдельным числом, а не приписано к последней задаче вехи. */
-    if (reviews) counts.push(num(reviews) + ' ревью вехи');
+    /* Ревью milestone оплачено прогоном, а не одной issue, поэтому оно стоит
+       рядом с попытками отдельным числом. */
+    if (reviews) counts.push(num(reviews) + ' ревью milestone');
+    if (totals.sessions) {
+      var word = plural(totals.sessions, 'сессия', 'сессии', 'сессий');
+      counts.push(num(totals.sessions) + ' ' + word);
+    }
     counts.push(hours(totals.wallMs));
-    if (tokensOf(totals.tokens)) counts.push(tokens(totals.tokens) + ' токенов');
     line.appendChild(el('span', 'summary-counts', counts.join(' · ')));
     summary.appendChild(line);
+
+    /* Разбивка отвечает на вопрос, куда ушёл объём. Сумма пяти видов равна
+       числу слева: виды не пересекаются. */
+    var kinds = silent ? [] : tokenKindList(totals.tokens, true);
+    if (kinds.length) summary.appendChild(el('div', 'kinds', kinds.join(' · ')));
 
     if (period.fromIso || period.toIso) {
       summary.appendChild(
@@ -963,9 +1096,9 @@ const script = `
       );
     }
     var warn = [];
-    /* Пока цикл не писал запись ревью вехи, сумма его не покрывает. Появилась
-       запись — предупреждение врало бы: ревью уже в итоге. */
-    if (totals.missesMilestoneReview) warn.push('Ревью вехи в расход не попадает.');
+    /* Пока цикл не писал запись ревью milestone, итог его не покрывает. Появилась
+       запись — предупреждение врало бы: ревью уже в числах. */
+    if (totals.missesMilestoneReview) warn.push('Ревью milestone в эти числа не входит.');
     if (period.maxStored) {
       warn.push(
         'Журнал хранит последние ' +
@@ -978,51 +1111,69 @@ const script = `
       );
     }
     if (warn.length) summary.appendChild(el('div', 'note', warn.join(' ')));
-    /* Сессии без цены складываются в итог как ноль, поэтому итог занижен и об
-       этом надо сказать: у Codex цену не присылает ни одна сессия. */
-    var noCost = Number(totals.sessionsWithoutCost) || 0;
-    if (noCost) {
+    /* Сессия без счётчиков входит в итог нулём, поэтому итог занижен. Молчать
+       об этом нельзя: именно так выглядит сессия, сгоревшая на лимите шагов.
+       Когда счётчиков нет ни у одной сессии, число слева уже сказало об этом. */
+    if (mute && !silent) {
       summary.appendChild(
         el(
           'div',
           'note',
           'У ' +
-            num(noCost) +
+            num(mute) +
             ' ' +
-            plural(noCost, 'сессии', 'сессий', 'сессий') +
-            ' CLI не прислал цену — итог занижен.'
+            plural(mute, 'сессии', 'сессий', 'сессий') +
+            ' из ' +
+            num(totals.sessions) +
+            ' CLI не прислал счётчики токенов: этот объём в итог не попал.'
         )
       );
     }
+    summary.appendChild(
+      el(
+        'div',
+        'note',
+        silent
+          ? 'CLI не прислал ни одного счётчика токенов за ' +
+              num(totals.sessions) +
+              ' ' +
+              plural(totals.sessions, 'сессию', 'сессии', 'сессий') +
+              '. Так работает Codex: объём он не сообщает, и пульту его взять неоткуда. ' +
+              'Время и число попыток посчитаны по журналу и верны.'
+          : 'Чтение кэша — агент прогоняет через модель контекст, который она уже видела. ' +
+              'Запись в кэш — тот же контекст в первый раз. Новый текст пришёл мимо кэша. ' +
+              'Рассуждения и ответ агент написал сам. Числа приходят от CLI как есть.'
+      )
+    );
     frag.appendChild(summary);
-
-    if (!tasks.length) {
-      frag.appendChild(el('div', 'empty', 'Прогонов ещё не было'));
-      return frag;
-    }
 
     var wrap = el('div', 'table-wrap');
     var table = el('table', 'tasks');
     var thead = el('thead');
     var headRow = el('tr');
+    /* Строки уже отсортированы по объёму: сервер отдаёт их от большего к
+       меньшему. */
     [
-      ['Задача', ''],
-      ['Веха', ''],
-      ['Попытки', 'num'],
-      ['Исход', ''],
-      ['Время', 'num'],
-      ['Токены', 'num'],
-      ['Стоимость', 'num']
+      ['Issue', '', ''],
+      ['Milestone', '', ''],
+      ['Попытки', 'num', ''],
+      ['Исход', '', ''],
+      ['Время', 'num', ''],
+      ['Загружено', 'num', 'Чтение кэша, запись в кэш и новый текст запроса'],
+      ['Написано', 'num', 'Рассуждения и ответ агента'],
+      ['Всего', 'num', 'Сумма пяти видов токенов']
     ].forEach(function (column) {
-      headRow.appendChild(el('th', column[1], column[0]));
+      var cell = el('th', column[1], column[0]);
+      if (column[2]) cell.title = column[2];
+      headRow.appendChild(cell);
     });
     thead.appendChild(headRow);
     table.appendChild(thead);
 
     var tbody = el('tbody');
-    /* Ревью вехи стоит выше задач: это цена всего прогона, и в сортировке по
-       стоимости оно иначе встаёт первой строкой, читаясь как самая дорогая
-       задача. Порядок задач между собой сервер уже задал. */
+    /* Ревью milestone стоит выше issues: это объём всего прогона, и в сортировке
+       по объёму оно иначе встаёт первой строкой, читаясь как самая объёмная
+       issue. Порядок issues между собой сервер уже задал. */
     var ordered = tasks.filter(isReviewRow).concat(tasks.filter(function (task) {
       return !isReviewRow(task);
     }));
@@ -1037,7 +1188,7 @@ const script = `
       var first = el('td', 'task-id');
       first.appendChild(el('span', 'marker', open ? '−' : '+'));
       if (review) {
-        first.appendChild(el('span', 'task-kind', 'Ревью вехи'));
+        first.appendChild(el('span', 'task-kind', 'Ревью milestone'));
       } else {
         first.appendChild(document.createTextNode('#' + task.issue));
         /* Заголовка нет у попыток, записанных до появления поля. Прочерк на его
@@ -1052,17 +1203,25 @@ const script = `
       row.appendChild(el('td', '', task.milestone || '—'));
       row.appendChild(el('td', 'num', review ? '—' : num(task.attempts)));
 
-      /* У ревью вехи исход всегда один, а знать надо вердикт: он в reason. */
+      /* У ревью milestone исход всегда один, а знать надо вердикт: он в reason. */
       var outcomeText = review && task.lastReason
         ? cut(String(task.lastReason), 40)
         : outcomeWord(task.lastOutcome);
       var outcomeCell = el('td', outcomeClass(task.lastOutcome), outcomeText);
-      if (task.lastReason) outcomeCell.title = String(task.lastReason);
+      /* Подсказка нужна, только когда добавляет текст: у исхода без своего
+         reason сервер подставляет ту же подпись, и всплывающее повторение
+         читалось бы как второе, другое объяснение. */
+      var reasonText = task.lastReason ? String(task.lastReason) : '';
+      if (reasonText && reasonText !== outcomeText) outcomeCell.title = reasonText;
       row.appendChild(outcomeCell);
 
       row.appendChild(el('td', 'num', duration(task.wallMs)));
-      row.appendChild(el('td', 'num', tokens(task.tokens)));
-      row.appendChild(el('td', 'num', money(task.costUsd)));
+      /* Ни одной сессии со счётчиками — прочерк вместо нулей: ноль означал бы,
+         что объём измерен и равен нулю. */
+      var noTokens = task.sessions ? task.sessionsWithoutTokens >= task.sessions : true;
+      row.appendChild(el('td', 'num', noTokens ? '—' : tokens(loadedTokens(task.tokens))));
+      row.appendChild(el('td', 'num', noTokens ? '—' : tokens(writtenTokens(task.tokens))));
+      row.appendChild(el('td', 'num', noTokens ? '—' : tokens(task.tokensTotal)));
 
       function toggle() {
         if (expanded[key]) delete expanded[key];
@@ -1082,10 +1241,10 @@ const script = `
       if (open) {
         var detailRow = el('tr');
         var cell = el('td', 'detail-cell');
-        cell.colSpan = 7;
+        cell.colSpan = 8;
         var runs = Array.isArray(task.runs) ? task.runs : [];
         if (!runs.length) {
-          cell.appendChild(el('div', 'run-meta', 'Попыток не записано'));
+          cell.appendChild(el('div', 'run-meta', 'Журнал не сохранил ни одной попытки'));
         } else {
           runs.forEach(function (run, index) { cell.appendChild(renderRun(run, index)); });
         }
@@ -1463,7 +1622,7 @@ const script = `
     var wrap = document.createElement('div');
     var table = el('table', 'phases');
     var head = el('tr');
-    ['Веха', 'Ветка', 'База', ''].forEach(function (title) {
+    ['Milestone', 'Ветка', 'База', ''].forEach(function (title) {
       head.appendChild(el('th', '', title));
     });
     var thead = el('thead');
@@ -1474,7 +1633,7 @@ const script = `
     rows.forEach(function (row, index) {
       var tr = el('tr');
       [
-        ['milestone', 'Веха'],
+        ['milestone', 'Milestone'],
         ['branch', 'Ветка'],
         ['baseBranch', 'База']
       ].forEach(function (column) {
@@ -1541,7 +1700,7 @@ const script = `
     section.appendChild(el('h2', 'section-title', 'Не распознано'));
     section.appendChild(el('div', 'section-rule'));
     section.appendChild(
-      el('div', 'note', 'Эти ключи GUI не знает и не меняет. При сохранении они запишутся как есть.')
+      el('div', 'note', 'Эти ключи пульт не знает и не меняет. При сохранении он запишет их как есть.')
     );
     var box = el('div');
     box.style.marginTop = '8px';
@@ -1581,7 +1740,7 @@ const script = `
           baseline = JSON.stringify(draft);
           showMessage(
             res.body.warning ? 'bad' : 'ok',
-            res.body.warning || 'Сохранено, изменения вступят в силу со следующего прогона.'
+            res.body.warning || 'Сохранил. Ralph подхватит настройки на следующем прогоне.'
           );
           refreshHash();
           loadState();
@@ -1668,13 +1827,13 @@ const script = `
 
     if (isLocked()) {
       var banner = el('div', 'banner');
-      banner.appendChild(el('div', 'banner-title', 'Идёт прогон, настройки заблокированы'));
+      banner.appendChild(el('div', 'banner-title', 'Идёт прогон — пульт не даёт сохранять'));
       banner.appendChild(
         el(
           'div',
           'banner-text',
           configData.lockReason ||
-            'Правка файла во время прогона обрывает работу текущей задачи, поэтому сохранение доступно только между прогонами.'
+            'Правка файла настроек оборвала бы текущую issue. Сохраните после прогона.'
         )
       );
       frag.appendChild(banner);
