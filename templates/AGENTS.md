@@ -1,13 +1,10 @@
 # Project instructions
 
-- Monorepo: `apps/web` is Next.js and `apps/api` is NestJS. Run npm workspace
-  commands from the repository root.
-- The live contract for meeting-file storage is `docs/api.md`, sections
-  `## Meeting files` and `## Local upload configuration`. Read
-  `docs/research-meetings-upload.md` only when changing the storage architecture
-  itself: it records why the design was chosen, not what it does today.
-- Shared validation: `npm run format:check`, `npm run lint`, and `npm run build`.
-  Tests: `npm run test:e2e:api`, `npm run test:e2e:web`, and `npm run test:ralph`.
+Replace this first section with the project's own facts and delete the rest of
+this paragraph. Name the stack, where each part of the code lives, the exact
+commands that build, lint and test it, and the documents that hold the live
+contracts. Keep it short: an agent reads this file on every task.
+
 - Update relevant documentation when changing architecture or public contracts.
 - Ralph AFK sessions receive their full contract inside the prompt and must not
   read `.agents/RALPH.md`, which is operator documentation. The orchestrator owns
@@ -19,10 +16,9 @@
 - Use `git status --short`, `git diff --unified=0`, and `git log --oneline -10`.
 - Request only needed GitHub fields, for example
   `gh issue list --limit 100 --json number,title`.
-- Suppress npm wrapper noise with `npm run --silent <script>`.
-- For TypeScript diagnostics, use `npx tsc --noEmit --pretty false` and initially
-  show only the last five lines. Preserve the compiler exit code when piping;
-  use `Select-Object -Last 5` in PowerShell and `tail -5` with `pipefail` in POSIX.
+- Show the last few lines of a long build or test log first. Preserve the exit
+  code when piping; use `Select-Object -Last 5` in PowerShell and `tail -5` with
+  `pipefail` in POSIX.
 - Prefer targeted file ranges. Do not dump complete logs, generated files,
   lockfiles, or large JSON documents when a focused query is sufficient.
 - Search with the Grep tool rather than a shell `rg`: isolated sessions have no
@@ -32,8 +28,7 @@
 - A non-interactive `claude` run pays for every tool schema in its cached
   prefix. Deny the tools the task cannot use and pass
   `--exclude-dynamic-system-prompt-sections` so per-machine text stays out of
-  that prefix: measured here, 43 442 input tokens per session became 25 741, and
-  a repeat session reads the cache instead of rewriting it.
+  that prefix, and a repeat session reads the cache instead of rewriting it.
 
 ## Writing instructions and documentation
 

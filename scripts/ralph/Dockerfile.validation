@@ -1,51 +1,26 @@
-FROM node:24-bookworm-slim
+# Image for isolated validation runs. The kit installs nothing project specific.
+# Replace the base image with the one the project needs, for example:
+#   Node:   FROM node:24-bookworm-slim
+#   Python: FROM python:3.12-slim-bookworm
+FROM debian:bookworm-slim
 
+# The entrypoint commits a disposable snapshot, so git is required. Commands run
+# as an unprivileged user whose uid is fixed: the runner mounts /workspace with it.
 RUN apt-get update \
-  && apt-get install --yes --no-install-recommends git postgresql python3 make g++ \
+  && apt-get install --yes --no-install-recommends git ca-certificates \
   && useradd --system --uid 65532 --create-home ralph \
   && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /opt/ralph-dependencies
-COPY package.json package-lock.json ./
-COPY apps/api/package.json apps/api/package.json
-COPY apps/web/package.json apps/web/package.json
-COPY apps/api/prisma apps/api/prisma
-COPY .env.example .env.example
-RUN --mount=type=cache,target=/root/.npm,sharing=locked \
-  npm config set fetch-retries 5 \
-  && npm config set fetch-retry-factor 2 \
-  && npm config set fetch-retry-mintimeout 10000 \
-  && npm config set fetch-retry-maxtimeout 120000 \
-  && attempt=1 \
-  && until npm ci; do \
-    if [ "$attempt" -ge 3 ]; then exit 1; fi; \
-    echo "npm ci failed; retrying after a transient network error (attempt $attempt/3)." >&2; \
-    attempt=$((attempt + 1)); \
-    sleep $((attempt * 5)); \
-  done \
-  && cp .env.example .env \
-  && npm run prisma:generate --workspace @video-meetings/api \
-  && rm .env \
-  && PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright npx --no-install playwright install --with-deps chromium \
-  && chown -R 65532:65532 /opt/ralph-dependencies /opt/ms-playwright
+# Project slot: copy the manifest and install dependencies here — also a database
+# or a browser, if a command needs one, because the run itself has no network:
+#   Node:   COPY package.json package-lock.json ./ then RUN npm ci
+#   Python: COPY requirements.txt ./ then RUN pip install -r requirements.txt
 
-ENV PATH="/usr/lib/postgresql/15/bin:${PATH}"
-ENV PLAYWRIGHT_BROWSERS_PATH="/opt/ms-playwright"
 COPY scripts/ralph/ralph-validation-entrypoint.sh /usr/local/bin/ralph-validation
 COPY scripts/ralph/ralph-validation-docker-shim.sh /usr/local/bin/docker
 RUN chmod 0555 /usr/local/bin/ralph-validation /usr/local/bin/docker \
   && mkdir -p /source /workspace \
-  && cp -R /opt/ralph-dependencies/. /source/ \
-  && chown -R 65532:65532 /source /workspace
+  && chown 65532:65532 /source /workspace
 
 USER 65532:65532
-
-# This proves the image can regenerate Prisma Client with its Linux engine and
-# provision the database without network access. Runtime validation mounts the
-# reviewed source snapshot before it builds both workspaces.
-RUN --network=none cp .env.example .env \
-  && npm run prisma:generate --workspace @video-meetings/api \
-  && rm .env \
-  && /usr/local/bin/ralph-validation db:migrate
-
 ENTRYPOINT ["/usr/local/bin/ralph-validation"]

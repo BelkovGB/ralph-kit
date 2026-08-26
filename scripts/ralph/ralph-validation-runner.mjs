@@ -10,23 +10,18 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { readJsonFile, writeJsonAtomic } from './ralph-runtime.mjs';
-import {
-  fail,
-  validationScriptsForChangedFiles,
-  validationScriptsForCommentOnlyChange,
-} from './ralph-scope.mjs';
+import { fail } from './ralph-scope.mjs';
 import { credentialFreeEnvironment, run } from './ralph-process-runner.mjs';
 import { agentInstructionFiles, trustedFileHash } from './ralph-config.mjs';
 import { stripAnsi } from './ralph-failure-summary.mjs';
 
 /**
- * Изолированный прогон npm scripts в контейнере и attestation результата.
+ * Изолированный прогон команд проверки в контейнере и attestation результата.
  *
  * Проверка неизменности control plane живёт здесь же, потому что вызывается
  * перед каждым прогоном.
@@ -149,15 +144,23 @@ export function createValidationWorkspaceSnapshot() {
   }
 }
 
-const validationDependencyFiles = [
-  '.env.example',
-  'package.json',
-  'package-lock.json',
-  'apps/api/package.json',
-  'apps/web/package.json',
+/**
+ * Файлы самого Ralph, которые Dockerfile копирует в образ. Они не проектные и
+ * потому не настраиваются: без них не соберётся ни один образ валидации.
+ */
+const ralphValidationImageFiles = [
   'scripts/ralph/ralph-validation-docker-shim.sh',
   'scripts/ralph/ralph-validation-entrypoint.sh',
 ];
+
+/**
+ * Пути, из которых собирается слой зависимостей образа: манифесты и lock-файлы
+ * проекта из `validationDependencyPaths` плюс файлы Ralph. Путь может указывать
+ * и на каталог — он разворачивается в файлы по HEAD.
+ */
+function validationDependencyPaths(config) {
+  return [...ralphValidationImageFiles, ...(config?.validationDependencyPaths ?? [])];
+}
 
 /**
  * Образ валидации ставит зависимости по HEAD, а не по рабочему дереву, и это
@@ -176,18 +179,16 @@ const validationDependencyFiles = [
  * дереве версия проверяется против ранее установленной, даёт зелёный прогон и
  * уходит в push.
  *
- * Поэтому расхождение называется вслух и до контейнера. Файлы схемы Prisma сюда
- * не входят: `prisma:generate` выполняется внутри `build` и `test:e2e` по
- * рабочему дереву, так что схема не дрейфует.
+ * Поэтому расхождение называется вслух и до контейнера.
  */
-export function assertValidationDependenciesCommitted(dependencies = {}) {
+export function assertValidationDependenciesCommitted(config, dependencies = {}) {
   const execute = dependencies.run ?? run;
   const drifted = execute('git', [
     'diff',
     '--name-only',
     'HEAD',
     '--',
-    ...validationDependencyFiles,
+    ...validationDependencyPaths(config),
   ])
     .stdout.split('\n')
     .map((line) => line.trim())
@@ -201,22 +202,24 @@ export function assertValidationDependenciesCommitted(dependencies = {}) {
   );
 }
 
-export function createTrustedValidationDependencySnapshot() {
+export function createTrustedValidationDependencySnapshot(config) {
   const snapshotPath = mkdtempSync(path.join(tmpdir(), 'ralph-validation-dependencies-'));
   try {
-    const prismaFiles = run('git', [
+    // Пути разворачиваются в файлы по HEAD, а не читаются как имена: так один и
+    // тот же ключ конфигурации принимает и отдельный манифест, и каталог.
+    const files = run('git', [
       'ls-tree',
       '-r',
       '--name-only',
       'HEAD',
       '--',
-      'apps/api/prisma',
+      ...validationDependencyPaths(config),
     ])
       .stdout.split('\n')
+      .map((line) => line.trim())
       .filter(Boolean);
-    for (const relativePath of [...validationDependencyFiles, ...prismaFiles]) {
-      const gitPath = relativePath.split(path.sep).join('/');
-      const destinationPath = path.join(snapshotPath, relativePath);
+    for (const gitPath of files) {
+      const destinationPath = path.join(snapshotPath, ...gitPath.split('/'));
       mkdirSync(path.dirname(destinationPath), { recursive: true });
       writeFileSync(destinationPath, run('git', ['show', `HEAD:${gitPath}`]).stdout);
     }
@@ -346,9 +349,11 @@ function validationImageDigest(image, execute) {
   return digest === '' ? null : digest;
 }
 
-// Entrypoint печатает этот маркер перед каждым script. `set -eu` останавливает
-// цикл на первой ошибке, поэтому последний маркер и есть упавший script.
-const validationScriptMarkerPattern = /RALPH_VALIDATION_SCRIPT=(\S+)/g;
+// Entrypoint печатает этот маркер перед каждой командой. `set -eu` останавливает
+// цикл на первой ошибке, поэтому последний маркер и есть упавшая команда.
+// Разбор построчный: команда содержит пробелы, а перевод строки в ней запрещён
+// проверкой конфигурации.
+const validationScriptMarkerPattern = /^RALPH_VALIDATION_SCRIPT=(.+?)\s*$/gm;
 
 export function failedValidationScript(error) {
   const output = stripAnsi([error?.stdout, error?.stderr].filter(Boolean).join('\n'));
@@ -367,20 +372,20 @@ export function runConfiguredScripts(config, scripts, label, options = {}) {
   const execute = options.run ?? run;
   if (scripts.length === 0) return { ran: false, attested: false, scripts: [] };
   assertTrustedControlFilesUnchanged(config);
-  // Один контейнер на весь набор. Изоляция от хоста сохраняется, а workspace,
-  // node_modules, PostgreSQL и migrations готовятся один раз вместо одного раза
-  // на каждый script. Entrypoint выполняет scripts последовательно и
-  // останавливается на первой ошибке.
+  // Один контейнер на весь набор. Изоляция от хоста сохраняется, а workspace и
+  // окружение готовятся один раз вместо одного раза на каждую команду.
+  // Entrypoint выполняет команды последовательно и останавливается на первой
+  // ошибке.
   const isolatedScripts = includePreflight
     ? [...config.preflightScripts, ...scripts]
     : [...scripts];
   const createWorkspaceSnapshot =
     options.createWorkspaceSnapshot ?? createValidationWorkspaceSnapshot;
   const createDependencySnapshot =
-    options.createDependencySnapshot ?? createTrustedValidationDependencySnapshot;
+    options.createDependencySnapshot ?? (() => createTrustedValidationDependencySnapshot(config));
   const snapshotPath = createWorkspaceSnapshot();
   const dependencySnapshotPath = createDependencySnapshot();
-  console.log(`\n=== ${label}: isolated npm run ${isolatedScripts.join(', ')} ===\n`);
+  console.log(`\n=== ${label}: isolated ${isolatedScripts.join(' && ')} ===\n`);
   try {
     const image = ensureValidationImage(config, dependencySnapshotPath, { run: execute });
     const attestationsPath = options.attestationsPath ?? runtimeAttestationsPath;
@@ -437,187 +442,19 @@ export function runPreflight(config) {
   });
 }
 
-// -----------------------------------------------------------------------------
-// Дешёвая дорожка: изменение, не тронувшее ни одного токена кода
-// -----------------------------------------------------------------------------
-
-// TypeScript берётся из node_modules проекта и только по требованию: загрузка
-// стоит сотни миллисекунд, а нужна она лишь когда сокращённый набор всё равно
-// требует базу и есть шанс, что правка не тронула код.
-let cachedTypeScript;
-
-function loadTypeScript() {
-  if (cachedTypeScript === undefined) {
-    try {
-      cachedTypeScript = createRequire(path.join(projectRoot, 'package.json'))('typescript');
-    } catch {
-      cachedTypeScript = null;
-    }
-  }
-  return cachedTypeScript;
-}
-
-const commentOnlyScriptExtensions = /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/i;
-const commentOnlyDocumentationExtensions = /\.md$/i;
-
 /**
- * Поток токенов файла без комментариев и пробелов.
+ * Полный набор `validationScripts` в изолированном контейнере.
  *
- * Парсер компилятора, а не сырой сканер и не регулярное выражение. Построчный
- * разбор принял бы строку `` `// текст` `` внутри template literal за
- * комментарий. Сырой сканер без контекста парсера ошибается тоньше: после
- * подстановки `${...}` он лексирует хвост template literal как обычный код, и
- * `//` в нём открывает «комментарий», съедающий остаток строки вместе с
- * данными; то же с телом regex-литерала и текстом JSX. Обход дерева, собранного
- * `createSourceFile`, отдаёт токены с настоящими границами: хвосты template,
- * regex и JSX-текст — это содержимое токенов, и их изменение меняет поток.
- * Файл, который парсер не принял, возвращает null — «не уверен, дорожка не
- * применяется».
+ * Набор не сокращается по области изменения: какая команда какой файл
+ * покрывает, знает только сам проект, а неверная догадка молча пропускает
+ * проверку.
  */
-export function scriptTokensIgnoringComments(source, fileName, typescript = loadTypeScript()) {
-  if (!typescript) return null;
-  const text = String(source);
-  const scriptKind = /\.(tsx|jsx)$/i.test(fileName)
-    ? typescript.ScriptKind.TSX
-    : typescript.ScriptKind.TS;
-  const sourceFile = typescript.createSourceFile(
-    fileName,
-    text,
-    typescript.ScriptTarget.Latest,
-    /* setParentNodes */ true,
-    scriptKind,
-  );
-  if ((sourceFile.parseDiagnostics ?? []).length > 0) return null;
-
-  const tokens = [];
-  // Shebang — не токен для сканера, но смена интерпретатора меняет поведение
-  // напрямую исполняемого файла; строка входит в поток синтетическим токеном.
-  const shebang = typescript.getShebang?.(text);
-  if (shebang) tokens.push(`shebang:${shebang.length}:${shebang}`);
-  const visit = (node) => {
-    // JSDoc парсер отдаёт узлами дерева, но `/** ... */` — такой же
-    // комментарий, как `//`: в поток токенов он не входит.
-    if (
-      node.kind >= typescript.SyntaxKind.FirstJSDocNode &&
-      node.kind <= typescript.SyntaxKind.LastJSDocNode
-    ) {
-      return;
-    }
-    if (node.getChildCount(sourceFile) === 0) {
-      const tokenText = node.getText(sourceFile);
-      // Длина в префиксе делает границы токенов однозначными: без неё пары
-      // токенов `a`+`bc` и `ab`+`c` склеились бы в одну строку.
-      tokens.push(`${node.kind}:${tokenText.length}:${tokenText}`);
-      return;
-    }
-    for (const child of node.getChildren(sourceFile)) visit(child);
-  };
-  visit(sourceFile);
-  return tokens.join(' ');
-}
-
-/**
- * Не изменила ли правка ничего, кроме комментариев и документации.
- *
- * Сравнивается рабочее дерево с HEAD, поэтому функция отвечает только за ещё
- * не закоммиченную работу; для валидации уже закоммиченного изменения ответ
- * бессмыслен, и вызывающий обязан не задавать вопрос — сравнение дерева с HEAD
- * там описывало бы посторонние правки оператора, а не проверяемый commit.
- * Любая неуверенность — новый файл, удалённый файл, незнакомое расширение,
- * недоступный TypeScript, не принятый парсером файл — тоже «нет»: цена ошибки
- * в эту сторону — лишний прогон, в обратную — пропущенные тесты.
- */
-export function changeIsCommentOnly(changedFiles, dependencies = {}) {
-  const execute = dependencies.run ?? run;
-  const readFile =
-    dependencies.readFile ?? ((file) => readFileSync(path.join(projectRoot, file), 'utf8'));
-  const typescript = dependencies.typescript ?? loadTypeScript();
-  if (!typescript) return false;
-
-  let sawChange = false;
-  for (const file of changedFiles ?? []) {
-    const normalized = String(file ?? '')
-      .trim()
-      .replaceAll('\\', '/');
-    const isDocumentation = commentOnlyDocumentationExtensions.test(normalized);
-    if (!isDocumentation && !commentOnlyScriptExtensions.test(normalized)) return false;
-
-    const before = execute('git', ['show', `HEAD:${normalized}`], { allowFailure: true });
-    if (before.status !== 0) return false;
-    let after;
-    try {
-      after = readFile(normalized);
-    } catch {
-      return false;
-    }
-    // Сравнение после trim с обеих сторон: run() обрезает края вывода git show,
-    // и без него любой файл с завершающим переводом строки выглядел бы
-    // изменённым.
-    if (before.stdout.trim() === String(after).trim()) continue;
-
-    sawChange = true;
-    if (isDocumentation) continue;
-    try {
-      const beforeTokens = scriptTokensIgnoringComments(before.stdout, normalized, typescript);
-      const afterTokens = scriptTokensIgnoringComments(after, normalized, typescript);
-      if (beforeTokens === null || beforeTokens !== afterTokens) return false;
-    } catch {
-      return false;
-    }
-  }
-  return sawChange;
-}
-
-/**
- * `changedFiles` — пути, которые изменила эта issue. По ним набор сокращается
- * до применимых проверок; без них выполняется полный набор.
- *
- * Перед созданием PR валидация вызывается без аргумента намеренно: сокращённые
- * прогоны покрывают каждую issue по отдельности, а ветку целиком должен один
- * раз проверить полный набор.
- */
-export function runConfiguredValidation(config, changedFiles, options = {}) {
+export function runConfiguredValidation(config) {
   // Проверка стоит здесь, а не в runConfiguredScripts: дрейф вносит только
   // сессия агента, а preflight выполняется по заведомо чистому дереву.
-  assertValidationDependenciesCommitted();
-  let selection = config.scopedValidation
-    ? validationScriptsForChangedFiles(config.validationScripts, changedFiles)
-    : { scripts: config.validationScripts, skipped: [], narrowed: false, requiresDatabase: true };
-  // Дешёвая дорожка поверх карты областей. Требует явного разрешения от
-  // вызывающего: определитель сравнивает рабочее дерево с HEAD, поэтому он
-  // применим только к ещё не закоммиченной работе агента. На валидации уже
-  // закоммиченного изменения (already-fixed, committed recovery) сравнение
-  // описывало бы посторонние правки оператора в дереве, а не проверяемый
-  // commit, и кодовое изменение могло бы пройти без тестов. Пробуется только
-  // когда карта областей всё равно требует базу — на md-only изменении карта
-  // уже дешевле.
-  if (
-    options.allowCommentOnlyLane === true &&
-    config.scopedValidation &&
-    config.commentOnlyValidation &&
-    selection.requiresDatabase &&
-    Array.isArray(changedFiles) &&
-    changedFiles.length > 0 &&
-    changeIsCommentOnly(changedFiles)
-  ) {
-    const commentOnlySelection = validationScriptsForCommentOnlyChange(config.validationScripts);
-    if (commentOnlySelection.narrowed) {
-      selection = commentOnlySelection;
-      console.log(
-        'Validation сокращена: изменение не тронуло ни одного токена кода ' +
-          '(комментарии и документация).',
-      );
-    }
-  }
-  if (selection.narrowed) {
-    console.log(
-      `Validation сокращена по области изменения: пропущены ${selection.skipped.join(', ')}.`,
-    );
-  }
-  // Каждый validation-запуск получает новый контейнер с новой изолированной БД и
-  // выполняет preflight первым, чтобы migration текущей issue была применена
-  // внутри того же контейнера, что и остальные scripts.
-  return runConfiguredScripts(config, selection.scripts, 'Validation', {
-    includePreflight: selection.requiresDatabase,
-  });
+  assertValidationDependenciesCommitted(config);
+  // Каждый validation-запуск получает новый контейнер и выполняет preflight
+  // первым, чтобы подготовка окружения текущей issue прошла внутри того же
+  // контейнера, что и остальные команды.
+  return runConfiguredScripts(config, config.validationScripts, 'Validation');
 }

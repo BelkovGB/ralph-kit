@@ -32,8 +32,23 @@ const skillsDirectories = [
 
 export const configPath = path.join(projectRoot, '.agents', 'ralph.config.json');
 
+/**
+ * Тег образа валидации по умолчанию выводится из имени каталога репозитория:
+ * общий тег на машине означал бы, что второй проект перезаписывает образ
+ * первого, и валидация шла бы в чужом окружении.
+ */
+function defaultValidationImage() {
+  const name = path
+    .basename(projectRoot)
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/^[^a-z0-9]+/, '')
+    .replace(/[^a-z0-9]+$/, '');
+  return `${name === '' ? 'ralph' : name}-ralph-validation:latest`;
+}
+
 const approvedIssueSnapshotsHash =
-  'c0e278f489ab9e9b20c7d21232b9bb50e1e268eed0ba338966091da84777701e';
+  'ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356';
 
 export function parseJson(value, source) {
   try {
@@ -365,20 +380,16 @@ function readApprovedIssueSnapshots(config) {
 
 function applyValidationAndReviewDefaults(config) {
   config.validationContainer ??= {
-    image: 'video-meetings-ralph-validation:latest',
+    image: defaultValidationImage(),
     dockerfile: 'scripts/ralph/Dockerfile.validation',
   };
+  // Проект обязан назвать свои команды сам: набор проверок зависит от стека, и
+  // угаданное умолчание молча проверяло бы не то.
   config.preflightScripts ??= [];
-  config.validationScripts ??= ['format:check', 'lint', 'build'];
-  // Сокращение набора по области изменения. Выключается, когда набор проверок
-  // не соответствует карте областей в ralph-scope.mjs и оператору нужен
-  // гарантированно полный прогон на каждой issue.
-  config.scopedValidation ??= true;
-  // Дешёвая дорожка для правок, не тронувших ни одного токена кода: комментарии
-  // и Markdown проходят format:check, lint и build без тестов и без базы.
-  // Замечание уровня «переформулируй комментарий» перестаёт стоить полного
-  // e2e-прогона; поведение программы такой правкой не меняется по построению.
-  config.commentOnlyValidation ??= true;
+  config.validationScripts ??= [];
+  // Пути, которые попадают в слой зависимостей образа: манифесты и lock-файлы
+  // проекта. Без них образ собрать нельзя, а какие они — знает только проект.
+  config.validationDependencyPaths ??= [];
   config.review ??= {
     enabled: true,
     model: 'gpt-5.6-terra',
@@ -498,27 +509,52 @@ function prepareValidationContainer(config) {
   }
 }
 
-function validateScriptNames(config) {
+const maxValidationCommandLength = 500;
+
+function validateValidationCommands(config) {
+  // Команда выполняется оболочкой как есть, поэтому набор символов здесь не
+  // ограничивается: от подстановки произвольной команды защищает не эта
+  // проверка, а то, что конфиг лежит в control plane и автономный агент не
+  // может его изменить. Осознанный размен: контракт стал переносимым на любой
+  // стек, а разрешение на команду теперь даёт только оператор.
+  //
+  // Перевод строки запрещён: имя упавшей команды печатается маркером в поток
+  // контейнера и разбирается построчно, и многострочная команда назвала бы в
+  // отчёте не тот шаг.
   if (
     !Array.isArray(config.preflightScripts) ||
     !Array.isArray(config.validationScripts) ||
     [...config.preflightScripts, ...config.validationScripts].some(
-      (script) =>
-        typeof script !== 'string' || script.trim() === '' || !/^[a-zA-Z0-9:_-]+$/.test(script),
+      (command) =>
+        typeof command !== 'string' ||
+        command.trim() === '' ||
+        command.length > maxValidationCommandLength ||
+        /[\r\n]/.test(command),
     )
   ) {
     fail(
-      'Поля "preflightScripts" и "validationScripts" должны быть массивами безопасных имён npm scripts.',
+      'Поля "preflightScripts" и "validationScripts" должны быть массивами непустых однострочных ' +
+        `команд оболочки не длиннее ${maxValidationCommandLength} символов.`,
+    );
+  }
+  if (
+    !Array.isArray(config.validationDependencyPaths) ||
+    config.validationDependencyPaths.some((file) => {
+      if (typeof file !== 'string' || file.trim() === '') return true;
+      const normalized = file.replaceAll('\\', '/');
+      return (
+        normalized.startsWith('/') ||
+        /^[a-zA-Z]:/.test(normalized) ||
+        normalized.split('/').includes('..')
+      );
+    })
+  ) {
+    fail(
+      'Поле "validationDependencyPaths" должно быть массивом относительных путей внутри проекта.',
     );
   }
   if (!['P0', 'P1', 'P2', 'P3'].includes(config.reviewSeverityFloor)) {
     fail('Поле "reviewSeverityFloor" должно быть одним из: P0, P1, P2, P3.');
-  }
-  if (typeof config.scopedValidation !== 'boolean') {
-    fail('Поле "scopedValidation" должно быть true или false.');
-  }
-  if (typeof config.commentOnlyValidation !== 'boolean') {
-    fail('Поле "commentOnlyValidation" должно быть true или false.');
   }
 }
 
@@ -711,7 +747,7 @@ export function loadConfig() {
   validateLoopFields(config);
   validateApprovedIssueSnapshots(config);
   prepareValidationContainer(config);
-  validateScriptNames(config);
+  validateValidationCommands(config);
   validateRuntimeSettings(config);
   validateAgentRoles(config);
   resolveControlPlanePaths(config);

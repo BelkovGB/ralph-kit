@@ -201,10 +201,9 @@ function measuredValidation(runValidation) {
  * Полная проверка ветки сразу после того, как в неё влита база.
  *
  * Слияние без конфликта не значит рабочее дерево: база могла изменить контракт,
- * который работа фазы использует, и Git об этом ничего не знает — ровно так
- * поменялся маршрут аватара загрузчика, пока фаза 6 строила клиента к прежнему.
- * Без этой проверки поломка всплыла бы на первой же issue, и чинил бы её агент,
- * который её не вносил: он получил бы чужую ошибку под видом своей.
+ * который работа фазы использует, и Git об этом ничего не знает. Без этой
+ * проверки поломка всплыла бы на первой же issue, и чинил бы её агент, который
+ * её не вносил: он получил бы чужую ошибку под видом своей.
  *
  * Набор полный, а не сокращённый по области: изменения базы могут быть любыми.
  */
@@ -232,7 +231,12 @@ function verifyTools(config) {
   run('git', ['--version']);
   run('gh', ['--version']);
   run(agentBinary(config), ['--version']);
-  run('docker', ['version']);
+  // Docker нужен только контейнеру проверок, а тот запускается лишь когда есть
+  // что запускать. Без набора scripts безусловная проверка требовала работающий
+  // демон даже от `--check`, который ни одной проверки не выполняет.
+  if (config.preflightScripts.length + config.validationScripts.length > 0) {
+    run('docker', ['version']);
+  }
   runNetwork('gh', ['auth', 'status']);
 }
 
@@ -279,7 +283,9 @@ async function runIndependentReview(config, repository, issue, commit) {
   // Замечания прошлого ревью вынимаются из тела issue в отдельную секцию
   // prompt: внутри тела они приезжали без подписи, вперемешку с критериями
   // готовности, и требование «проверь их закрытие» опереться было не на что.
-  const inventory = issueChangeInventory(issue, commit);
+  const inventory = issueChangeInventory(issue, commit, {
+    excludedPaths: config.reviewDiffExcludedPaths,
+  });
   const reviewPrompt = buildIndependentReviewPrompt(
     config,
     { ...issue, body: issueBodyWithoutRalphMetadata(issue) },
@@ -572,10 +578,10 @@ async function commitAndCompleteIssue(config, repository, issue, startingCommit,
 
   // Что в дереве принадлежит агенту, а что лежало там до начала issue.
   //
-  // Раньше стадировалось всё подряд, и в коммит про снимки Playwright уехали
-  // правка `maxIterations` и черновик дизайна на 248 КБ — а следующий коммит
-  // агента черновик удалил вместе с рабочей копией. Ревьюер, увидев в диффе
-  // задачи чужой конфиг, справедливо отклонял работу заход за заходом.
+  // Раньше стадировалось всё подряд, и в коммит задачи уезжали чужие правки:
+  // оставленный оператором конфиг и черновик на сотни килобайт, который
+  // следующий коммит агента удалял вместе с рабочей копией. Ревьюер, увидев в
+  // диффе задачи чужой файл, справедливо отклонял работу заход за заходом.
   const foreignPaths = new Set(activeStateStore()?.issue?.foreignPaths ?? []);
   const agentEntries = workingTreeEntries(changes).filter((entry) => !foreignPaths.has(entry.path));
   const agentPaths = agentEntries.map((entry) => entry.path);
@@ -757,7 +763,7 @@ function branchMovedWithoutDisturbingIssue(storedIssue, currentHead) {
   // `staging` исключён из uncommittedWorkPhases из-за expectedTree, собранного
   // против прежнего HEAD. Пока его нет, исключать нечего: сбой случился до
   // того, как индекс был зафиксирован, и в дереве лежит обычная
-  // незакоммиченная работа. Issue #91 упала ровно так — на `git add`.
+  // незакоммиченная работа. Один прогон упал ровно так — на `git add`.
   const phase =
     storedIssue.phase === 'staging' && !storedIssue.expectedTree
       ? 'working-tree'

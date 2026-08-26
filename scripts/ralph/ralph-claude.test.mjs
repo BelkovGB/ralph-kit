@@ -21,7 +21,7 @@ import {
   verifyClaudeAuthentication,
   sessionFailureCode,
 } from './ralph-claude-session.mjs';
-import { addUsage, hostPlaywrightBrowsersPath } from './ralph-agent-session.mjs';
+import { addUsage } from './ralph-agent-session.mjs';
 import { withFakeClaude } from './ralph-test-support.mjs';
 
 const schemaPath = fileURLToPath(new URL('../../.agents/review.schema.json', import.meta.url));
@@ -175,36 +175,6 @@ test('a session killed by the step limit still reports what it spent', () => {
   // Ни разу не сообщённое поле остаётся null, а не нулём: ноль в сводке
   // читается как измеренная величина.
   assert.equal(total.cacheCreationTokens, null);
-});
-
-test('the sandbox keeps the host browser cache reachable', () => {
-  // Песочница подменяет LOCALAPPDATA, и Playwright переставал находить
-  // браузеры: агент, чинящий браузерный тест, оставался без обратной связи и
-  // упирался в лимит шагов, подменяя проверку разбором diff.
-  // Обе переменные заданы намеренно: `test:ralph` выполняется внутри
-  // Linux-контейнера, а разработка идёт на Windows, и путь выводится из разных
-  // переменных. Тест, знающий только про win32, зеленел локально и ронял
-  // валидацию.
-  const source = { PATH: '', LOCALAPPDATA: 'C:/Users/op/AppData/Local', HOME: '/home/op' };
-  const found = hostPlaywrightBrowsersPath(source, () => true);
-  assert.match(found.replaceAll('\\', '/'), /ms-playwright$/);
-
-  // Явно заданный путь важнее выведенного.
-  assert.equal(
-    hostPlaywrightBrowsersPath({ ...source, PLAYWRIGHT_BROWSERS_PATH: 'D:/cache' }, () => true),
-    'D:/cache',
-  );
-  // Каталога нет — переменная не выставляется вовсе: пустой путь хуже, чем его
-  // отсутствие, потому что скрывает причину отказа.
-  assert.equal(
-    hostPlaywrightBrowsersPath(source, () => false),
-    null,
-  );
-  // Ни одной базовой переменной — выводить не из чего на любой платформе.
-  assert.equal(
-    hostPlaywrightBrowsersPath({}, () => true),
-    null,
-  );
 });
 
 test('a closed quota window is reported instead of being swallowed', () => {

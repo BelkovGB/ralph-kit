@@ -1,12 +1,6 @@
 /**
  * Prompt для реализации issue и для обоих ревьюеров.
- *
- * Из зависимостей только правила области: какие направления аудита вообще
- * применимы к набору изменённых файлов. Сами правила живут в `ralph-scope.mjs`
- * рядом с остальными предикатами по путям.
  */
-
-import { reviewAuditAreas } from './ralph-scope.mjs';
 
 function renderTemplate(template, replacements) {
   let result = template;
@@ -42,14 +36,14 @@ export function renderPrompt(config, issue, rules) {
 // косметика. Codex-ревьюер работает в read-only песочнице с полноценной
 // оболочкой, а Claude-ревьюер запускается с `--tools Read,Glob,Grep` и Bash не
 // имеет вовсе: инструкция про `rg -n` и `-LiteralPath` для него неисполнима.
-// Важнее второе: единственная защита от того, что сегмент маршрута вида
-// `apps/web/app/meetings/[id]` будет прочитан как шаблон, была выражена флагом
-// PowerShell, поэтому у Claude-ревьюера защиты не оставалось совсем — его Glob
-// и `--glob` у Grep трактуют скобки как класс символов.
+// Важнее второе: единственная защита от того, что путь со скобками будет
+// прочитан как шаблон, была выражена флагом PowerShell, поэтому у
+// Claude-ревьюера защиты не оставалось совсем — его Glob и `--glob` у Grep
+// трактуют скобки как класс символов.
 const shellReviewGuidance =
-  'Read efficiently on this Windows/PowerShell host: locate code with `rg -n` before opening a file, read bounded ranges rather than whole files, and pass every discovered path to file cmdlets with `-LiteralPath` so Next.js route segments such as `apps/web/app/meetings/[id]` are not treated as wildcard patterns. Do not dump full logs, lockfiles, or generated files.';
+  'Read efficiently on this Windows/PowerShell host: locate code with `rg -n` before opening a file, read bounded ranges rather than whole files, and pass every discovered path to file cmdlets with `-LiteralPath` so a path segment containing square brackets is not treated as a wildcard pattern. Do not dump full logs, lockfiles, or generated files.';
 const toolReviewGuidance =
-  'Read efficiently with the only tools you have — Grep, Glob and Read: locate code with Grep before opening a file, and read bounded ranges with Read rather than whole files. Glob patterns and Grep `--glob` filters treat square brackets as a character class, so a Next.js route segment such as `apps/web/app/meetings/[id]` never matches literally: reach it with a wildcard segment like `apps/web/app/meetings/*/page.tsx`, then pass the exact path to Read. Do not dump full logs, lockfiles, or generated files.';
+  'Read efficiently with the only tools you have — Grep, Glob and Read: locate code with Grep before opening a file, and read bounded ranges with Read rather than whole files. Glob patterns and Grep `--glob` filters treat square brackets as a character class, so a path segment written in brackets never matches literally: reach it with a wildcard segment, then pass the exact path to Read. Do not dump full logs, lockfiles, or generated files.';
 
 function reviewShellGuidance(config) {
   return config?.agentCli === 'claude' ? toolReviewGuidance : shellReviewGuidance;
@@ -57,7 +51,7 @@ function reviewShellGuidance(config) {
 // Тот же принцип, что и у подсказки про чтение: способ найти документ обязан
 // быть исполнимым тем набором инструментов, который получила роль.
 const documentationDiscoveryTail =
-  'Never guess conventional paths such as `docs/README.md`. For public API work in this repository, treat `README.md`, `docs/api.md`, and `docs/api-architecture.md` as canonical entry points when those files exist, while still inspecting the scope-specific documents returned by discovery.';
+  'Never guess conventional paths such as `docs/README.md`: read only the documents discovery actually returned.';
 const shellDocumentationDiscovery = `Discover documentation paths before reading them: use \`rg --files docs\` and repository file listings, then read only paths confirmed to exist. ${documentationDiscoveryTail}`;
 const toolDocumentationDiscovery = `Discover documentation paths before reading them: list them with Glob patterns such as \`docs/**/*.md\`, then read only paths confirmed to exist. ${documentationDiscoveryTail}`;
 
@@ -146,32 +140,11 @@ function reviewAlreadyAudited(previousReview) {
 The previous review audited commit ${previousReview.commit} in full. ${scope} Audit those changes in full, verify at HEAD that every finding listed above is resolved, and make one bounded pass over how the new changes interact with the rest of the issue. Do not re-audit unchanged code that the previous review already cleared.`;
 }
 
-// Направления, применимые к любому изменению, — они не зависят от того, какие
-// файлы затронуты.
-const universalAuditAreas = [
-  'every requirement and definition-of-done item from the issue body',
-  'correctness, edge cases, regressions, security, and test coverage',
-  'interactions between all changed files, not only the most obvious one',
-];
-
-// Полный список остаётся дословно для случая без инвентаря: не зная файлов,
-// сузить область не на чем, и молчаливое сокращение было бы потерей проверки.
-const allAuditAreas = [
-  'public API response contracts, documentation, configuration, migrations, and deployment/runtime assumptions when relevant',
-  'whether tests assert the real externally observable behavior rather than only an implementation detail',
-];
-
-function reviewAuditSection(changes) {
-  const known = Array.isArray(changes?.paths) && changes.paths.length > 0;
-  const areas = known
-    ? [...universalAuditAreas, ...reviewAuditAreas(changes.paths)]
-    : [...universalAuditAreas, ...allAuditAreas];
-  const heading = known
-    ? 'Audit all of these areas, and only these — no changed file belongs to any other:'
-    : 'Audit all of these areas:';
-
-  return `${heading}\n${areas.map((area) => `- ${area};`).join('\n')}`;
-}
+// Область аудита задаёт сам набор изменённых файлов. Предвычисленный список
+// направлений пришлось бы вести под каждый проект отдельно, и любая тема, не
+// попавшая в него, молча выпадала бы из ревью.
+const auditInstruction =
+  'Audit every changed file and every requirement and definition-of-done item from the issue body: correctness, edge cases, regressions, security, test coverage, and the interactions between the changed files rather than only the most obvious one.';
 
 export function buildIndependentReviewPrompt(config, issue, commit, context = {}) {
   const issueBody = issue.body?.trim() || '(empty)';
@@ -183,7 +156,7 @@ ${issueBody}${reviewPreviousFindings(context.previousFindings)}${context.changes
 
 Complete the entire audit before deciding the verdict. Do not stop after the first problem. Return every distinct, actionable finding you can substantiate in this single response, without duplicates and without inventing findings to fill a quota.
 
-${reviewAuditSection(context.changes)}
+${auditInstruction}
 
 ${reviewShellGuidance(config)}
 
@@ -255,7 +228,7 @@ ${reviewShellGuidance(config)}
 
 Within that milestone scope, ${reviewBreadth}. Read AGENTS.md, relevant PRD/plan documents, issue-related documentation, and tests. ${reviewDocumentationDiscovery(config)} Look for cross-issue integration problems, architectural inconsistencies, security vulnerabilities, performance or scalability risks, regressions, missing tests, and deviations from the milestone requirements.
 
-The Ralph orchestrator has already completed every configured preflight and validation script successfully for the exact reviewed head. Do not rerun npm, npx, builds, linters, type checks, tests, dev servers, or any command that writes caches or artifacts. Use read-only file and git inspection only.
+The Ralph orchestrator has already completed every configured preflight and validation script successfully for the exact reviewed head. Do not rerun builds, linters, type checks, tests, dev servers, package manager commands, or any command that writes caches or artifacts. Use read-only file and git inspection only.
 
 Report every distinct actionable finding in scope in this single response. ${reviewVerdictContract} Do not edit files, create comments, change GitHub state, or run destructive commands. The Ralph orchestrator will publish the structured result.`;
 }

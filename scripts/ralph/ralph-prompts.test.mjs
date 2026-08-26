@@ -43,12 +43,10 @@ test('implementation prompt delegates full validation to the outer orchestrator'
   );
 
   // Проверяется контракт, а не конкретная формулировка: полный набор делегирован
-  // наружу, npm вызывается в обход PowerShell-обёртки, и повторный прогон с
-  // увеличенным таймаутом запрещён.
-  assert.match(prompt, /`validationScripts`/);
+  // наружу, и повторный прогон с увеличенным таймаутом запрещён.
+  assert.match(prompt, /Полный набор проверок/);
   assert.match(prompt, /снаружи\s+sandbox/);
   assert.match(prompt, /не дублируй/i);
-  assert.match(prompt, /npm\.cmd/);
   assert.match(prompt, /не повторяй[\s\S]{0,80}таймаутом/i);
 });
 
@@ -65,38 +63,36 @@ test('issue review prompt requires one exhaustive in-scope audit', () => {
 
   assert.match(prompt, /Do not stop after the first problem/);
   assert.match(prompt, /Return every distinct, actionable finding/);
-  assert.match(prompt, /public API response contracts, documentation, configuration/);
   assert.match(prompt, /Discover documentation paths/i);
   // Роль запущена с `--tools Read,Glob,Grep`, поэтому поиск описан через Glob:
   // `rg` этому ревьюеру недоступен так же, как и PowerShell.
   assert.match(prompt, /docs\/\*\*\/\*\.md/);
   assert.doesNotMatch(prompt, /rg --files/);
   assert.match(prompt, /guess conventional paths such as `docs\/README\.md`/i);
-  assert.match(prompt, /`docs\/api\.md`.*`docs\/api-architecture\.md`/);
   assert.match(prompt, /Ignore unrelated pre-existing debt/);
 });
 
 test('issue review prompt carries the change set the reviewer cannot obtain itself', () => {
   const prompt = buildIndependentReviewPrompt(
-    { agentCli: 'claude', validationScripts: ['lint', 'build', 'test:e2e:api'] },
+    { agentCli: 'claude', validationScripts: ['npm run lint', 'npm run build', 'npm test'] },
     { number: 57, title: 'End the browser session', body: 'Outcome text.' },
     'b'.repeat(40),
     {
       changes: {
         commit: 'b'.repeat(40),
-        stat: ' apps/web/app/login/page.tsx | 12 ++++--',
-        nameStatus: 'M\tapps/web/app/login/page.tsx',
-        diff: '--- a/apps/web/app/login/page.tsx\n+++ b/apps/web/app/login/page.tsx',
+        stat: ' src/app/login/page.ts | 12 ++++--',
+        nameStatus: 'M\tsrc/app/login/page.ts',
+        diff: '--- a/src/app/login/page.ts\n+++ b/src/app/login/page.ts',
         truncated: false,
       },
-      previousFindings: '- **P2 — Missing guard** (apps/web/use-meeting-files.ts:36)',
+      previousFindings: '- **P2 — Missing guard** (src/use-items.ts:36)',
     },
   );
 
-  assert.match(prompt, /M\tapps\/web\/app\/login\/page\.tsx/);
+  assert.match(prompt, /M\tsrc\/app\/login\/page\.ts/);
   assert.match(prompt, /```diff/);
   assert.match(prompt, /complete set of changes made for this issue/);
-  assert.match(prompt, /already ran lint, build, test:e2e:api/);
+  assert.match(prompt, /already ran npm run lint, npm run build, npm test/);
   assert.match(prompt, /Do not rerun them/);
   // Замечания прошлого ревью обязаны быть подписаны: внутри тела issue они
   // неотличимы от критериев готовности, и требовать их проверки бессмысленно.
@@ -127,67 +123,6 @@ test('a truncated change set says so instead of looking complete', () => {
   assert.doesNotMatch(prompt, /previous review/);
 });
 
-test('the audit list drops directions that no changed file belongs to', () => {
-  const specOnly = buildIndependentReviewPrompt(
-    { agentCli: 'claude' },
-    { number: 57, title: 'Cover the keyboard path', body: 'Outcome text.' },
-    'a'.repeat(40),
-    {
-      changes: {
-        commit: 'a'.repeat(40),
-        paths: ['apps/web/e2e/profile.spec.ts'],
-        stat: ' 1 file changed',
-        nameStatus: 'M\tapps/web/e2e/profile.spec.ts',
-        diff: '--- a/apps/web/e2e/profile.spec.ts',
-        truncated: false,
-      },
-    },
-  );
-
-  assert.match(specOnly, /no changed file belongs to any other/);
-  assert.match(specOnly, /tests assert real externally observable behaviour/);
-  // Ни одного файла контрактов, миграций или деплоя в изменении нет: думать о
-  // них — та самая трата, ради которой список и сузили.
-  assert.doesNotMatch(specOnly, /migrations/);
-  assert.doesNotMatch(specOnly, /deployment/);
-  assert.doesNotMatch(specOnly, /public API response contracts/);
-  // Общие направления остаются всегда.
-  assert.match(specOnly, /every requirement and definition-of-done item/);
-
-  const apiChange = buildIndependentReviewPrompt(
-    { agentCli: 'claude' },
-    { number: 58, title: 'Change the contract', body: 'Outcome text.' },
-    'b'.repeat(40),
-    {
-      changes: {
-        commit: 'b'.repeat(40),
-        paths: ['apps/api/src/profile/profile.controller.ts', 'apps/api/prisma/schema.prisma'],
-        stat: ' 2 files changed',
-        nameStatus: 'M\tapps/api/src/profile/profile.controller.ts',
-        diff: '--- a/apps/api/src/profile/profile.controller.ts',
-        truncated: false,
-      },
-    },
-  );
-
-  assert.match(apiChange, /public API response contracts/);
-  assert.match(apiChange, /database schema and migrations/);
-  assert.doesNotMatch(apiChange, /tests assert real externally observable/);
-});
-
-test('without a file list the audit keeps every direction', () => {
-  const prompt = buildIndependentReviewPrompt(
-    { agentCli: 'claude' },
-    { number: 59, title: 'No inventory', body: 'Outcome text.' },
-    'c'.repeat(40),
-  );
-
-  // Не зная файлов, сузить область не на чем, и молчаливое сокращение было бы
-  // потерей проверки.
-  assert.match(prompt, /Audit all of these areas:/);
-  assert.match(prompt, /migrations, and deployment\/runtime assumptions/);
-});
-
 test('a repeat review is told what the previous one already cleared', () => {
   const prompt = buildIndependentReviewPrompt(
     { agentCli: 'claude' },
@@ -197,10 +132,10 @@ test('a repeat review is told what the previous one already cleared', () => {
       changes: {
         commit: 'd'.repeat(40),
         commits: ['d'.repeat(40), 'e'.repeat(40)],
-        paths: ['apps/web/e2e/profile.spec.ts'],
+        paths: ['e2e/example.spec.ts'],
         stat: ' 1 file changed',
-        nameStatus: 'M\tapps/web/e2e/profile.spec.ts',
-        diff: '--- a/apps/web/e2e/profile.spec.ts',
+        nameStatus: 'M\te2e/example.spec.ts',
+        diff: '--- a/e2e/example.spec.ts',
         truncated: false,
       },
       previousReview: { commit: 'e'.repeat(40), newCommits: ['d'.repeat(40)] },
@@ -270,7 +205,7 @@ test('milestone review stays within milestone scope and trusts completed validat
   assert.match(prompt, /may be cumulative and contain work from other milestones/);
   assert.match(prompt, /Scope the review exclusively to the requirements/);
   assert.match(prompt, /diff against master as evidence, not as the definition of scope/);
-  assert.match(prompt, /Do not rerun npm, npx, builds, linters, type checks, tests/);
+  assert.match(prompt, /Do not rerun builds, linters, type checks, tests/);
   assert.match(prompt, /every configured preflight and validation script successfully/);
   // Запрет читать, а не только сообщать: control plane занимает бо́льшую часть
   // диффа ветки, и открытый файл оплачивается независимо от того, что ревьюер
@@ -283,7 +218,6 @@ test('milestone review stays within milestone scope and trusts completed validat
   assert.match(prompt, /Discover documentation paths/i);
   assert.match(prompt, /rg --files docs/);
   assert.match(prompt, /guess conventional paths such as `docs\/README\.md`/i);
-  assert.match(prompt, /`docs\/api\.md`.*`docs\/api-architecture\.md`/);
 });
 
 test('the milestone reviewer is shown the branch diff without the control plane', () => {
@@ -295,9 +229,9 @@ test('the milestone reviewer is shown the branch diff without the control plane'
       changes: {
         range: 'origin/master...' + 'a'.repeat(40),
         commits: 'abc1234 feat: end the browser session',
-        stat: ' apps/api/src/profile.service.ts | 8 ++++',
-        nameStatus: 'M\tapps/api/src/profile.service.ts',
-        diff: '--- a/apps/api/src/profile.service.ts',
+        stat: ' src/items.service.ts | 8 ++++',
+        nameStatus: 'M\tsrc/items.service.ts',
+        diff: '--- a/src/items.service.ts',
         truncated: false,
       },
     },
@@ -316,11 +250,11 @@ test('Ralph infrastructure is never treated as product work', () => {
     '.agents/ralph.config.json',
     'scripts/ralph/ralph-loop.mjs:975',
     'AGENTS.md',
-    'apps/api/AGENTS.md',
+    'packages/example/AGENTS.md',
     // Тот же файл инструкций для Claude Code: он задаёт поведение будущей
     // сессии наравне с `AGENTS.md`, поэтому и защищён наравне с ним.
     'CLAUDE.md',
-    'apps/api/CLAUDE.md',
+    'packages/example/CLAUDE.md',
     // Claude Code читает `.claude/**`: положенный туда файл управляет будущей
     // сессией, поэтому каталог принадлежит оператору, как и `.agents/**`.
     '.claude/security-reviewer.md',
@@ -329,7 +263,7 @@ test('Ralph infrastructure is never treated as product work', () => {
   ]) {
     assert.equal(isRalphInfrastructurePath(file), true, file);
   }
-  assert.equal(isRalphInfrastructurePath('apps/api/src/main.ts:10'), false);
+  assert.equal(isRalphInfrastructurePath('src/main.ts:10'), false);
   assert.equal(
     isRalphInfrastructureIssue({
       body: '<!-- ralph-milestone-finding pr:61 id:x -->\n**Location:** `scripts/ralph/ralph-loop.mjs:975`',
@@ -342,7 +276,7 @@ test('Ralph infrastructure is never treated as product work', () => {
   );
   assert.equal(
     isRalphInfrastructureIssue({
-      body: '<!-- ralph-milestone-finding pr:61 id:y -->\n**Location:** `apps/api/src/main.ts:10`',
+      body: '<!-- ralph-milestone-finding pr:61 id:y -->\n**Location:** `src/main.ts:10`',
     }),
     false,
   );
@@ -364,7 +298,7 @@ test('milestone review removes Ralph findings before product issues are created'
         severity: 'P2',
         title: 'Product defect',
         body: 'Fix API.',
-        file: 'apps/api/src/main.ts',
+        file: 'src/main.ts',
         line: 20,
       },
     ],
@@ -479,11 +413,11 @@ test('the implementation prompt carries the full contract without the operator m
 
 test('the operator manual states that it is not the agent contract', () => {
   const operatorDoc = readFileSync(ralphOperatorDocPath, 'utf8');
-  assert.match(operatorDoc, /Это операторская документация/);
+  assert.match(operatorDoc, /операторская документация/);
   assert.match(operatorDoc, /\.agents\/ralph-rules\.md/);
 });
 
-test('every generated prompt protects Next.js route segments with the tools it actually has', () => {
+test('every generated prompt protects bracketed path segments with the tools it actually has', () => {
   const rules = readFileSync(ralphRulesPath, 'utf8');
   const prompts = (config) => [
     [
@@ -507,16 +441,18 @@ test('every generated prompt protects Next.js route segments with the tools it a
   // Сегмент обязан быть назван везде: это единственное место, где его вообще
   // объясняют. А вот способ его прочитать у ревьюеров разный, и подсказка
   // обязана совпадать с тем набором инструментов, который роль получила.
-  for (const [label, text] of [['rules', rules], ...prompts({ agentCli: 'codex' })]) {
+  assert.match(rules, /-LiteralPath/, 'rules must require -LiteralPath');
+  assert.match(rules, /\[id\]/, 'rules must name the wildcard-prone segment');
+  for (const [label, text] of prompts({ agentCli: 'codex' })) {
     assert.match(text, /-LiteralPath/, `${label} must require -LiteralPath`);
-    assert.match(text, /\[id\]/, `${label} must name the wildcard-prone segment`);
+    assert.match(text, /square brackets/, `${label} must name the wildcard-prone segment`);
   }
 
   // Claude-ревьюер запускается с `--tools Read,Glob,Grep` и Bash не имеет:
   // инструкция про PowerShell была бы неисполнима, а защита от скобок —
   // отсутствующей.
   for (const [label, text] of prompts({ agentCli: 'claude' })) {
-    assert.match(text, /\[id\]/, `${label} must name the wildcard-prone segment`);
+    assert.match(text, /square brackets/, `${label} must name the wildcard-prone segment`);
     assert.doesNotMatch(text, /-LiteralPath|rg -n/, `${label} must not prescribe a shell`);
     assert.match(text, /Grep, Glob and Read/, `${label} must name the available tools`);
     assert.match(text, /character class/, `${label} must explain the bracket hazard`);
@@ -527,7 +463,7 @@ test('every generated prompt protects Next.js route segments with the tools it a
   assert.match(rules, /FullName/);
 });
 
-test('a Next.js route segment is only readable through -LiteralPath on Windows', function (t) {
+test('a bracketed path segment is only readable through -LiteralPath on Windows', function (t) {
   if (process.platform !== 'win32') {
     t.skip('PowerShell wildcard behaviour is Windows-specific');
     return;
@@ -581,10 +517,10 @@ test('замечания к control plane выбрасываются из рев
           line: 14,
           title: 'Budget not reverted',
         },
-        { severity: 'P2', file: 'apps/web/AGENTS.md', line: 34, title: 'Rule not updated' },
+        { severity: 'P2', file: 'packages/example/AGENTS.md', line: 34, title: 'Rule not updated' },
         {
           severity: 'P3',
-          file: 'apps/web/e2e/visual-baselines.ts',
+          file: 'e2e/baselines.ts',
           line: 37,
           title: 'Textual scan',
         },
@@ -595,7 +531,7 @@ test('замечания к control plane выбрасываются из рев
 
   assert.deepEqual(
     scoped.findings.map((finding) => finding.file),
-    ['apps/web/e2e/visual-baselines.ts'],
+    ['e2e/baselines.ts'],
   );
   assert.equal(scoped.verdict, 'fail');
 

@@ -59,7 +59,7 @@ test('finding fingerprint is stable for Unicode titles and changes with location
   const finding = {
     severity: 'P1',
     title: 'Обработать ошибку reconciliation',
-    file: 'apps/api/src/service.ts',
+    file: 'src/service.ts',
   };
 
   const first = reviewFindingFingerprint(pullRequest, finding);
@@ -69,7 +69,7 @@ test('finding fingerprint is stable for Unicode titles and changes with location
   });
   const anotherFile = reviewFindingFingerprint(pullRequest, {
     ...finding,
-    file: 'apps/api/src/other.ts',
+    file: 'src/other.ts',
   });
 
   assert.equal(first, equivalent);
@@ -219,18 +219,18 @@ test('after a rejected review the retry is told the work is already committed', 
 
 test('the failure excerpt comes from the script that failed, not the one before it', () => {
   const output = [
-    'RALPH_VALIDATION_SCRIPT=test:e2e:api',
-    'PASS test/profile.e2e-spec.ts',
+    'RALPH_VALIDATION_SCRIPT=npm run lint',
+    'PASS test/example.e2e-spec.ts',
     'Tests:       158 passed, 158 total',
-    'RALPH_VALIDATION_SCRIPT=test:e2e:web',
+    'RALPH_VALIDATION_SCRIPT=npm test',
     'Error: expect(page).toHaveURL(expected) failed',
     '  1) [desktop-chromium] › e2e/profile.spec.ts:849:5 › resumed page returns to sign-in',
   ].join('\n');
 
-  const scoped = failingScriptOutput(output, 'test:e2e:web');
+  const scoped = failingScriptOutput(output, 'npm test');
   assert.match(scoped, /toHaveURL/);
-  // Хвост предыдущего, успешного набора в отчёт попадать не должен: на реальном
-  // прогоне про упавший web-набор были показаны строки PASS от API.
+  // Хвост предыдущей, успешной команды в отчёт попадать не должен: иначе про
+  // упавшую команду показываются строки PASS от предыдущей.
   assert.doesNotMatch(scoped, /158 passed/);
   assert.doesNotMatch(scoped, /RALPH_VALIDATION_SCRIPT/);
 
@@ -320,8 +320,8 @@ function inventoryRunner(commits) {
     calls.push(args.join(' '));
     if (args[0] === 'log') return { status: 0, stdout: commits.join('\n') };
     if (args[0] === 'rev-parse') return { status: 0, stdout: 'd'.repeat(40) };
-    if (args.includes('--name-status')) return { stdout: 'M\tapps/api/src/profile.ts' };
-    if (args.includes('--stat')) return { stdout: ' apps/api/src/profile.ts | 4 +++-' };
+    if (args.includes('--name-status')) return { stdout: 'M\tsrc/items.ts' };
+    if (args.includes('--stat')) return { stdout: ' src/items.ts | 4 +++-' };
     return { stdout: 'x'.repeat(70_000) };
   };
 
@@ -332,18 +332,21 @@ test('the change inventory reads one commit through show and marks an oversized 
   const commit = 'a'.repeat(40);
   const { calls, run } = inventoryRunner([commit]);
 
-  const inventory = issueChangeInventory({ number: 57 }, commit, { run });
+  const inventory = issueChangeInventory({ number: 57 }, commit, {
+    run,
+    excludedPaths: ['dependencies.lock'],
+  });
 
   assert.equal(inventory.truncated, true);
   assert.equal(inventory.diff.length, 60_000);
-  assert.match(inventory.nameStatus, /apps\/api\/src\/profile\.ts/);
+  assert.match(inventory.nameStatus, /src\/items\.ts/);
   assert.deepEqual(inventory.commits, [commit]);
   // У `git show` нет особого случая для корневого commit, в отличие от
   // `commit^..commit`, поэтому одиночный commit читается именно так.
   assert.equal(calls.filter((call) => call.startsWith('show --format=')).length, 3);
   assert.ok(!calls.some((call) => call.startsWith('rev-parse')));
-  // Lockfile исключается только из построчного diff и остаётся в списке файлов.
-  assert.ok(calls.some((call) => call.includes(':(exclude)package-lock.json')));
+  // Исключённый путь убирается только из построчного diff и остаётся в списке файлов.
+  assert.ok(calls.some((call) => call.includes(':(exclude)dependencies.lock')));
 });
 
 test('a second iteration shows the issue commits only, not the range between them', () => {
@@ -741,24 +744,24 @@ function playwrightFailureOutput() {
   return [
     'Running 42 tests using 4 workers',
     '',
-    `${escape}[31m  1) [chromium] > e2e/profile.spec.ts:42:5 > profile > shows avatar ------${escape}[39m`,
+    `${escape}[31m  1) [chromium] > e2e/example.spec.ts:42:5 > example > shows the value ------${escape}[39m`,
     '',
     '    Error: expect(locator).toBeVisible() failed',
     '',
     "    Locator: getByRole('img')",
-    '        at ProfilePage.check (e2e/profile.spec.ts:44:12)',
+    '        at ExamplePage.check (e2e/example.spec.ts:44:12)',
     '        at runNextTicks (node:internal/process/task_queues:104:5)',
     '',
     '    Retry #1 -------------------------------------',
     '    Error: expect(locator).toBeVisible() failed',
-    '        at ProfilePage.check (e2e/profile.spec.ts:44:12)',
-    '    attachment #1: screenshot (test-results/profile-shows-avatar-chromium/test-failed-1.png)',
+    '        at ExamplePage.check (e2e/example.spec.ts:44:12)',
+    '    attachment #1: screenshot (test-results/example-shows-the-value-chromium/test-failed-1.png)',
     '',
     '    Retry #2 -------------------------------------',
     '    Error: expect(locator).toBeVisible() failed',
     '',
-    '  1) [chromium] > e2e/profile.spec.ts:42:5 > profile > shows avatar ------',
-    '  2) [mobile] > e2e/files-panel.spec.ts:10:3 > files > uploads ----------',
+    '  1) [chromium] > e2e/example.spec.ts:42:5 > example > shows the value ------',
+    '  2) [mobile] > e2e/second.spec.ts:10:3 > second > stores the item ----------',
     '',
     '  2 failed',
     '  40 passed (1.4m)',
@@ -771,24 +774,24 @@ function validationError(output) {
     status: 1,
     stdout: output,
     stderr: '',
-    script: 'test:e2e:web',
+    script: 'npm test',
   });
 }
 
 test('a failed validation is stored as a bounded structured summary', () => {
   const summary = summarizeCommandFailure(validationError(playwrightFailureOutput()));
 
-  assert.equal(summary.command, 'npm run test:e2e:web');
+  assert.equal(summary.command, 'npm test');
   assert.equal(summary.exitCode, 1);
   assert.equal(summary.code, 'RALPH_COMMAND_FAILED');
   assert.equal(summary.error, 'Error: expect(locator).toBeVisible() failed');
   assert.deepEqual(summary.failedTests, [
-    '[chromium] > e2e/profile.spec.ts:42:5 > profile > shows avatar',
-    '[mobile] > e2e/files-panel.spec.ts:10:3 > files > uploads',
+    '[chromium] > e2e/example.spec.ts:42:5 > example > shows the value',
+    '[mobile] > e2e/second.spec.ts:10:3 > second > stores the item',
   ]);
   assert.equal(summary.omittedFailedTests, 0);
   assert.deepEqual(summary.artifacts, [
-    'test-results/profile-shows-avatar-chromium/test-failed-1.png',
+    'test-results/example-shows-the-value-chromium/test-failed-1.png',
   ]);
   assert.ok(summary.excerpt.length <= 20);
   assert.equal(
@@ -814,7 +817,7 @@ test('the rendered failure summary is far smaller than the raw output and points
 
   assert.ok(output.length > 40_000);
   assert.ok(rendered.length <= 2_100, `summary was ${rendered.length} chars`);
-  assert.match(rendered, /Команда: npm run test:e2e:web/);
+  assert.match(rendered, /Команда: npm test/);
   assert.match(rendered, /Exit code: 1/);
   assert.match(rendered, /run\.log/);
 });
@@ -876,7 +879,7 @@ test('the recovery prompt carries the summary and tells the agent to rerun only 
   });
 
   assert.match(prompt, /## AFK recovery/);
-  assert.match(prompt, /npm run test:e2e:web/);
+  assert.match(prompt, /npm test/);
   assert.match(prompt, /Сначала повтори только упавшие проверки/);
   assert.match(prompt, /не дублируй его/);
   assert.ok(prompt.length < 2_500);
@@ -961,17 +964,17 @@ test('после отказа ревью база следующей сесси�
 test('разбор git status переживает обрезку пробелов и переименование', () => {
   // `run` обрезает пробелы по краям вывода, поэтому первая строка приходит без
   // ведущего пробела статуса. Срез на три символа съедал первый символ её пути.
-  const raw = ' M apps/web/app/profile/password-change-form.tsx\n M apps/web/e2e/profile.spec.ts\n';
+  const raw = ' M src/app/items/item-form.ts\n M e2e/example.spec.ts\n';
 
   assert.deepEqual(workingTreePaths(raw), workingTreePaths(raw.trim()));
   assert.deepEqual(workingTreePaths(raw.trim()), [
-    'apps/web/app/profile/password-change-form.tsx',
-    'apps/web/e2e/profile.spec.ts',
+    'src/app/items/item-form.ts',
+    'e2e/example.spec.ts',
   ]);
 
   // Непрослеженные файлы и переименования: из `R old -> new` нужен новый путь.
-  assert.deepEqual(workingTreePaths('?? design/videoMeeting.pen\nR  a.ts -> b.ts'), [
-    'design/videoMeeting.pen',
+  assert.deepEqual(workingTreePaths('?? design/example.pen\nR  a.ts -> b.ts'), [
+    'design/example.pen',
     'b.ts',
   ]);
 });
@@ -1047,7 +1050,7 @@ test('отпечаток отложенного замечания не зави
   const finding = {
     severity: 'P3',
     title: 'Комментарий обещает больше, чем делает код',
-    file: 'apps/api/src/profile/avatar-list-variant.service.ts',
+    file: 'src/items/list-variant.service.ts',
     line: 101,
   };
 
@@ -1057,7 +1060,7 @@ test('отпечаток отложенного замечания не зави
   );
   assert.notEqual(
     deferredFindingFingerprint(finding),
-    deferredFindingFingerprint({ ...finding, file: 'apps/api/src/other.ts' }),
+    deferredFindingFingerprint({ ...finding, file: 'src/other.ts' }),
   );
   assert.notEqual(
     deferredFindingFingerprint(finding),
@@ -1268,9 +1271,9 @@ test('уже застадированное удаление не попадае
   // как `D `, но `git add` по нему отвечает `did not match any files` и роняет
   // прогон кодом 128 — так оборвалась issue #91 после пятнадцати минут работы.
   const status = [
-    ' M apps/api/src/files/files.controller.ts',
-    'D  apps/api/src/files/services/meeting-file-uploader-avatar.service.ts',
-    '?? apps/api/src/files/services/meeting-uploader-avatar.service.ts',
+    ' M src/items/items.controller.ts',
+    'D  src/items/services/item-uploader.service.ts',
+    '?? src/items/services/item-uploader-renamed.service.ts',
   ].join('\n');
 
   const entries = workingTreeEntries(status.trim());
@@ -1284,8 +1287,8 @@ test('уже застадированное удаление не попадае
   assert.deepEqual(
     entries.filter((entry) => entry.worktree !== ' ').map((entry) => entry.path),
     [
-      'apps/api/src/files/files.controller.ts',
-      'apps/api/src/files/services/meeting-uploader-avatar.service.ts',
+      'src/items/items.controller.ts',
+      'src/items/services/item-uploader-renamed.service.ts',
     ],
   );
 
@@ -1339,7 +1342,7 @@ test('база, уже вошедшая в ветку, не вызывает с�
 test('незавершённая работа в дереве откладывает слияние базы, а не смешивается с ним', () => {
   // Восстановление после сбоя: diff агента ещё не закончен, и чужие изменения
   // поверх него смешали бы две работы в одном коммите.
-  const git = gitStubForBaseSync({ status: ' M apps/api/src/files/files.controller.ts' });
+  const git = gitStubForBaseSync({ status: ' M src/items/items.controller.ts' });
 
   const merged = syncPhaseBranchWithBase(baseSyncConfig, {
     run: git.run,

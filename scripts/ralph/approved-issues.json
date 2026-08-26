@@ -1,6 +1,1 @@
-{
-  "67": {
-    "title": "[P2] Batch storage reconciliation instead of scanning the full corpus",
-    "body": "<!-- ralph-milestone-finding pr:61 id:76bbe2537324c0ac7ed2 -->\n## Context\n\n**Source:** automated milestone review of PR #61\n**Milestone:** Phase 1: Core Profile API (Tracer Bullet)\n**Reviewed head:** `aa63f8a3c103ac93e75c485e2b84e4918cf944ac`\n**Severity:** P2\n**Location:** `apps/api/src/files/services/meeting-file-deletion-reconciliation.service.ts:108`\n\n## Finding\n\nEvery minute the reconciler loads all stale storage entries, places every key into one Prisma `IN` query, then loads all old READY rows and checks them serially. File growth can make reconciliation run continuously or exceed PostgreSQL query/parameter limits. Process filesystem and database records in bounded batches with a per-run budget or durable cursor.\n\n## Definition of done\n\n- Fix the root cause without weakening existing behavior or tests.\n- Add or update regression coverage for the failure path.\n- Run the relevant checks from AGENTS.md and the Ralph configuration.\n- Keep the change focused on this finding; do not create a pull request.\n\nThe existing draft PR will be updated and reviewed again after all review findings are resolved."
-  }
-}
+{}

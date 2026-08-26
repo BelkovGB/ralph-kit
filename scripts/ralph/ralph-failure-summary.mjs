@@ -89,15 +89,18 @@ function primaryErrorLine(lines) {
 }
 
 /**
- * Вывод одного упавшего script, а не всего набора.
+ * Вывод одной упавшей команды, а не всего набора.
  *
- * Entrypoint печатает маркер отдельной строкой перед каждым script, а `set -eu`
- * останавливает цикл на первом сбое: всё до последнего маркера — вывод уже
- * прошедших проверок. Без отсечения excerpt показывал хвост предыдущего,
- * успешного script: на реальном прогоне в сводке про упавший `test:e2e:web`
- * стояли строки `PASS test/...` от API-набора.
+ * Entrypoint печатает маркер отдельной строкой перед каждой командой, а
+ * `set -eu` останавливает цикл на первом сбое: всё до последнего маркера —
+ * вывод уже прошедших проверок. Без отсечения excerpt показывал хвост
+ * предыдущей, успешной команды: на реальном прогоне в сводке про упавший
+ * браузерный набор стояли строки `PASS test/...` от API-набора.
+ *
+ * Разбор построчный: команда содержит пробелы, а перевод строки в ней запрещён
+ * проверкой конфигурации.
  */
-const validationScriptMarkerLine = /^RALPH_VALIDATION_SCRIPT=(\S+)\s*$/gm;
+const validationScriptMarkerLine = /^RALPH_VALIDATION_SCRIPT=(.+?)\s*$/gm;
 
 export function failingScriptOutput(rawOutput, script) {
   // Маркер печатается контейнером и может прийти в escape-последовательностях,
@@ -122,7 +125,7 @@ export function summarizeCommandFailure(error, options = {}) {
   const { tests, omitted } = uniqueFailedTests(output);
   const primary = primaryErrorLine(lines) ?? String(error?.message ?? '').split(/\r?\n/)[0] ?? '';
   return {
-    command: error?.script ? `npm run ${error.script}` : (options.command ?? null),
+    command: error?.script ?? options.command ?? null,
     exitCode: Number.isInteger(error?.status) ? error.status : null,
     code: error?.code ?? null,
     error: primary.length > 300 ? `${primary.slice(0, 300)}…` : primary,

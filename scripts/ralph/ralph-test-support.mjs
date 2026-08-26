@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -8,14 +8,16 @@ import { loadConfig } from './ralph-config.mjs';
  * Общие фикстуры тестов Ralph: те, которыми пользуется больше одного файла.
  */
 
+// Validation deliberately mounts /tmp with noexec, so fake executables cannot
+// live there. `.git` is on the exec-mounted workspace, exists in every clone
+// and in the container snapshot, and `git ls-files` never lists it — so its
+// contents cannot leak into a validation snapshot.
 export const executableTempDirectory = fileURLToPath(
-  new URL('../../node_modules/', import.meta.url),
+  new URL('../../.git/ralph-test/', import.meta.url),
 );
+mkdirSync(executableTempDirectory, { recursive: true });
 
 export function fakeCodexScript(source) {
-  // Validation deliberately mounts /tmp with noexec. Keep fake executables in
-  // the executable workspace instead; node_modules is ignored and writable in
-  // both local and isolated test runs.
   const directory = mkdtempSync(path.join(executableTempDirectory, '.ralph-fake-codex-'));
   const scriptPath = path.join(directory, 'fake-codex.mjs');
   writeFileSync(scriptPath, source, 'utf8');

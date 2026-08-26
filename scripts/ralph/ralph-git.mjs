@@ -22,13 +22,21 @@ export function commitTrailerForIssue(issue) {
 // Бюджет подобран по наблюдаемой цене альтернативы: без diff ревьюер Claude
 // запускается с Read, Glob и Grep и без оболочки, то есть получить изменения
 // сам не может вовсе и восстанавливает область правки чтением файлов целиком —
-// на issue #57 это 34 шага и шесть минут. Diff на 60 000 символов дешевле.
+// в замере это 34 шага и шесть минут. Diff на 60 000 символов дешевле.
 const reviewDiffCharacterBudget = 60_000;
 
-// package-lock.json меняется на сотни строк от одной зависимости и вытеснил бы
-// из бюджета продуктовый код. Файл остаётся в списке изменений и в статистике;
-// исчезает только его построчный diff.
-const reviewDiffExcludedPaths = [':(exclude)package-lock.json', ':(exclude)**/package-lock.json'];
+/**
+ * Файлы, чей построчный diff не показывают ревьюеру.
+ *
+ * Список задаёт проект через `reviewDiffExcludedPaths` в конфигурации:
+ * сгенерированный файл вроде lock-файла меняется на сотни строк от одной
+ * зависимости и вытесняет из бюджета продуктовый код. Исключённый файл остаётся
+ * в списке изменений и в статистике; исчезает только его построчный diff.
+ * По умолчанию список пуст.
+ */
+function reviewDiffExcludePathspec(excludedPaths = []) {
+  return excludedPaths.map((excludedPath) => `:(exclude)${excludedPath}`);
+}
 
 /**
  * Все commit этой issue, новейший первым.
@@ -101,12 +109,12 @@ export function issueChangedPaths(issue, commit, execute = run) {
  * Колонки разбираются, а не отбрасываются: от них зависит, надо ли путь вообще
  * стадировать. Файл, удалённый через `git rm`, стоит как `D ` — его нет ни в
  * дереве, ни в индексе, и `git add` по такому пути отвечает `did not match any
- * files` с кодом 128. На issue #91 это уронило прогон после пятнадцати минут,
+ * files` с кодом 128. Однажды это уронило прогон после пятнадцати минут,
  * когда работа была уже сделана.
  *
  * Отрезать ровно три символа нельзя: `run` обрезает пробелы по краям вывода, и
  * первая строка приходит без ведущего пробела статуса. Раньше срез съедал
- * первый символ её пути — `apps/web/...` превращался в `pps/web/...`.
+ * первый символ её пути — `src/app/...` превращался в `rc/app/...`.
  */
 export function workingTreeEntries(status) {
   const entries = new Map();
@@ -134,7 +142,7 @@ export function workingTreePaths(status) {
  *
  * Показываются именно коммиты этой issue, по одному, в хронологическом
  * порядке. Диапазон `first^..last` был бы короче, но он втягивает всё, что
- * легло в ветку между ними: на issue #57 это дало 31 файл вместо четырёх,
+ * легло в ветку между ними: в замере это дало 31 файл вместо четырёх,
  * включая правки control plane, сделанные оператором между прогонами. Ревьюер
  * получал чужую работу под видом реализации задачи.
  *
@@ -143,12 +151,13 @@ export function workingTreePaths(status) {
  */
 export function issueChangeInventory(issue, commit, dependencies = {}) {
   const execute = dependencies.run ?? run;
+  const excluded = reviewDiffExcludePathspec(dependencies.excludedPaths);
   const commits = issueCommits(issue, commit, execute);
   // issueCommits отдаёт новейший первым; ревьюеру нужен порядок появления.
   const reviewed = commits.length > 0 ? [...commits].reverse() : [commit];
   const inspect = (flags, pathspecs = []) =>
     execute('git', ['show', '--format=', ...flags, ...reviewed, ...pathspecs]).stdout;
-  const patch = inspect(['--patch', '--unified=3'], ['--', '.', ...reviewDiffExcludedPaths]);
+  const patch = inspect(['--patch', '--unified=3'], ['--', '.', ...excluded]);
   const truncated = patch.length > reviewDiffCharacterBudget;
 
   const nameStatus = inspect(['--name-status']);
@@ -371,11 +380,10 @@ export function verifyRepository(config, requireClean) {
  * Ветка фазы создаётся от базы один раз, и дальше база живёт своей жизнью:
  * родительская фаза дорабатывается по замечаниям своего ревью, база принимает
  * чужие merge. Пока ветка этого не видит, агент строит поверх устаревшего кода
- * и не знает об этом. На фазе 6 это стоило второй реализации того, что фаза 5
- * уже сделала: обе ветки независимо получили meeting-scoped идентификатор
- * аватара загрузчика — одна как handle, другая как ключ картинки, — и свести
- * их пришлось вручную. `verifyBaseHistory` такое не ловит: общий предок у
- * разошедшихся веток остаётся, и проверка проходит молча.
+ * и не знает об этом. Однажды это стоило второй реализации того, что соседняя
+ * фаза уже сделала: обе ветки независимо ввели один и тот же идентификатор,
+ * каждая по-своему, и свести их пришлось вручную. `verifyBaseHistory` такое не
+ * ловит: общий предок у разошедшихся веток остаётся, и проверка проходит молча.
  *
  * Возвращает true, только если слияние действительно принесло коммиты:
  * вызывающий обязан заново проверить дерево, потому что база могла разойтись с

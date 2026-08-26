@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
@@ -35,40 +35,10 @@ export const agentProjectRoot = path.resolve(
 // Песочница файловой системы, общая для обоих CLI
 // -----------------------------------------------------------------------------
 
-/**
- * Кэш браузеров Playwright на хосте, если он там есть.
- *
- * Playwright ищет браузеры в `LOCALAPPDATA` (Windows) или `~/.cache` (POSIX), а
- * песочница подменяет оба, поэтому сессия видела пустой каталог. Агент, которого
- * просят починить браузерный тест, оставался без обратной связи: на issue #57 он
- * попробовал запустить тест, получил «Executable doesn't exist», и потратил
- * оставшиеся 90 шагов на суррогаты проверки — самостоятельный разбор diff,
- * сверку переводов строк, повторные прогоны prettier. Сессия упёрлась в лимит
- * за 34 минуты и не закончила ничего.
- *
- * Границу доверия это не двигает. Изоляция HOME отрезает пользовательский
- * *конфиг* — скиллы, плагины, MCP-серверы, правила; каталог с бинарями браузера
- * ничего из этого не несёт. Полный доступ к файловой системе у сессии и так
- * есть, так что нового пути сюда не появляется — появляется работающая проверка
- * вместо ста потраченных шагов.
- */
-export function hostPlaywrightBrowsersPath(source, exists = existsSync) {
-  const configured = source.PLAYWRIGHT_BROWSERS_PATH?.trim();
-  const base =
-    configured ||
-    (process.platform === 'win32'
-      ? source.LOCALAPPDATA && path.join(source.LOCALAPPDATA, 'ms-playwright')
-      : source.HOME && path.join(source.HOME, '.cache', 'ms-playwright'));
-
-  return base && exists(base) ? base : null;
-}
-
 // Изолированный HOME отрезает пользовательский конфиг агента: скиллы, плагины,
 // MCP-серверы и правила, которых нет в доверенном control plane. Каталог для
 // учётных данных создаёт backend: у каждого CLI он свой.
 export function createSandboxRoot(source, prefix) {
-  // Путь снимается до подмены LOCALAPPDATA и HOME: после неё он уже не выводим.
-  const browsersPath = hostPlaywrightBrowsersPath(source);
   const root = mkdtempSync(path.join(tmpdir(), prefix));
   const home = path.join(root, 'home');
   const temp = path.join(root, 'tmp');
@@ -95,7 +65,6 @@ export function createSandboxRoot(source, prefix) {
       TEMP: temp,
       TMP: temp,
       TMPDIR: temp,
-      ...(browsersPath === null ? {} : { PLAYWRIGHT_BROWSERS_PATH: browsersPath }),
     },
   };
 }

@@ -5,17 +5,16 @@ description: Читай файл или часть файла эффективн
 
 # Read File
 
-Прочитай $ARGUMENTS минимальным числом токенов. Команды ниже — для PowerShell,
-основной оболочки этого проекта.
+Прочитай $ARGUMENTS минимальным числом токенов. Команды ниже — для PowerShell.
 
 ## Правило путей
 
-Всегда используй `-LiteralPath`. В путях Next.js есть сегменты вида
-`apps/web/app/meetings/[id]`, и `-Path` трактует `[id]` как wildcard, поэтому
-существующий файл «не находится».
+Всегда используй `-LiteralPath`. В путях встречаются сегменты в квадратных
+скобках, например `app/items/[id]/page.tsx`, и `-Path` трактует `[id]` как
+wildcard, поэтому существующий файл «не находится».
 
 ```powershell
-Get-Content -LiteralPath 'apps/web/app/meetings/[id]/meeting-files-page.tsx' -TotalCount 40
+Get-Content -LiteralPath 'app/items/[id]/page.tsx' -TotalCount 40
 ```
 
 Когда передаёшь список файлов дальше по конвейеру, передавай `FullName` именно в
@@ -39,11 +38,9 @@ Get-ChildItem -Recurse -Filter *.ts | ForEach-Object { Get-Content -LiteralPath 
    Get-Content -LiteralPath <file> -TotalCount 50
    ```
 
-3. Нужное место ищи через `rg` с номерами строк, а не чтением целиком:
-
-   ```powershell
-   rg -n 'function|class|export|@Injectable' <file>
-   ```
+3. Нужное место ищи инструментом Grep с `output_mode: "content"` и номерами
+   строк, а не чтением файла целиком. Шелловый `rg` не используй: в
+   изолированной сессии его нет, и упавшая команда стоит шага и текста ошибки.
 
 4. Читай только найденный диапазон:
 
@@ -59,16 +56,11 @@ Get-ChildItem -Recurse -Filter *.ts | ForEach-Object { Get-Content -LiteralPath 
    (Get-Content -LiteralPath <file> -Raw | ConvertFrom-Json).нужное_поле
    ```
 
-6. Для Prisma-схемы бери одну модель:
-
-   ```powershell
-   rg -n --multiline 'model <Name> \{[\s\S]*?\n\}' apps/api/prisma/schema.prisma
-   ```
-
 ## Запреты
 
 - Не читай файл целиком, если нужна одна функция, модель или поле.
-- Не дампи логи, `package-lock.json`, сгенерированные файлы и большие JSON.
-- Не полагайся на `head`, `sed`, `cat`, `jq`: в этой среде оболочка — PowerShell.
-  Если тебе действительно доступен POSIX-shell, эквиваленты — `head -n`,
-  `sed -n 'N,Mp'`, `jq`, но `rg` предпочтителен в обеих оболочках.
+- Не дампи логи, файлы блокировок зависимостей, сгенерированные файлы и большие
+  JSON.
+- Не полагайся на `head`, `sed`, `cat`, `jq`, если оболочка — PowerShell.
+  В POSIX-шелле эквиваленты — `head -n`, `sed -n 'N,Mp'`, `jq`, но поиск в обеих
+  оболочках делается инструментом Grep.

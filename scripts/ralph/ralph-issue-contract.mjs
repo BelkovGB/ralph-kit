@@ -26,7 +26,7 @@ function assertTrustedIssueAuthor(config, issue, repository) {
   if (isRalphInfrastructureIssue(issue)) {
     rejectUntrustedIssue(
       `Issue #${issue.number} относится к Ralph-инфраструктуре. ` +
-        'Ralph выполняет только продуктовые задачи video-meetings; настройка цикла выполняется вручную.',
+        'Ralph выполняет только продуктовые задачи; настройка цикла выполняется вручную.',
     );
   }
   const author = typeof issue.authorLogin === 'string' ? issue.authorLogin : '';
@@ -65,8 +65,8 @@ export function approveConfiguredIssue(
     stateStore?.approveIssueSnapshot(issue.number, snapshot, replace) ?? snapshot;
   config.approvedIssueSnapshots[key] = approvedSnapshot;
   console.log(
-    `Issue #${issue.number}: immutable snapshot автоматически зафиксирован ` +
-      'закоммиченным планом phases.',
+    `Issue #${issue.number}: immutable snapshot снят с текущего содержимого issue ` +
+      'на GitHub при первом запуске.',
   );
   return issue;
 }
