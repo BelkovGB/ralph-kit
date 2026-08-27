@@ -1555,6 +1555,7 @@ const script = `
       // оставил бы зависимые селекты пустыми.
       optionsDependOn: source.optionsDependOn || null,
       allowCustom: source.allowCustom === true,
+      required: source.required === true,
       hasDefault: Object.prototype.hasOwnProperty.call(source, 'default'),
       fallback: source.default,
       min: source.min,
@@ -1588,12 +1589,15 @@ const script = `
     return key ? 'недопустимо для ' + key : 'нет в списке';
   }
 
-  // Поля с недопустимым значением. Такое поле может лежать на соседней вкладке
-  // — после смены CLI агента человек обязан узнать о нём, не открывая её.
+  // Поля, из-за которых прогон не стартует: значение вне списка или пустое
+  // обязательное. Такое поле может лежать на соседней вкладке — после смены CLI
+  // агента или после обновления набора человек обязан узнать о нём, не открывая
+  // её.
   function badFields(group) {
     return group.fields.filter(function (field) {
-      if (field.type !== 'select' || field.allowCustom) return false;
       var stored = draft ? getPath(draft, field.path) : undefined;
+      if (field.required && isBlank(stored)) return true;
+      if (field.type !== 'select' || field.allowCustom) return false;
       if (isUnset(stored)) return false;
       var current = String(stored);
       if (!current) return false;
@@ -1618,6 +1622,14 @@ const script = `
 
   function isUnset(value) {
     return value === undefined || value === null;
+  }
+
+  // Пустая строка приходит из очищенного поля ввода, пустой список — из таблицы
+  // фаз без строк: для обязательного поля это то же самое, что значения нет.
+  function isBlank(value) {
+    if (isUnset(value)) return true;
+    if (Array.isArray(value)) return value.length === 0;
+    return String(value).trim() === '';
   }
 
   /* Значения в файле может не быть — тогда его подставит сам Ralph. Форма
@@ -1782,6 +1794,9 @@ const script = `
       label.appendChild(text);
     }
 
+    if (!warnText && field.required && isBlank(stored)) {
+      warnText = 'Поле обязательное: пока оно пустое, прогон останавливается на проверке настроек.';
+    }
     if (hintText) box.appendChild(el('div', 'field-hint', hintText));
     if (warnText) box.appendChild(el('div', 'field-hint is-warn', warnText));
     return box;
@@ -2048,7 +2063,8 @@ const script = `
         if (group.id === settingsTab) active = index;
       });
       frag.appendChild(renderSubtabs(groups, active));
-      // Недопустимое значение на закрытой вкладке иначе осталось бы незамеченным.
+      // Поле, из-за которого прогон не стартует, на закрытой вкладке иначе
+      // осталось бы незамеченным.
       var trouble = [];
       groups.forEach(function (group, index) {
         if (index === active) return;
@@ -2058,7 +2074,7 @@ const script = `
       });
       if (trouble.length) {
         frag.appendChild(
-          el('div', 'settings-warn', 'Недопустимые значения: ' + trouble.join('; ') + '.')
+          el('div', 'settings-warn', 'Прогон не стартует из-за полей: ' + trouble.join('; ') + '.')
         );
       }
       // Заголовок группы не дублируется: её называет выбранная вкладка.

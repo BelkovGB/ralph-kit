@@ -46,9 +46,6 @@ function defaultValidationImage() {
   return `${name === '' ? 'ralph' : name}-ralph-validation:latest`;
 }
 
-const approvedIssueSnapshotsHash =
-  'ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356';
-
 export function parseJson(value, source) {
   try {
     return JSON.parse(value);
@@ -330,6 +327,7 @@ const configFields = new Set([
   'active',
   'agentCli',
   'approvedIssueSnapshotsFile',
+  'approvedIssueSnapshotsHash',
   'autoApproveConfiguredIssues',
   'baseBranch',
   'developmentEffort',
@@ -435,22 +433,58 @@ function applyLoopDefaults(config) {
   config.approvedIssueSnapshotsFile ??= 'scripts/ralph/approved-issues.json';
 }
 
+// Форма эталонной суммы: 64 знака шестнадцатеричной записи в нижнем регистре.
+const approvedIssueSnapshotsHashPattern = /^[0-9a-f]{64}$/u;
+
+/**
+ * Эталонная сумма журнала лежит в конфиге оператора, а не в коде набора.
+ *
+ * Защищены оба места одинаково: `.agents/ralph.config.json` входит в набор
+ * доверенных файлов, и правка его во время прогона останавливает работу так же,
+ * как правка модуля. Различает их обновление набора: оно перезаписывает
+ * `scripts/ralph/**` целиком, а конфиг не трогает, поэтому эталон переживает
+ * обновление вместе с журналом проекта.
+ */
 function readApprovedIssueSnapshots(config) {
   const approvedIssueSnapshotsPath = resolveProjectFile(
     config.approvedIssueSnapshotsFile,
     'approvedIssueSnapshotsFile',
   );
   if (!existsSync(approvedIssueSnapshotsPath)) {
-    fail(`Файл одобренных snapshots issue не найден: ${approvedIssueSnapshotsPath}`);
+    fail(`Журнал одобренных issues не найден: ${approvedIssueSnapshotsPath}`);
   }
   const currentHash = trustedFileHash(approvedIssueSnapshotsPath);
-  if (currentHash !== approvedIssueSnapshotsHash) {
+  // Сумму копируют из сообщения об остановке, а терминал приносит вместе с ней
+  // пробел или перевод строки: без обрезки человек получил бы претензию к форме
+  // значения вместо расхождения, которого нет.
+  if (typeof config.approvedIssueSnapshotsHash === 'string') {
+    config.approvedIssueSnapshotsHash = config.approvedIssueSnapshotsHash.trim();
+  }
+  const expectedHash = config.approvedIssueSnapshotsHash;
+  if (expectedHash === undefined || expectedHash === '') {
     fail(
-      `Файл одобренных snapshots issue ${approvedIssueSnapshotsPath} ` +
-        'не совпадает с защищённым контрольным SHA-256 из константы ' +
-        'approvedIssueSnapshotsHash в scripts/ralph/ralph-config.mjs. ' +
-        `Текущая сумма файла: ${currentHash}. ` +
-        'Проверьте изменение и впишите эту сумму в константу тем же коммитом.',
+      `Заполните поле "approvedIssueSnapshotsHash" в ${configPath}: ` +
+        'без эталона Ralph не проверит журнал одобренных issues ' +
+        `${approvedIssueSnapshotsPath}. ` +
+        `Текущая сумма журнала: ${currentHash}. ` +
+        'Проверьте, что журнал содержит то, что вы одобрили, и впишите эту сумму в поле.',
+    );
+  }
+  if (typeof expectedHash !== 'string' || !approvedIssueSnapshotsHashPattern.test(expectedHash)) {
+    fail(
+      `Поле "approvedIssueSnapshotsHash" в ${configPath} должно содержать SHA-256: ` +
+        '64 знака шестнадцатеричной записи в нижнем регистре. ' +
+        `Сейчас там ${JSON.stringify(expectedHash)}. ` +
+        `Текущая сумма журнала ${approvedIssueSnapshotsPath}: ${currentHash}.`,
+    );
+  }
+  if (currentHash !== expectedHash) {
+    fail(
+      `Журнал одобренных issues ${approvedIssueSnapshotsPath} ` +
+        'не совпадает с защищённым контрольным SHA-256 из поля ' +
+        `"approvedIssueSnapshotsHash" в ${configPath}. ` +
+        `Текущая сумма журнала: ${currentHash}. ` +
+        'Проверьте изменение и впишите эту сумму в поле тем же коммитом.',
     );
   }
   config.approvedIssueSnapshots = parseJson(
@@ -554,7 +588,7 @@ function validateApprovedIssueSnapshots(config) {
     config.approvedIssueSnapshots === null ||
     Array.isArray(config.approvedIssueSnapshots)
   ) {
-    fail('Поле "approvedIssueSnapshots" должно быть объектом с неизменяемыми snapshots issue.');
+    fail('Поле "approvedIssueSnapshots" должно быть объектом с замороженным текстом issues.');
   }
   for (const [number, snapshot] of Object.entries(config.approvedIssueSnapshots)) {
     if (!/^[1-9][0-9]*$/.test(number)) {

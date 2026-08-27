@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
 import { reasoningEffortsFor } from './ralph-agent-backends.mjs';
+import { fieldGroups } from './ralph-gui-fields.mjs';
 import { developmentCodexArguments } from './ralph-codex-session.mjs';
 import {
   agentInstructionFiles,
@@ -690,6 +692,110 @@ test('a top-level field the code does not read is rejected, not ignored', () => 
       }),
     /Неизвестные поля верхнего уровня: maxIteration/,
   );
+});
+
+// Сумму журнала печатают сообщения об остановке, когда эталона нет или он не
+// совпал. Тест считает её от журнала этой копии набора: журнал у каждого проекта
+// свой, а константа здесь повторяла бы значение из `.agents/ralph.config.json`
+// и разошлась бы с ним у любого, кто внёс в журнал запись.
+function currentLedgerHash() {
+  const ledgerPath = loadConfig().approvedIssueSnapshotsPath;
+  return createHash('sha256').update(readFileSync(ledgerPath)).digest('hex');
+}
+
+test('the approved ledger checksum is taken from the operator config, not from the code', () => {
+  // Эталон лежит в конфиге, потому что обновление набора перезаписывает
+  // `scripts/ralph/**` целиком, а конфиг не трогает. Поэтому тест меняет журнал
+  // и эталон вместе: сумма из конфига обязана разрешить прогон на содержимом,
+  // которого код набора не знает.
+  const ledgerPath = loadConfig().approvedIssueSnapshotsPath;
+  const originalLedger = readFileSync(ledgerPath, 'utf8');
+  const approved = { 7: { title: 'Approved', body: 'Approved body.' } };
+  const ledger = `${JSON.stringify(approved, null, 2)}\n`;
+
+  try {
+    writeFileSync(ledgerPath, ledger, 'utf8');
+    const hash = createHash('sha256').update(readFileSync(ledgerPath)).digest('hex');
+    withPatchedRalphConfig({ approvedIssueSnapshotsHash: hash }, (config) => {
+      assert.equal(config.approvedIssueSnapshotsHash, hash);
+      assert.deepEqual(config.approvedIssueSnapshots, approved);
+    });
+  } finally {
+    writeFileSync(ledgerPath, originalLedger, 'utf8');
+  }
+});
+
+test('a checksum that does not match the ledger stops the load', () => {
+  // Журнал здесь целый, а эталон чужой: подделкой может быть и он, поэтому
+  // расхождение останавливает прогон с любой стороны.
+  const ledgerHash = currentLedgerHash();
+  assert.throws(
+    () =>
+      withPatchedRalphConfig({ approvedIssueSnapshotsHash: '0'.repeat(64) }, () => {
+        throw new Error('loadConfig should have failed');
+      }),
+    (error) => {
+      assert.match(error.message, /не совпадает с защищённым контрольным SHA-256/u);
+      // Сумму печатает сообщение: оператор вписывает её, не считая руками.
+      assert.match(error.message, new RegExp(ledgerHash, 'u'));
+      assert.match(error.message, /approved-issues\.json/u);
+      return true;
+    },
+  );
+});
+
+test('a missing checksum key stops the load and says what to write', () => {
+  // Ключа нет — Ralph не сверит журнал ни с чем, и молчаливое умолчание здесь
+  // означало бы, что автономная сессия одобряет себе задачи сама.
+  const ledgerHash = currentLedgerHash();
+  assert.throws(
+    () =>
+      withPatchedRalphConfig({ approvedIssueSnapshotsHash: undefined }, () => {
+        throw new Error('loadConfig should have failed');
+      }),
+    (error) => {
+      assert.match(error.message, /Заполните поле "approvedIssueSnapshotsHash"/u);
+      assert.match(error.message, new RegExp(ledgerHash, 'u'));
+      return true;
+    },
+  );
+});
+
+test('a checksum in the wrong shape stops the load before it is compared', () => {
+  // Обрезанная или набранная заглавными сумма никогда не совпадёт с посчитанной,
+  // и «не совпадает» увело бы оператора проверять журнал вместо своей опечатки.
+  for (const value of ['ABC', currentLedgerHash().toUpperCase(), 42]) {
+    assert.throws(
+      () =>
+        withPatchedRalphConfig({ approvedIssueSnapshotsHash: value }, () => {
+          throw new Error('loadConfig should have failed');
+        }),
+      /должно содержать SHA-256: 64 знака шестнадцатеричной записи в нижнем регистре/u,
+    );
+  }
+});
+
+test('a checksum pasted with spaces around it still matches the ledger', () => {
+  // Сумму копируют из сообщения об остановке, и терминал приносит её вместе с
+  // переводом строки. Без обрезки человек получил бы претензию к форме значения
+  // вместо расхождения, которого нет.
+  const hash = currentLedgerHash();
+  withPatchedRalphConfig({ approvedIssueSnapshotsHash: `  ${hash}\n` }, (config) => {
+    assert.equal(config.approvedIssueSnapshotsHash, hash);
+  });
+});
+
+test('the console marks the fields the config cannot do without', () => {
+  // Поле без умолчания форма рисует пустой строкой ввода. Без пометки оператор
+  // не отличит обязательное поле от вычисляемого и узнает о нём на остановке
+  // прогона, а не на вкладке настроек.
+  const marked = new Set();
+  for (const group of fieldGroups) {
+    for (const field of group.fields) {
+      if (field.required === true) marked.add(field.path);
+    }
+  }
+  assert.deepEqual(marked, new Set(['prompt', 'phases', 'approvedIssueSnapshotsHash']));
 });
 
 test('the validation image is derived per field when the config omits it', () => {

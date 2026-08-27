@@ -70,7 +70,7 @@ Ralph выполняет задачи из GitHub, пока вы не за ко�
   руками. У Codex субагентов нет.
 - `.gitattributes` — одна строка `scripts/ralph/** text eol=lf`: она закрепляет
   перевод строк LF на файлах набора. Без неё Git на Windows подставит CRLF при
-  клоне, sha256 файла одобренных issues разойдётся с константой в коде, и не
+  клоне, sha256 файла одобренных issues разойдётся с суммой в конфиге, и не
   запустятся ни `--check`, ни `--run`. Если свой `.gitattributes` в проекте уже
   есть, допишите эту строку в него, а файл набора не копируйте.
 - `.gitignore` — четыре строки: два файла результата ревью, которые пишет Ralph,
@@ -236,8 +236,8 @@ node scripts/ralph/ralph-loop.mjs --check
 node --test --test-concurrency=1 "scripts/ralph/*.test.mjs"
 ```
 
-Проходят 225 тестов, падать не должен ни один. Ключ `--test-concurrency=1`
-обязателен: три теста пишут в файлы самого репозитория — журнал одобренных
+Проходят 231 тест, падать не должен ни один. Ключ `--test-concurrency=1`
+обязателен: четыре теста пишут в файлы самого репозитория — журнал одобренных
 issues `scripts/ralph/approved-issues.json` и пробный файл в `.claude` — и
 возвращают их на место за собой, а параллельный тестовый файл считает
 контрольные суммы тех же файлов ровно в этот момент и падает. Без ключа
@@ -245,7 +245,7 @@ issues `scripts/ralph/approved-issues.json` и пробный файл в `.clau
 (`node --test scripts/ralph/`) не работает вовсе: Node принимает путь за модуль
 и отвечает `Cannot find module`.
 
-Пока идёт `--run`, тесты не запускайте: те же три теста подменяют файлы, за
+Пока идёт `--run`, тесты не запускайте: те же четыре теста подменяют файлы, за
 которыми прогон следит как за подделкой.
 
 Прогон запускает команда `node scripts/ralph/ralph-loop.mjs --run`. Что делает
@@ -346,22 +346,23 @@ issues `scripts/ralph/approved-issues.json` и пробный файл в `.clau
 - `AGENTS.md` и `CLAUDE.md` — они описывают ваш проект. Что изменилось в
   `templates/AGENTS.md` и `templates/CLAUDE.md`, переносите руками.
 
-Ловушка одна. Контрольную сумму журнала одобренных issues набор держит
-константой `approvedIssueSnapshotsHash` в `scripts/ralph/ralph-config.mjs`, а
-обновление перезаписывает этот модуль вместе с константой. Если вы работаете с
-`autoApproveConfiguredIssues: false` и вписывали запомненный текст issue
-руками, после обновления сумма вернётся к сумме пустого журнала, и первый же
-запуск остановится. Сообщение об остановке называет файл, константу и
-вычисленную сумму — впишите её в `ralph-config.mjs` заново.
+Контрольная сумма журнала одобренных issues обновление переживает: эталон лежит
+ключом `approvedIssueSnapshotsHash` в `.agents/ralph.config.json`, а этот файл
+обновление не трогает. Журнал и его сумма остаются вашими вместе.
+
+Правите журнал — тем же коммитом впишите в этот ключ новую сумму, иначе
+следующий запуск остановится на сверке. Считать её руками не нужно: сообщение об
+остановке называет файл журнала, имя ключа и вычисленную сумму.
 
 После обновления сверьте `.agents/ralph.config.json` с разделом CHANGELOG за
 новую версию. Незнакомый ключ верхнего уровня и незнакомый ключ внутри `runtime`
 останавливают загрузку конфига и печатают список допустимых. Внутри `review`,
 `milestoneReview` и `validationContainer` незнакомый ключ проходит молча.
 Пропавший ключ останавливает загрузку с именем поля, если умолчания у него нет:
-это `enabled`, `schemaFile` и `outputFile` у обеих ролей ревью и
-`milestoneReview.model`. Остальные Ralph подставляет сам: `review.model` —
-`gpt-5.6-terra`, `review.effort` — `medium`, `milestoneReview.effort` — `high`,
+это `approvedIssueSnapshotsHash`, `enabled`, `schemaFile` и `outputFile` у обеих
+ролей ревью и `milestoneReview.model`. Остальные Ralph подставляет сам:
+`review.model` — `gpt-5.6-terra`, `review.effort` — `medium`,
+`milestoneReview.effort` — `high`,
 `milestoneReview.maxTurns` — значение `maxTurns`, `milestoneReview.maxFindings`
 — 10, `milestoneReview.incremental` — `true`, `validationContainer.image` — имя
 из имени каталога репозитория, `validationContainer.dockerfile` — путь к
