@@ -306,12 +306,12 @@ function formatTokenVolume(record) {
 
 /**
  * Чью стоимость называет строка. Заголовка может не быть — записи прежних
- * прогонов его не несут, — а номера issue нет у ревью всей вехи: оно оплачено
+ * прогонов его не несут, — а номера issue нет у ревью всего milestone: оно оплачено
  * прогоном, а не задачей.
  */
 function metricsSubject(record) {
   if (record.issue == null) {
-    return `ревью вехи${record.milestone ? ` «${record.milestone}»` : ''}`;
+    return `ревью milestone${record.milestone ? ` «${record.milestone}»` : ''}`;
   }
 
   return `issue #${record.issue}${record.issueTitle ? ` «${record.issueTitle}»` : ''}`;

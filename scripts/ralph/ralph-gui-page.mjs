@@ -20,6 +20,104 @@ function scriptLiteral(value) {
     .replace(/&/g, '\\u0026');
 }
 
+// Тот же экран для константы модуля: JSON уходит в скрипт целым значением.
+function jsonLiteral(value) {
+  return JSON.stringify(value)
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e')
+    .replace(/&/g, '\\u0026');
+}
+
+/**
+ * Вкладка «Команды»: вся командная поверхность набора текстом.
+ *
+ * Третье поле важнее двух первых. Человек ошибается не в том, что команда
+ * делает, а в том, чего она не делает: ждёт от `--check` начала работы, а от
+ * `/issues` — кода.
+ */
+const commandGuide = [
+  {
+    title: 'В терминале',
+    note: 'Команды запускаются из корня репозитория.',
+    items: [
+      {
+        command: 'node scripts/ralph/ralph-loop.mjs --check',
+        does:
+          'Проверяет, что стоят git, gh и CLI агента, а конфиг, milestone и ветка сходятся. ' +
+          'Печатает фазу, репозиторий, milestone и число открытых issues, ветку, чистоту дерева, ' +
+          'остаток итераций, лимиты, модели и заголовок следующей issue.',
+        when: 'Перед первым прогоном и после каждой правки .agents/ralph.config.json.',
+        omits:
+          'Ничего не меняет: не переключает ветку, не коммитит, не создаёт issues и pull request. ' +
+          'Вход в CLI агента не проверяет — это делает --run. ' +
+          'Если текущая ветка не совпадает с веткой фазы, команда останавливается с ошибкой.',
+      },
+      {
+        command: 'node scripts/ralph/ralph-loop.mjs',
+        does: 'То же, что --check: без аргумента это режим по умолчанию.',
+        when: 'Когда набираете команду по памяти и флаг забыли.',
+        omits: 'Прогон не начинает. Ralph работает только от явного --run.',
+      },
+      {
+        command: 'node scripts/ralph/ralph-loop.mjs --run',
+        does:
+          'Ведёт прогон: берёт открытые issues milestone по возрастанию номера, отдаёт агенту, гоняет ' +
+          'проверки в контейнере, коммитит, отправляет ветку, получает ревью и в конце фазы открывает pull request.',
+        when: 'Когда беклог на GitHub создан, а --check прошёл без ошибок.',
+        omits:
+          'На одной фазе не останавливается: закрыв milestone, переходит к следующей фазе плана — ' +
+          'своя ветка, свой pull request — и встаёт, когда фазы кончились или очередная не прошла. ' +
+          'Pull request не сливает — merge остаётся за вами. Берёт только issues тех milestone, ' +
+          'которые перечислены в конфиге.',
+      },
+      {
+        command: 'node scripts/ralph/ralph-gui.mjs',
+        does: 'Поднимает пульт на localhost и открывает его в браузере: состояние прогона, расход токенов по задачам, редактор настроек.',
+        when: 'Когда правите настройки и смотрите, на что ушли токены.',
+        omits:
+          'Прогон не запускает и не останавливает, аргументов не принимает. ' +
+          'Меняет один файл — .agents/ralph.config.json.',
+      },
+    ],
+  },
+  {
+    title: 'В чате с агентом',
+    note: 'Скиллы — команды со слэшем в сессии CLI агента. Ralph их не вызывает: планируете вы.',
+    items: [
+      {
+        command: '/prd описание фичи',
+        does: 'Спрашивает недостающее и пишет PRD — документ требований docs/prd-слаг.md.',
+        when: 'Перед новой фичей, пока требований нет.',
+        omits: 'Код не пишет, на фазы не делит, issues не создаёт.',
+      },
+      {
+        command: '/plan_phase docs/prd-слаг.md',
+        does: 'Делит PRD на фазы и сохраняет план docs/plan-слаг.md. Каждую фазу можно сдать отдельно.',
+        when: 'Сразу после PRD.',
+        omits: 'Беклог на GitHub не создаёт и код не пишет.',
+      },
+      {
+        command: '/issues docs/plan-слаг.md',
+        does: 'Создаёт беклог на GitHub в порядке плана: milestone на фазу, issue на задачу.',
+        when: 'После того как план готов и закоммичен: issue ссылается на файл плана по SHA коммита.',
+        omits: 'Код не пишет и прогон не запускает — задачи заберёт следующий --run.',
+      },
+      {
+        command: '/read путь/к/файлу',
+        does: 'Читает файл или его часть минимумом токенов.',
+        when: 'Когда нужен фрагмент большого файла, а не весь файл.',
+        omits: 'Файл не правит.',
+      },
+      {
+        command: '/revew-all',
+        does: 'Запускает три ревью параллельно — безопасность, производительность, покрытие тестами — и собирает общий отчёт.',
+        when: 'Перед тем как слить pull request, открытый Ralph.',
+        omits: 'Найденное не чинит и issue не заводит.',
+      },
+    ],
+  },
+];
+
 const styles = `
 :root {
   color-scheme: light;
@@ -362,12 +460,6 @@ tr:last-child td { border-bottom: 0; }
 
 .section { margin-top: 28px; }
 
-.section-title {
-  margin: 0 0 2px;
-  font-size: 15px;
-  font-weight: 600;
-}
-
 .section-rule {
   height: 1px;
   margin-bottom: 14px;
@@ -481,6 +573,67 @@ textarea:disabled { color: var(--muted); background: var(--subtle); }
 
 .btn-small { padding: 3px 9px; font-size: 13px; }
 
+/* Вкладка «Команды» */
+
+/* Свой класс, а не .section-title: тот оформляет подписи разделов формы —
+   мелкие прописные, — и заголовок группы команд выглядел бы слабее команд
+   под ним. */
+.commands-title {
+  margin: 28px 0 6px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.commands-title:first-child { margin-top: 4px; }
+
+.commands-note {
+  margin: 0 0 16px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.command { margin-bottom: 20px; }
+.command:last-child { margin-bottom: 4px; }
+
+.command-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Моноширинный только у самой команды: это код, который человек набирает
+   символ в символ. Объяснение под ним — обычный текст страницы. */
+.command-name {
+  padding: 5px 8px;
+  background: var(--subtle);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-family: ui-monospace, 'SF Mono', Consolas, 'Liberation Mono', monospace;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.command-copy {
+  flex: none;
+  padding: 4px 8px;
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+}
+
+.command-copy:hover { color: var(--text); background: var(--hover); }
+
+.command-status { flex: none; font-size: 13px; }
+.command-status.is-ok { color: var(--ok); }
+.command-status.is-bad { color: var(--bad); }
+
+.command-line { margin: 6px 0 0; }
+.command-lead { color: var(--muted); }
+
 .unknown-row {
   display: flex;
   justify-content: space-between;
@@ -516,6 +669,7 @@ const markup = `
     <nav class="tabs" role="tablist" aria-label="Разделы">
       <button class="tab" type="button" role="tab" id="tab-usage" data-tab="usage" aria-selected="true">Расход</button>
       <button class="tab" type="button" role="tab" id="tab-settings" data-tab="settings" aria-selected="false">Настройки</button>
+      <button class="tab" type="button" role="tab" id="tab-commands" data-tab="commands" aria-selected="false">Команды</button>
     </nav>
   </header>
   <div class="status">
@@ -533,6 +687,9 @@ const script = `
   'use strict';
 
   var token = window.__RALPH_TOKEN__ || '';
+  // Перечень команд статичен и приезжает вместе со страницей: вкладка
+  // «Команды» не ходит на сервер вовсе.
+  var commandGuide = ${jsonLiteral(commandGuide)};
   var tab = 'usage';
   var stateData = null;
   var tasksData = null;
@@ -1902,12 +2059,142 @@ const script = `
     return frag;
   }
 
+  /* --- вкладка «Команды» --- */
+
+  function resetCopy(status) {
+    if (status.resetTimer) window.clearTimeout(status.resetTimer);
+    status.textContent = '';
+    status.className = 'command-status';
+  }
+
+  /* Исход клика пишется в отдельный узел role="status", а не в текст кнопки:
+     имя кнопки читается один раз, и подмена её текста до скринридера не
+     доходила. Успех гаснет через полторы секунды, отказ — только на следующем
+     клике: «Скопируйте вручную» — задание человеку, и пропустить его дороже,
+     чем увидеть лишний раз. */
+  function markCopy(status, kind, text) {
+    if (status.resetTimer) window.clearTimeout(status.resetTimer);
+    status.textContent = text;
+    status.className = 'command-status is-' + kind;
+    if (kind !== 'ok') return;
+    status.resetTimer = window.setTimeout(function () {
+      resetCopy(status);
+    }, 1600);
+  }
+
+  /* Буфер отказал — человек копирует сам: текст команды выделен, остаётся
+     нажать Ctrl+C. */
+  function manualCopy(status, name) {
+    try {
+      var range = document.createRange();
+      range.selectNodeContents(name);
+      var selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+    } catch (error) {
+      // Выделение — подсказка, а не результат: без него сообщение всё равно верно.
+    }
+    markCopy(status, 'bad', 'Скопируйте вручную: Ctrl+C');
+  }
+
+  /* Запасной путь нужен не ради старых браузеров: navigator.clipboard живёт
+     только в защищённом контексте, а пульт открывается по http://127.0.0.1
+     и в части браузеров этот API там отсутствует. */
+  function copyFallback(text, status, name) {
+    var focused = document.activeElement;
+    var area = document.createElement('textarea');
+    area.value = text;
+    area.setAttribute('readonly', 'readonly');
+    area.style.position = 'fixed';
+    area.style.top = '0';
+    area.style.opacity = '0';
+    document.body.appendChild(area);
+    area.select();
+    var copied = false;
+    try {
+      copied = document.execCommand('copy');
+    } catch (error) {
+      copied = false;
+    }
+    document.body.removeChild(area);
+    // Фокус возвращается туда, откуда пришёл клик: иначе нажавший Enter на
+    // кнопке оказывался на body, и следующий Tab начинал обход страницы заново.
+    if (focused && focused.focus) focused.focus();
+    if (copied) markCopy(status, 'ok', 'Скопировано');
+    else manualCopy(status, name);
+  }
+
+  function copyCommand(text, status, name) {
+    resetCopy(status);
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(
+        function () {
+          markCopy(status, 'ok', 'Скопировано');
+        },
+        function () {
+          // Обработчик отклонённого промиса выполняется уже вне жеста
+          // пользователя, а там Safari отклоняет и execCommand: запасной путь
+          // отсюда вернул бы false, поэтому сразу просим скопировать руками.
+          manualCopy(status, name);
+        }
+      );
+      return;
+    }
+    copyFallback(text, status, name);
+  }
+
+  function commandLine(lead, text) {
+    var line = el('p', 'command-line');
+    line.appendChild(el('span', 'command-lead', lead + '. '));
+    line.appendChild(document.createTextNode(text));
+    return line;
+  }
+
+  function renderCommands() {
+    var frag = document.createDocumentFragment();
+    var index = 0;
+    commandGuide.forEach(function (group) {
+      frag.appendChild(el('h2', 'commands-title', group.title));
+      if (group.note) frag.appendChild(el('p', 'commands-note', group.note));
+      group.items.forEach(function (item) {
+        index += 1;
+        var box = el('div', 'command');
+        var row = el('div', 'command-row');
+        var name = el('code', 'command-name', item.command);
+        name.id = 'command-' + index;
+        row.appendChild(name);
+        var copy = el('button', 'command-copy', 'Копировать');
+        copy.type = 'button';
+        // Имя кнопки — её собственный текст, команда идёт описанием: aria-label
+        // перекрыл бы текст кнопки целиком.
+        copy.setAttribute('aria-describedby', name.id);
+        var status = el('span', 'command-status');
+        status.setAttribute('role', 'status');
+        copy.addEventListener('click', function () {
+          copyCommand(item.command, status, name);
+        });
+        row.appendChild(copy);
+        row.appendChild(status);
+        box.appendChild(row);
+        box.appendChild(commandLine('Делает', item.does));
+        box.appendChild(commandLine('Когда звать', item.when));
+        box.appendChild(commandLine('Не делает', item.omits));
+        frag.appendChild(box);
+      });
+    });
+    return frag;
+  }
+
   /* --- переключение вкладок --- */
 
   function renderPanel() {
     clear(panel);
-    panel.setAttribute('aria-labelledby', tab === 'usage' ? 'tab-usage' : 'tab-settings');
-    panel.appendChild(tab === 'usage' ? renderUsage() : renderSettings());
+    panel.setAttribute('aria-labelledby', 'tab-' + tab);
+    if (tab === 'usage') panel.appendChild(renderUsage());
+    else if (tab === 'settings') panel.appendChild(renderSettings());
+    // Явное имя вкладки, а не else: новая вкладка без своей ветки оставит
+    // панель пустой, и отказ будет видно здесь, а не в чужом содержимом.
+    else if (tab === 'commands') panel.appendChild(renderCommands());
   }
 
   function selectTab(next) {

@@ -7,7 +7,7 @@
   "syncBaseBranch": true,
   "phases": [
     {
-      "milestone": "Phase 1: замените на точное название вехи в GitHub",
+      "milestone": "Phase 1: замените на точное название milestone в GitHub",
       "branch": "ralph/phase-1"
     }
   ],
