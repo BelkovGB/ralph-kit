@@ -163,10 +163,9 @@ export function issueBodyWithoutRalphMetadata(issue) {
 /**
  * Замечания прошлого ревью, если они есть в теле issue.
  *
- * Блок и так доезжал до ревьюера — внутри тела, без подписи, вперемешку с
- * критериями готовности. Отдельная секция нужна, чтобы можно было потребовать
- * проверить закрытие каждого пункта: неподписанный текст такого требования не
- * выдерживает.
+ * Внутри тела блок доезжает до ревьюера без подписи, вперемешку с критериями
+ * готовности. Отдельная секция нужна, чтобы можно было потребовать проверить
+ * закрытие каждого пункта: неподписанный текст такого требования не выдерживает.
  */
 export function reviewContextFromIssueBody(issue) {
   const [block] = issueBodyWithoutCompletionState(issue).match(reviewContextPattern) ?? [];
@@ -215,8 +214,8 @@ export function issueBodyWithoutCompletionState(issue) {
     .trim();
 }
 
-// Маркер больше не записывается. Формат читается, потому что тела issue от
-// прежних прогонов его содержат и он не должен попадать в prompt.
+// Формат читается, но не записывается: тела issue прежних прогонов содержат
+// этот маркер, и он не должен попадать в prompt.
 export function issueCompletionState(issue) {
   const match = (issue.body ?? '').match(
     /<!-- ralph-issue-completion status:(pending-review|review-passed) commit:([0-9a-f]{40}) -->/i,

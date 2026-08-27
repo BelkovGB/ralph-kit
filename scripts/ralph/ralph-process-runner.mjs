@@ -69,19 +69,19 @@ const windowsShimExtensions = new Set(['.BAT', '.CMD']);
  * внешний цикл — каталог, внутренний — расширение.
  *
  * Порядок важен и не является деталью: он даёт тот же файл, который получает
- * оператор, набрав имя в своей оболочке. Прежний код вместо поиска подставлял
- * `${name}.cmd` и тем самым выбирал npm-шим даже там, где рядом в более раннем
- * каталоге PATH лежит рабочий .exe. На машине, где npm-установка Claude Code
- * сломана, каждая сессия падала с «claude.exe не совместим с версией Windows»,
- * хотя `claude --version` в оболочке работал.
+ * оператор, набрав имя в своей оболочке. Подстановка `${name}.cmd` вместо
+ * поиска выбирает npm-шим даже там, где рядом в более раннем каталоге PATH
+ * лежит рабочий .exe: на машине со сломанной npm-установкой Claude Code сессия
+ * падает с «claude.exe не совместим с версией Windows», хотя `claude --version`
+ * в оболочке работает.
  */
 export function resolveWindowsExecutable(name, source = process.env) {
   const directories = (source.PATH ?? source.Path ?? '')
     .split(path.delimiter)
     // Элемент PATH разрешено писать в кавычках — `"C:\Program Files\Foo"`, — и
     // cmd.exe вместе с CreateProcess их снимают. Без этого шага такой каталог
-    // молча пропускался, а поскольку ниже отсутствие команды стало жёсткой
-    // ошибкой, установленный CLI превращался бы в RALPH_COMMAND_NOT_FOUND.
+    // молча пропускается, а поскольку отсутствие команды ниже — жёсткая ошибка,
+    // установленный CLI превращается в RALPH_COMMAND_NOT_FOUND.
     .map((directory) => directory.trim().replace(/^"(.*)"$/, '$1'))
     .filter(Boolean);
   const extensions = (source.PATHEXT ?? '.COM;.EXE;.BAT;.CMD')
@@ -280,10 +280,10 @@ export function run(name, args, options = {}) {
     throw error;
   }
 
-  // Вывод команды идёт в журнал, а не в консоль. Живым он всё равно не был:
+  // Вывод команды идёт в журнал, а не в консоль. Живым он всё равно не бывает:
   // spawnSync отдаёт его целиком по завершении, то есть контейнер валидации
-  // выплёскивал в консоль десятки тысяч строк разом, и ход прогона в ней
-  // терялся. В `run.log` вывод сохраняется полностью.
+  // выплеснул бы в консоль десятки тысяч строк разом, и ход прогона в ней
+  // потерялся бы. В `run.log` вывод сохраняется полностью.
   if (options.echoOutput) {
     if (result.stdout?.trim()) logDetail(outputTail(result.stdout, 100_000));
     if (result.stderr?.trim()) logDetailError(outputTail(result.stderr, 100_000));

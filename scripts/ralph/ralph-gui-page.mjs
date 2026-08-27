@@ -11,8 +11,12 @@
  * содержать угловые скобки.
  */
 
-// Единственное место, где в разметку попадают данные: токен уходит в JS-литерал.
-// Экранируются и угловые скобки, иначе значение вида "</script>" закрыло бы тег.
+import { KIT_VERSION } from './ralph-version.mjs';
+
+// Единственное место, где в разметку попадает значение извне: токен уходит в
+// JS-литерал. Экранируются и угловые скобки, иначе значение вида "</script>"
+// закрыло бы тег. Версия набора — константа модуля с проверенным форматом,
+// экранировать в ней нечего.
 function scriptLiteral(value) {
   return JSON.stringify(String(value ?? ''))
     .replace(/</g, '\\u003c')
@@ -44,8 +48,8 @@ const commandGuide = [
         command: 'node scripts/ralph/ralph-loop.mjs --check',
         does:
           'Проверяет, что стоят git, gh и CLI агента, а конфиг, milestone и ветка сходятся. ' +
-          'Печатает фазу, репозиторий, milestone и число открытых issues, ветку, чистоту дерева, ' +
-          'остаток итераций, лимиты, модели и заголовок следующей issue.',
+          'Печатает версию набора, фазу, репозиторий, milestone и число открытых issues, ветку, ' +
+          'чистоту дерева, остаток итераций, лимиты, модели и заголовок следующей issue.',
         when: 'Перед первым прогоном и после каждой правки .agents/ralph.config.json.',
         omits:
           'Ничего не меняет: не переключает ветку, не коммитит, не создаёт issues и pull request. ' +
@@ -55,7 +59,7 @@ const commandGuide = [
       {
         command: 'node scripts/ralph/ralph-loop.mjs',
         does: 'То же, что --check: без аргумента это режим по умолчанию.',
-        when: 'Когда набираете команду по памяти и флаг забыли.',
+        when: 'Отдельного повода нет: --check делает то же и явно называет режим.',
         omits: 'Прогон не начинает. Ralph работает только от явного --run.',
       },
       {
@@ -109,7 +113,7 @@ const commandGuide = [
         omits: 'Файл не правит.',
       },
       {
-        command: '/revew-all',
+        command: '/review-all',
         does: 'Запускает три ревью параллельно — безопасность, производительность, покрытие тестами — и собирает общий отчёт.',
         when: 'Перед тем как слить pull request, открытый Ralph.',
         omits: 'Найденное не чинит и issue не заводит.',
@@ -192,6 +196,13 @@ a { color: var(--accent); }
   font-size: 15px;
   font-weight: 600;
   letter-spacing: 0.01em;
+}
+
+.brand-version {
+  margin-left: 6px;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--muted);
 }
 
 .tabs { display: flex; gap: 4px; }
@@ -636,14 +647,16 @@ textarea:disabled { color: var(--muted); background: var(--subtle); }
 
 .unknown-row {
   display: flex;
-  justify-content: space-between;
+  align-items: center;
   gap: 16px;
   padding: 5px 0;
   border-bottom: 1px solid var(--border);
 }
 
 .unknown-row:last-child { border-bottom: 0; }
-.unknown-value { color: var(--muted); overflow-wrap: anywhere; }
+/* Значение прижато к правому краю: ключ остаётся слева, кнопка — за значением. */
+.unknown-value { margin-left: auto; color: var(--muted); overflow-wrap: anywhere; }
+.unknown-row .btn { flex: 0 0 auto; }
 
 .savebar {
   position: sticky;
@@ -665,7 +678,7 @@ textarea:disabled { color: var(--muted); background: var(--subtle); }
 const markup = `
 <div class="shell">
   <header class="top">
-    <div class="brand">Ralph</div>
+    <div class="brand">Ralph<span class="brand-version">${KIT_VERSION}</span></div>
     <nav class="tabs" role="tablist" aria-label="Разделы">
       <button class="tab" type="button" role="tab" id="tab-usage" data-tab="usage" aria-selected="true">Расход</button>
       <button class="tab" type="button" role="tab" id="tab-settings" data-tab="settings" aria-selected="false">Настройки</button>
@@ -913,9 +926,9 @@ const script = `
   }
 
   /* Стадия текущей issue из state.json. Значения выписаны из
-     ralph-state-store.mjs: цикл пишет в phase только их, и старые ключи
-     implementation/validation/review сюда никогда не приходили — полоса
-     состояния показывала вместо слов сырое agent-running. */
+     ralph-state-store.mjs: цикл пишет в phase только их. Ключи
+     implementation/validation/review сюда не приходят: список из них оставил бы
+     полосу состояния с сырым agent-running вместо слов. */
   var phaseWords = {
     'agent-running': 'идёт разработка',
     'working-tree': 'правки не закоммичены',
@@ -1348,8 +1361,8 @@ const script = `
         first.appendChild(el('span', 'task-kind', 'Ревью milestone'));
       } else {
         first.appendChild(document.createTextNode('#' + task.issue));
-        /* Заголовка нет у попыток, записанных до появления поля. Прочерк на его
-           месте занял бы колонку молчанием: номер уже сказал, о чём строка. */
+        /* Заголовка нет у попыток старого формата. Прочерк на его месте занял
+           бы колонку молчанием: номер уже сказал, о чём строка. */
         if (task.title) {
           var titleSpan = el('span', 'task-title', task.title);
           titleSpan.title = String(task.title);
@@ -1852,20 +1865,50 @@ const script = `
     return wrap;
   }
 
+  /* Ключ, вычеркнутый кнопкой, стоит в черновике как null: сервер возвращает из
+     файла всё, чего в черновике нет, и только null доживает до шага, который
+     убирает ключ из файла. Такой ключ уходит из списка вместе с ним. */
+  function keysStillInDraft(keys) {
+    return keys.filter(function (key) {
+      var value = draft ? getPath(draft, String(key)) : undefined;
+      return value !== undefined && value !== null;
+    });
+  }
+
   function renderUnknown(keys) {
+    var locked = isLocked();
     var section = el('section', 'section');
     section.appendChild(el('h2', 'section-title', 'Не распознано'));
     section.appendChild(el('div', 'section-rule'));
     section.appendChild(
-      el('div', 'note', 'Эти ключи пульт не знает и не меняет. При сохранении он запишет их как есть.')
+      el(
+        'div',
+        'note',
+        'Пульт эти ключи не знает. Незнакомый ключ верхнего уровня и незнакомый ключ ' +
+          'внутри runtime останавливают прогон: конфиг не читается. Ключ внутри review, ' +
+          'milestoneReview, validationContainer и фазы прогон пропускает молча и значение ' +
+          'его не берёт. Кнопка «Удалить» вычёркивает ключ, кнопка «Сохранить» убирает ' +
+          'его из файла.'
+      )
     );
     var box = el('div');
     box.style.marginTop = '8px';
     keys.forEach(function (key) {
+      var path = String(key);
       var row = el('div', 'unknown-row');
-      row.appendChild(el('span', '', String(key)));
-      var value = draft ? getPath(draft, String(key)) : undefined;
+      row.appendChild(el('span', '', path));
+      var value = draft ? getPath(draft, path) : undefined;
       row.appendChild(el('span', 'unknown-value', value === undefined ? '—' : JSON.stringify(value)));
+      var remove = el('button', 'btn btn-small', 'Удалить');
+      remove.type = 'button';
+      remove.disabled = locked;
+      remove.setAttribute('aria-label', 'Удалить ключ ' + path);
+      remove.addEventListener('click', function () {
+        if (!draft) return;
+        setPath(draft, path, null);
+        renderPanel();
+      });
+      row.appendChild(remove);
       box.appendChild(row);
     });
     section.appendChild(box);
@@ -2023,7 +2066,7 @@ const script = `
       box.setAttribute('role', 'tabpanel');
       box.setAttribute('aria-labelledby', 'subtab-' + active);
       // Поля с одинаковым именем секции, стоящие подряд, образуют озаглавленный
-      // блок. Вкладка без секций рисуется одной сеткой, как раньше.
+      // блок. Вкладка без секций рисуется одной сеткой.
       var grid = null;
       var currentSection = null;
       groups[active].fields.forEach(function (field) {
@@ -2038,7 +2081,9 @@ const script = `
       frag.appendChild(box);
     }
 
-    var unknown = Array.isArray(configData.unknownKeys) ? configData.unknownKeys : [];
+    var unknown = keysStillInDraft(
+      Array.isArray(configData.unknownKeys) ? configData.unknownKeys : []
+    );
     if (unknown.length) frag.appendChild(renderUnknown(unknown));
 
     var bar = el('div', 'savebar');
@@ -2118,7 +2163,7 @@ const script = `
     }
     document.body.removeChild(area);
     // Фокус возвращается туда, откуда пришёл клик: иначе нажавший Enter на
-    // кнопке оказывался на body, и следующий Tab начинал обход страницы заново.
+    // кнопке окажется на body, и следующий Tab начнёт обход страницы заново.
     if (focused && focused.focus) focused.focus();
     if (copied) markCopy(status, 'ok', 'Скопировано');
     else manualCopy(status, name);

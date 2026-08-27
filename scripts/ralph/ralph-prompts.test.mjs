@@ -181,7 +181,7 @@ test('a second iteration names every commit of the issue, not just the last', ()
   assert.doesNotMatch(prompt, /exactly one commit/);
 });
 
-test('without a change set the prompt keeps its previous shape', () => {
+test('without a change set the prompt carries no diff section', () => {
   const prompt = buildIndependentReviewPrompt(
     { agentCli: 'codex' },
     { number: 59, title: 'No inventory', body: 'Outcome text.' },
@@ -212,8 +212,8 @@ test('milestone review stays within milestone scope and trusts completed validat
   // потом отбросит. AGENTS.md при этом читать нужно — там конвенции продукта.
   assert.match(prompt, /Do not open \.agents\/\*\* or scripts\/ralph\/\*\*, and never report/);
   assert.match(prompt, /Do read AGENTS\.md/);
-  // Без инвентаря prompt обязан остаться прежним: ревью milestone может идти по
-  // ветке, базу которой git не разрешил, и тогда инвентаря просто нет.
+  // Без инвентаря prompt обходится без секции diff: ревью milestone может идти
+  // по ветке, базу которой git не разрешил, и тогда инвентаря просто нет.
   assert.doesNotMatch(prompt, /```diff/);
   assert.match(prompt, /Discover documentation paths/i);
   assert.match(prompt, /rg --files docs/);
@@ -505,7 +505,7 @@ test('a bracketed path segment is only readable through -LiteralPath on Windows'
 test('замечания к control plane выбрасываются из ревью issue, а не только milestone', () => {
   // Агенту запрещено править .agents/**, scripts/ralph/** и AGENTS.md, поэтому
   // ревью, требующее этого, невыполнимо: следующая сессия вернёт тот же
-  // результат, ревью — то же замечание. На issue #84 круг повторился десять раз.
+  // результат, ревью — то же замечание.
   const scoped = scopeReviewToProduct(
     {
       verdict: 'fail',
@@ -577,8 +577,8 @@ test('порог важности убирает право останавлив
   assert.match(comment, /Missing coverage/);
   assert.match(comment, /Hardcoded number/);
 
-  // Ничего выше порога — работать не над чем, и отклонять нечего. Именно этот
-  // случай крутил цикл всю ночь: замечания были, но ни одного важнее P3.
+  // Ничего выше порога — работать не над чем, и отклонять нечего: иначе цикл
+  // крутится на замечаниях, из которых ни одно не важнее P3.
   const belowOnly = applySeverityFloor(
     { ...review, findings: review.findings.filter((finding) => finding.severity !== 'P1') },
     'P1',
@@ -586,7 +586,7 @@ test('порог важности убирает право останавлив
   assert.equal(belowOnly.verdict, 'pass');
   assert.deepEqual(belowOnly.findings, []);
 
-  // Порог P3 пропускает всё: поведение до этой правки.
+  // Порог P3 пропускает все замечания.
   assert.equal(applySeverityFloor(review, 'P3').findings.length, 3);
 
   // Незнакомая важность считается блокирующей: молча пропустить опаснее.

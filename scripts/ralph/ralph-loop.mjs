@@ -67,7 +67,6 @@ import {
   filesChangedBetween,
   isAncestorCommit,
   issueChangeInventory,
-  issueChangedPaths,
   linkedCommitForIssue,
   pushBranchAndVerify,
   reconcileStateAfterCrash,
@@ -107,6 +106,8 @@ import {
 
 import { buildIndependentReviewPrompt, renderPrompt } from './ralph-prompts.mjs';
 
+import { KIT_VERSION } from './ralph-version.mjs';
+
 import {
   createOrReopenReviewIssues,
   recordDeferredFindingsSafely,
@@ -143,16 +144,17 @@ function assertValidationLeftTree(expected, message) {
 }
 
 // Причина незавершённой issue берётся из результата, а не предполагается:
-// остановка после упавшей валидации сообщала об отказе ревью, до которого цикл
-// не дошёл, и отправляла оператора искать замечания, которых нет. Классификация
-// нужна и сообщению оператору, и записи метрик, поэтому живёт в одном месте.
+// иначе остановка после упавшей валидации сообщает об отказе ревью, до которого
+// цикл не дошёл, и отправляет оператора искать замечания, которых нет.
+// Классификация нужна и сообщению оператору, и записи метрик, поэтому живёт в
+// одном месте.
 const incompleteIssueOutcomes = [
   ['agentFailed', 'agent-failed', 'сессия агента не завершилась'],
   ['validationFailed', 'validation-failed', 'валидация не прошла'],
   // Отложенная issue стоит дороже рядового круга исправлений и заканчивается
-  // иначе — она уходит из очереди прогона. Пока обе писались как
-  // `review-failed`, журнал их не различал. Стоит выше `reviewFailed` не
-  // случайно: последняя строка служит значением по умолчанию.
+  // иначе — она уходит из очереди прогона, поэтому у неё свой исход: общая
+  // запись `review-failed` не различала бы их в журнале. Стоит выше
+  // `reviewFailed` не случайно: последняя строка служит значением по умолчанию.
   ['parked', 'review-parked', 'ревью отклонило работу подряд до предела; issue отложена'],
   ['reviewFailed', 'review-failed', 'независимое ревью вернуло замечания'],
 ];
@@ -237,8 +239,8 @@ function verifyTools(config) {
   run('gh', ['--version']);
   run(agentBinary(config), ['--version']);
   // Docker нужен только контейнеру проверок, а тот запускается лишь когда есть
-  // что запускать. Без набора scripts безусловная проверка требовала работающий
-  // демон даже от `--check`, который ни одной проверки не выполняет.
+  // что запускать. Безусловная проверка требовала бы работающий демон и от
+  // `--check`, который без набора scripts не выполняет ни одной проверки.
   if (config.preflightScripts.length + config.validationScripts.length > 0) {
     run('docker', ['version']);
   }
@@ -286,8 +288,8 @@ async function runIndependentReview(config, repository, issue, commit) {
   }
 
   // Замечания прошлого ревью вынимаются из тела issue в отдельную секцию
-  // prompt: внутри тела они приезжали без подписи, вперемешку с критериями
-  // готовности, и требование «проверь их закрытие» опереться было не на что.
+  // prompt: внутри тела они приезжают без подписи, вперемешку с критериями
+  // готовности, и требованию «проверь их закрытие» опереться не на что.
   const inventory = issueChangeInventory(issue, commit, {
     excludedPaths: config.reviewDiffExcludedPaths,
   });
@@ -439,8 +441,8 @@ async function reviewAndCloseCommittedIssue(config, repository, issue, commit) {
   if (passedOnPreviousRun) {
     // Прошлый прогон дошёл до PASS и упал на закрытии issue. Вердикт относится
     // к дереву, а не к попытке записи в GitHub, а дерево с тех пор не менялось:
-    // повторное ревью того же commit стоило бы трёх минут и 150k токенов и
-    // ответило бы то же самое.
+    // повторное ревью того же commit стоило бы целой сессии агента и ответило бы
+    // то же самое.
     console.log(
       `Issue #${issue.number}: ревью commit ${commit} прошло на прошлом прогоне; ` +
         'повтор пропущен, осталось закрыть issue.',
@@ -510,14 +512,14 @@ async function reviewAndCloseCommittedIssue(config, repository, issue, commit) {
     // commit» отвергнет исправляющий commit.
     //
     // Переезжает он именно на HEAD, а не на commit issue. Между ними могут
-    // лежать чужие коммиты: 17 августа это были мои правки Ralph, попавшие в
-    // ветку в том же прогоне, и следующая итерация потребовала HEAD, который
-    // остался двумя коммитами позади. Примирение в начале фазы такое уже не
-    // ловит — фаза началась раньше, чем состояние было записано.
+    // лежать чужие коммиты — например, правки Ralph, попавшие в ветку тем же
+    // прогоном, — и тогда следующая итерация требует HEAD, который остался
+    // позади. Примирение в начале фазы такое не ловит: фаза начинается раньше,
+    // чем состояние записано.
     //
-    // Запись идёт до публикации комментария: обрыв на комментарии оставил фазу
-    // `reviewing` без `reviewedCommit`, и вердикт FAIL, стоивший 4m19s,
-    // пришлось бы получать заново.
+    // Запись идёт до публикации комментария: обрыв на комментарии оставил бы
+    // фазу `reviewing` без `reviewedCommit`, и вердикт FAIL пришлось бы
+    // получать заново.
     activeStateStore()?.updateIssue({
       phase: 'review-failed',
       startingCommit: baseForNextSession(commit),
@@ -535,10 +537,9 @@ async function reviewAndCloseCommittedIssue(config, repository, issue, commit) {
     reopenIssueWithComment(repository, issue, formatReviewComment(review));
 
     // Бюджет итераций общий на всю фазу, и без этого предела одна issue съедает
-    // его целиком: на #84 ревью отклонило работу десять раз подряд — около двух
-    // часов и порядка девяти миллионов токенов, — а число замечаний скакало
-    // 7, 2, 2, 3, 3, 3, 2, 4, 4 и ни разу не дошло до нуля. Дальше идут другие
-    // issues, а эта остаётся открытой с замечаниями в теле.
+    // его целиком: ревью отклоняет работу заход за заходом, а число замечаний
+    // скачет и не доходит до нуля. Дальше идут другие issues, а эта остаётся
+    // открытой с замечаниями в теле.
     if (reviewFixAttempts >= config.maxReviewFixAttempts) {
       console.error(
         `Issue #${issue.number}: ревью отклонило работу ${reviewFixAttempts} раз подряд. ` +
@@ -552,8 +553,8 @@ async function reviewAndCloseCommittedIssue(config, repository, issue, commit) {
   }
 
   // Вердикт записывается до обращения к GitHub. Публикация комментария и
-  // закрытие issue — сетевые операции, и падение на них уже трижды за день
-  // стоило повторного ревью того же самого дерева на следующем прогоне.
+  // закрытие issue — сетевые операции, и падение на них иначе стоит повторного
+  // ревью того же самого дерева на следующем прогоне.
   activeStateStore()?.updateIssue({ phase: reviewPassedPhase, reviewedCommit: commit });
   verifyPushedHead(config, pushedHead);
   closeIssue(config, repository, issue, commit, review);
@@ -583,10 +584,10 @@ async function commitAndCompleteIssue(config, repository, issue, startingCommit,
 
   // Что в дереве принадлежит агенту, а что лежало там до начала issue.
   //
-  // Раньше стадировалось всё подряд, и в коммит задачи уезжали чужие правки:
-  // оставленный оператором конфиг и черновик на сотни килобайт, который
-  // следующий коммит агента удалял вместе с рабочей копией. Ревьюер, увидев в
-  // диффе задачи чужой файл, справедливо отклонял работу заход за заходом.
+  // Стадирование всего подряд уводит в коммит задачи чужие правки: оставленный
+  // оператором конфиг и черновик на сотни килобайт, который следующий коммит
+  // агента удаляет вместе с рабочей копией. Ревьюер, увидев в диффе задачи
+  // чужой файл, отклоняет работу заход за заходом.
   const foreignPaths = new Set(activeStateStore()?.issue?.foreignPaths ?? []);
   const agentEntries = workingTreeEntries(changes).filter((entry) => !foreignPaths.has(entry.path));
   const agentPaths = agentEntries.map((entry) => entry.path);
@@ -607,7 +608,7 @@ async function commitAndCompleteIssue(config, repository, issue, startingCommit,
     const commit = verifiedIssueCommit(alreadyFixedCommit, issue);
     activeStateStore()?.updateIssue({ phase: 'validating' });
     try {
-      measuredValidation(() => runConfiguredValidation(config, issueChangedPaths(issue, commit)));
+      measuredValidation(() => runConfiguredValidation(config));
     } catch (error) {
       const attempts = (activeStateStore()?.issue?.validationFixAttempts ?? 0) + 1;
       activeStateStore()?.updateIssue({
@@ -631,13 +632,7 @@ async function commitAndCompleteIssue(config, repository, issue, startingCommit,
 
   activeStateStore()?.updateIssue({ phase: 'validating' });
   try {
-    // Дешёвая дорожка разрешена только здесь: agentPaths — незакоммиченная
-    // работа агента, и сравнение дерева с HEAD описывает именно её. На
-    // already-fixed и committed recovery выше проверяется уже закоммиченное
-    // изменение, там разрешение не передаётся.
-    measuredValidation(() =>
-      runConfiguredValidation(config, agentPaths, { allowCommentOnlyLane: true }),
-    );
+    measuredValidation(() => runConfiguredValidation(config));
   } catch (error) {
     const attempts = (activeStateStore()?.issue?.validationFixAttempts ?? 0) + 1;
     activeStateStore()?.updateIssue({
@@ -697,8 +692,8 @@ async function commitAndCompleteIssue(config, repository, issue, startingCommit,
   commitStagedChanges(commitMessage, issue, config.runtime.validationTimeoutMs);
 
   const commitCount = Number(run('git', ['rev-list', '--count', `${startingCommit}..HEAD`]).stdout);
-  // Чистым дерево быть больше не обязано: файлы оператора намеренно остались
-  // вне коммита. Обязано другое — чтобы после коммита не осталось ничего, что
+  // Чистое дерево здесь не требуется: файлы оператора намеренно остались вне
+  // коммита. Требуется другое — чтобы после коммита не осталось ничего, что
   // агент изменил сам.
   const leftBehind = workingTreePaths(run('git', ['status', '--porcelain']).stdout).filter(
     (file) => !foreignPaths.has(file),
@@ -730,9 +725,9 @@ const uncommittedWorkPhases = new Set(['agent-running', 'working-tree', 'validat
 /**
  * Можно ли продолжить issue, если ветка ушла вперёд с сохранённого commit.
  *
- * Требование точного совпадения HEAD теряло задачу каждый раз, когда между
- * прогонами в ветку попадал любой посторонний commit — а это ровно то, что
- * делает оператор, правя Ralph между запусками.
+ * Требование точного совпадения HEAD теряет задачу каждый раз, когда между
+ * прогонами в ветку попадает посторонний commit — а это ровно то, что делает
+ * оператор, правя Ralph между запусками.
  *
  * Условие зависит от того, где лежит работа. После отказа ревью она в HEAD, а
  * дерево чистое: двигать базу безопасно всегда. На фазах с незакоммиченным
@@ -766,9 +761,9 @@ function branchMovedWithoutDisturbingIssue(storedIssue, currentHead) {
   const status = workingTreeStatus();
   if (storedIssue.phase === 'review-failed') return status === '';
   // `staging` исключён из uncommittedWorkPhases из-за expectedTree, собранного
-  // против прежнего HEAD. Пока его нет, исключать нечего: сбой случился до
-  // того, как индекс был зафиксирован, и в дереве лежит обычная
-  // незакоммиченная работа. Один прогон упал ровно так — на `git add`.
+  // против прежнего HEAD. Пока его нет, исключать нечего: сбой пришёлся на
+  // время до фиксации индекса — например, на `git add`, — и в дереве лежит
+  // обычная незакоммиченная работа.
   const phase =
     storedIssue.phase === 'staging' && !storedIssue.expectedTree
       ? 'working-tree'
@@ -794,7 +789,7 @@ export async function runAgentOnIssue(config, repository, issue, rules) {
     );
     const resumePhase = storedIssue.phase;
     try {
-      measuredValidation(() => runConfiguredValidation(config, issueChangedPaths(issue, commit)));
+      measuredValidation(() => runConfiguredValidation(config));
     } catch (error) {
       activeStateStore().updateIssue({ phase: resumePhase, ...recordedFailure(error) });
       throw error;
@@ -1063,7 +1058,7 @@ function closeMilestone(repository, milestone) {
 }
 
 // -----------------------------------------------------------------------------
-// Итоговое ревью всего milestone на Sol и публикация результата в PR
+// Итоговое ревью всего milestone и публикация результата в PR
 // -----------------------------------------------------------------------------
 
 // -----------------------------------------------------------------------------
@@ -1087,6 +1082,7 @@ export function printCheck(
   budget = iterationBudget(config, null),
 ) {
   console.log('Ralph Loop настроен корректно.');
+  console.log(`Версия набора: ${KIT_VERSION}`);
   console.log(`Фаза: ${(config.phaseIndex ?? 0) + 1}/${config.phaseCount ?? 1}`);
   console.log(`Репозиторий: ${repository}`);
   console.log(`Milestone: ${milestone.title} (${issues.length} открытых issues)`);
@@ -1234,8 +1230,8 @@ export async function runContinuousLoop(context, actions) {
       }
       const pullRequest = actions.createPullRequest(config, repository);
       // Телеметрия роли `milestone-review` снимается только внутри активной
-      // записи, а между задачами её нет: самая дорогая сессия прогона не
-      // попадала в журнал вовсе. Запись отдельная, без номера issue —
+      // записи, а между задачами её нет: без отдельной записи самая дорогая
+      // сессия прогона не попадает в журнал вовсе. Запись без номера issue —
       // приписать её последней задаче milestone значило бы завысить именно ту
       // задачу, которой не повезло закрыться последней.
       actions.beginIssueMetrics?.(issueMetricsContext(config, null, iteration));
@@ -1558,9 +1554,10 @@ async function main() {
       // Слепок пересчитывается сразу после переключения ветки и до сессии
       // агента. `verifyRepository` — единственное место, где рабочее дерево
       // меняет сам цикл, а `.claude/**` и `AGENTS.md` есть не на каждой ветке:
-      // старт с ветки, где их нет, приводил к остановке с «AFK-сессия изменила
-      // набор доверенных файлов инструкций» ещё до валидации. Обвинялась сессия,
-      // которая не начиналась, а принёс файлы чекаут по команде самого цикла.
+      // старт с ветки, где их нет, иначе останавливает прогон с «AFK-сессия
+      // изменила набор доверенных файлов инструкций» ещё до валидации:
+      // обвиняется сессия, которая не начиналась, а файлы принёс чекаут по
+      // команде самого цикла.
       const snapshot = controlPlaneSnapshot(phaseConfig);
       Object.assign(config, snapshot);
       Object.assign(phaseConfig, snapshot);

@@ -10,9 +10,8 @@ import { agentClis, reasoningEffortsFor } from './ralph-agent-backends.mjs';
 /**
  * Чтение `ralph.config.json`, его проверка и сбор доверенного control plane.
  *
- * `loadConfig` выполняет этапы в том же порядке, в каком они шли одной
- * процедурой: набор значений по умолчанию для контейнера и review идёт после
- * чтения snapshots, потому что на этом порядке держатся сообщения об ошибках.
+ * `loadConfig` набирает значения по умолчанию для контейнера и review после
+ * чтения snapshots: на этом порядке держатся сообщения об ошибках.
  */
 
 // Пути выводятся здесь заново, как в `ralph-process-runner.mjs`: импорт из
@@ -76,12 +75,29 @@ export function trustedFileHash(file) {
   return createHash('sha256').update(readFileSync(file)).digest('hex');
 }
 
+/**
+ * Каталоги, внутрь которых поиск файлов инструкций не заходит.
+ *
+ * Там лежат зависимости и результат сборки, а не инструкции проекта. Список
+ * покрывает не один стек: без `.venv`, `target` или `vendor` обход находит
+ * `AGENTS.md` чужого пакета в проекте на Python, Rust или Java и берёт его в
+ * доверенный набор.
+ */
 const ignoredAgentInstructionDirectories = new Set([
   '.git',
+  '.gradle',
   '.next',
+  '.tox',
+  '.venv',
+  '__pycache__',
+  'build',
   'coverage',
   'dist',
   'node_modules',
+  'out',
+  'target',
+  'vendor',
+  'venv',
 ]);
 
 /**
@@ -113,10 +129,8 @@ export function agentInstructionFiles(directory = projectRoot, root = directory)
       continue;
     }
     // Хеш-карта доверенных файлов структурно не видит добавленный файл, поэтому
-    // набор инструкций собирается заново. `.claude/**` входит целиком: Claude
-    // Code читает оттуда агентов, скиллы, настройки и хуки, то есть любой файл
-    // там меняет поведение будущей сессии, а не только файл с известным именем.
-    if (instructionFileNames.has(entry.name) || isClaudeInstructionDirectory(directory, root)) {
+    // набор инструкций собирается заново.
+    if (instructionFileNames.has(entry.name) || isInstructionDirectory(directory, root)) {
       if (!toolManagedClaudeFiles.has(entry.name)) {
         files.push(path.join(directory, entry.name));
       }
@@ -125,9 +139,23 @@ export function agentInstructionFiles(directory = projectRoot, root = directory)
   return files.sort();
 }
 
-function isClaudeInstructionDirectory(directory, root) {
+/**
+ * Каталоги, которые входят в доверенный набор целиком, вместе со всем, что
+ * лежит внутри. Claude Code читает из `.claude` агентов, скиллы, настройки и
+ * хуки, Codex читает скиллы из `.agents/skills`, поэтому любой файл там меняет
+ * поведение будущей сессии — не только файл с известным именем.
+ *
+ * Весь `.agents` целиком в набор не входит: Ralph сам пишет туда отчёты ревью
+ * (`review.outputFile` и `milestoneReview.outputFile`), и прогон объявил бы
+ * подделкой собственную запись.
+ */
+const wholeInstructionDirectories = ['.claude', '.agents/skills'];
+
+function isInstructionDirectory(directory, root) {
   const relative = path.relative(root, directory).replaceAll('\\', '/');
-  return relative === '.claude' || relative.startsWith('.claude/');
+  return wholeInstructionDirectories.some(
+    (name) => relative === name || relative.startsWith(`${name}/`),
+  );
 }
 
 // Codex загружает project-local skills по YAML frontmatter. Невалидный
@@ -290,6 +318,57 @@ export function configForPhase(config, phaseIndex) {
   };
 }
 
+/**
+ * Ключи верхнего уровня, которые читает код набора.
+ *
+ * Список закрытый: незнакомый ключ останавливает загрузку, а не пропускается.
+ * Иначе опечатка в имени проходит молча, настройка берёт значение по умолчанию,
+ * и человек считает, что настроил её. Новый ключ конфигурации добавляется сюда
+ * же — тем изменением, которое учит код его читать.
+ */
+const configFields = new Set([
+  'active',
+  'agentCli',
+  'approvedIssueSnapshotsFile',
+  'autoApproveConfiguredIssues',
+  'baseBranch',
+  'developmentEffort',
+  'developmentModel',
+  'draftPullRequest',
+  'maxIterations',
+  'maxReviewFixAttempts',
+  'maxTestFixAttempts',
+  'maxTurns',
+  'milestoneReview',
+  'phases',
+  'preflightScripts',
+  'prompt',
+  'review',
+  'reviewDiffExcludedPaths',
+  'reviewSeverityFloor',
+  'rulesFile',
+  'runtime',
+  'stopAfterFirstIssue',
+  'syncBaseBranch',
+  'trustedIssueAuthors',
+  'validationContainer',
+  'validationDependencyPaths',
+  'validationScripts',
+]);
+
+function rejectUnknownFields(config) {
+  if (typeof config !== 'object' || config === null || Array.isArray(config)) {
+    fail(`Настройки в ${configPath} должны быть объектом.`);
+  }
+  const unknownFields = Object.keys(config).filter((field) => !configFields.has(field));
+  if (unknownFields.length > 0) {
+    fail(
+      `Неизвестные поля верхнего уровня: ${unknownFields.join(', ')}. ` +
+        `Допустимы: ${[...configFields].join(', ')}.`,
+    );
+  }
+}
+
 function requirePromptTemplate(config) {
   if (typeof config.prompt !== 'string' || config.prompt.trim() === '') {
     fail(`Заполните строковое поле "prompt" в ${configPath}.`);
@@ -324,10 +403,9 @@ function applyLoopDefaults(config) {
   // Оно остаётся в отчёте ревью и в комментарии к PR — меняется не видимость,
   // а право останавливать цикл.
   //
-  // По умолчанию порог не действует: блокирует всё, вплоть до P3. Значение P1
-  // держалось один раз, на фазе 8, где цикл иначе не сходился, — и оказалось
-  // непригодным как умолчание: следующая фаза молча отложила бы семь настоящих
-  // замечаний. Поднимать порог имеет смысл осознанно и на время.
+  // По умолчанию порог не действует: блокирует всё, вплоть до P3. Поднятый
+  // порог молча откладывает настоящие замечания, поэтому поднимают его
+  // осознанно и на время — там, где цикл иначе не сходится.
   config.reviewSeverityFloor ??= 'P3';
   config.runtime ??= {};
   // Значения живут в ralph-process-runner.mjs: тот же набор действует до
@@ -337,9 +415,9 @@ function applyLoopDefaults(config) {
   for (const [field, value] of Object.entries(defaultRuntimeSettings)) {
     config.runtime[field] ??= value;
   }
-  // Незнакомый ключ отклоняется, а не игнорируется: переименование
-  // codexTimeoutMs в agentTimeoutMs оставило в конфиге мёртвую настройку,
-  // которую можно было править без всякого эффекта.
+  // Незнакомый ключ отклоняется, а не игнорируется: иначе опечатка или
+  // устаревшее имя остаётся в конфиге мёртвой настройкой, которую правят без
+  // всякого эффекта.
   const unknownRuntimeFields = Object.keys(config.runtime).filter(
     (field) => !Object.hasOwn(defaultRuntimeSettings, field),
   );
@@ -365,10 +443,14 @@ function readApprovedIssueSnapshots(config) {
   if (!existsSync(approvedIssueSnapshotsPath)) {
     fail(`Файл одобренных snapshots issue не найден: ${approvedIssueSnapshotsPath}`);
   }
-  if (trustedFileHash(approvedIssueSnapshotsPath) !== approvedIssueSnapshotsHash) {
+  const currentHash = trustedFileHash(approvedIssueSnapshotsPath);
+  if (currentHash !== approvedIssueSnapshotsHash) {
     fail(
-      'Файл одобренных snapshots issue не совпадает с защищённым контрольным SHA-256. ' +
-        'Проверьте изменение и обновите контрольную сумму вместе с одобрением snapshots.',
+      `Файл одобренных snapshots issue ${approvedIssueSnapshotsPath} ` +
+        'не совпадает с защищённым контрольным SHA-256 из константы ' +
+        'approvedIssueSnapshotsHash в scripts/ralph/ralph-config.mjs. ' +
+        `Текущая сумма файла: ${currentHash}. ` +
+        'Проверьте изменение и впишите эту сумму в константу тем же коммитом.',
     );
   }
   config.approvedIssueSnapshots = parseJson(
@@ -379,10 +461,17 @@ function readApprovedIssueSnapshots(config) {
 }
 
 function applyValidationAndReviewDefaults(config) {
-  config.validationContainer ??= {
-    image: defaultValidationImage(),
-    dockerfile: 'scripts/ralph/Dockerfile.validation',
-  };
+  // Умолчание стоит на каждом поле отдельно, а не на всём объекте: на объекте
+  // оно означало бы, что удаление одного ключа `image` останавливает прогон,
+  // хотя имя образа выводится из имени каталога.
+  config.validationContainer ??= {};
+  if (
+    typeof config.validationContainer === 'object' &&
+    !Array.isArray(config.validationContainer)
+  ) {
+    config.validationContainer.image ??= defaultValidationImage();
+    config.validationContainer.dockerfile ??= 'scripts/ralph/Dockerfile.validation';
+  }
   // Проект обязан назвать свои команды сам: набор проверок зависит от стека, и
   // угаданное умолчание молча проверяло бы не то.
   config.preflightScripts ??= [];
@@ -484,7 +573,11 @@ function validateApprovedIssueSnapshots(config) {
 }
 
 function prepareValidationContainer(config) {
-  if (typeof config.validationContainer !== 'object' || config.validationContainer === null) {
+  if (
+    typeof config.validationContainer !== 'object' ||
+    config.validationContainer === null ||
+    Array.isArray(config.validationContainer)
+  ) {
     fail('Поле "validationContainer" должно быть объектом.');
   }
   // Набор символов ограничен не ради опечаток: на Windows commandSpec
@@ -515,8 +608,8 @@ function validateValidationCommands(config) {
   // Команда выполняется оболочкой как есть, поэтому набор символов здесь не
   // ограничивается: от подстановки произвольной команды защищает не эта
   // проверка, а то, что конфиг лежит в control plane и автономный агент не
-  // может его изменить. Осознанный размен: контракт стал переносимым на любой
-  // стек, а разрешение на команду теперь даёт только оператор.
+  // может его изменить. Осознанный размен: контракт переносится на любой стек,
+  // а разрешение на команду даёт только оператор.
   //
   // Перевод строки запрещён: имя упавшей команды печатается маркером в поток
   // контейнера и разбирается построчно, и многострочная команда назвала бы в
@@ -574,10 +667,10 @@ function validateRuntimeSettings(config) {
     }
   }
   // Пределы разные, потому что попытка стоит разного. Повтор сетевой команды —
-  // это секунды ожидания, и щедрость здесь оправдана: 17 августа трёх попыток
-  // с паузами 2 и 4 секунды не хватило на мигающий GitHub, и это стоило трёх
-  // прогонов, каждый из которых уже сделал всю дорогую работу. Повтор ревью —
-  // это целая сессия агента: минуты и сотни тысяч токенов за попытку.
+  // это секунды ожидания, и щедрость здесь оправдана: мигающий GitHub, который
+  // пережил все попытки, роняет прогон, уже сделавший всю дорогую работу.
+  // Повтор ревью — это целая сессия агента: минуты и сотни тысяч токенов за
+  // попытку.
   if (
     !Number.isInteger(config.runtime.networkRetryAttempts) ||
     config.runtime.networkRetryAttempts < 1 ||
@@ -734,6 +827,7 @@ function collectTrustedControlFileHashes(config) {
     path.join(scriptDirectory, 'ralph-validation-docker-shim.sh'),
     path.join(scriptDirectory, 'ralph-validation-entrypoint.sh'),
     path.join(scriptDirectory, 'ralph-validation-runner.mjs'),
+    path.join(scriptDirectory, 'ralph-version.mjs'),
     path.join(projectRoot, '.agents', 'RALPH.md'),
     ...agentInstructionFiles(),
   ];
@@ -765,6 +859,9 @@ function collectTrustedControlFileHashes(config) {
  * прогона.
  */
 export function prepareConfig(config) {
+  // Проверка идёт до умолчаний: они дописывают в объект свои ключи, и после них
+  // отличить ключ из файла от ключа из кода уже нельзя.
+  rejectUnknownFields(config);
   requirePromptTemplate(config);
   applyLoopDefaults(config);
   readApprovedIssueSnapshots(config);
@@ -792,10 +889,10 @@ export function loadConfig() {
  * Слепок контрольного контура на момент вызова: набор файлов инструкций и хеши
  * доверенных файлов.
  *
- * Набор сохраняется целиком, а не восстанавливается по имени файла. Пока
- * проверка выводила его фильтром `basename === 'AGENTS.md'`, правило «что
- * считается инструкцией» жило в двух местах, и расширение набора на `.claude/**`
- * рассогласовало их: файл попадал в текущий набор и не попадал в ожидаемый.
+ * Набор сохраняется целиком, а не восстанавливается по имени файла: фильтр
+ * вроде `basename === 'AGENTS.md'` держал бы правило «что считается
+ * инструкцией» в двух местах, и файл из `.claude/**` попадал бы в текущий набор
+ * и не попадал в ожидаемый.
  *
  * Функция отдельная, потому что снимок берётся дважды. Смысл проверки —
  * «AFK-сессия изменила контрольный контур», значит слепок обязан описывать

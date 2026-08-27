@@ -15,12 +15,17 @@ and of nothing else.
   because nothing else holds a copy. A subagent that reads an optional skill or
   rules file must say so and stay usable when it is absent, as
   `security-reviewer` does.
-- Files the tool writes itself — the scheduler lock, local permissions — belong
-  to the machine and are ignored.
-- Skills live under `.claude/skills/`, which is where Claude Code looks;
-  `.agents/skills/` is the Codex convention.
+- Files the tool writes itself belong to the machine, so `.gitignore` excludes
+  `.claude/scheduled_tasks.lock` and `.claude/settings.local.json`. Ralph leaves
+  only the lock out of its trusted set; `settings.local.json` stays in it, which
+  is why a second Claude Code session during a run stops the run.
+- A skill keeps its text in `.agents/skills/<name>/SKILL.md`, where Codex reads
+  it, while `.claude/skills/<name>/SKILL.md` holds the frontmatter and a line
+  pointing at that text: Claude Code reads its own directory only. The CLI
+  substitutes `$ARGUMENTS` in the file it loads, so that placeholder lives in
+  the `.claude` file and the `.agents` copy names the argument in words.
 
 Ralph treats `AGENTS.md`, `CLAUDE.md`, `.claude/**`, `.agents/**` and
-`scripts/ralph/**` as its control plane: an AFK session never edits them, and a
-new instruction file changes the trusted set, so add one between runs rather
-than during one.
+`scripts/ralph/**` as its control plane: an AFK session never edits them. A new
+`AGENTS.md`, `CLAUDE.md`, or file under `.claude/` or `.agents/skills/` changes
+the trusted set, so add one between runs rather than during one.

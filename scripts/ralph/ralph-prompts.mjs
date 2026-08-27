@@ -29,17 +29,17 @@ export function renderPrompt(config, issue, rules) {
   return `${prompt}\n\n## Текущая issue\n\n- Number: #${issue.number}\n- Title: ${issue.title}\n- URL: ${issue.url}\n\n### Body и критерии готовности\n\n${issueBody}\n\n---\n\n${renderedRules}`;
 }
 
-// Both review prompts carried these blocks verbatim, so editing one silently
-// left the other reviewer on an older contract. They live here once.
+// Both review prompts need these blocks verbatim, so they live here once: a
+// second copy would leave one reviewer on an older contract after an edit.
 //
 // Подсказка про чтение зависит от того, какой CLI ведёт ревью, и это не
 // косметика. Codex-ревьюер работает в read-only песочнице с полноценной
 // оболочкой, а Claude-ревьюер запускается с `--tools Read,Glob,Grep` и Bash не
 // имеет вовсе: инструкция про `rg -n` и `-LiteralPath` для него неисполнима.
-// Важнее второе: единственная защита от того, что путь со скобками будет
-// прочитан как шаблон, была выражена флагом PowerShell, поэтому у
-// Claude-ревьюера защиты не оставалось совсем — его Glob и `--glob` у Grep
-// трактуют скобки как класс символов.
+// Важнее второе: в shell-подсказке защиту от того, что путь со скобками
+// прочитают как шаблон, даёт флаг PowerShell, а Claude-ревьюеру он недоступен —
+// его Glob и `--glob` у Grep трактуют скобки как класс символов, поэтому ту же
+// защиту несёт вторая подсказка.
 const shellReviewGuidance =
   'Read efficiently on this Windows/PowerShell host: locate code with `rg -n` before opening a file, read bounded ranges rather than whole files, and pass every discovered path to file cmdlets with `-LiteralPath` so a path segment containing square brackets is not treated as a wildcard pattern. Do not dump full logs, lockfiles, or generated files.';
 const toolReviewGuidance =
@@ -122,10 +122,10 @@ ${previousFindings}`;
 /**
  * Что уже проверено прошлым ревью.
  *
- * Без этого блока каждое повторное ревью проходит полный аудит заново: на
- * issue #57 их было три подряд, и два из них перепроверяли то, что первое уже
- * признало чистым. Глубина не снижается — сужается область, а неизменившийся
- * код объявляется проверенным ровно в том объёме, в каком он и был проверен.
+ * Без этого блока каждое повторное ревью проходит полный аудит заново и
+ * перепроверяет то, что прошлое уже признало чистым. Глубина не снижается —
+ * сужается область, а неизменившийся код объявляется проверенным ровно в том
+ * объёме, в каком он и был проверен.
  */
 function reviewAlreadyAudited(previousReview) {
   if (!previousReview?.commit) return '';

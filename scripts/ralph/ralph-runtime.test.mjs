@@ -287,8 +287,7 @@ test('retention keeps the newest runs even when every rotation shares one timest
     const logPath = path.join(directory, 'run.log');
     // Метка задаётся явно, а не берётся с часов: восемь ротаций укладываются в
     // одну миллисекунду на tmpfs контейнера и не укладываются на диске Windows,
-    // из-за чего дефект был виден только в валидации. Явная метка
-    // воспроизводит его на любой машине.
+    // поэтому только явная метка воспроизводит этот случай на любой машине.
     const stamp = '2026-08-16T17:41:21.721Z';
 
     for (let run = 1; run <= 8; run += 1) {
@@ -300,8 +299,8 @@ test('retention keeps the newest runs even when every rotation shares one timest
       .filter((name) => /^run-.*\.log$/.test(name))
       .sort();
     assert.equal(archived.length, 5);
-    // Пока порядок задавал случайный суффикс, здесь оставались прогоны
-    // 5, 6, 3, 8 и 2: самый свежий архив удалялся, самый старый выживал.
+    // Порядок задаёт порядковый номер в имени: со случайным суффиксом
+    // сортировка удаляла бы произвольные архивы, а не самые старые.
     assert.deepEqual(
       archived.map((name) => readFileSync(path.join(directory, name), 'utf8').trim()),
       [4, 5, 6, 7, 8].map((run) => `marker for run ${run}`),
@@ -312,9 +311,10 @@ test('retention keeps the newest runs even when every rotation shares one timest
 test('two rotations within the same millisecond keep both archives', () => {
   withTemporaryDirectory((directory) => {
     const logPath = path.join(directory, 'run.log');
-    // Метка времени одна и та же для обеих ротаций: именно так вело себя
-    // окружение контейнера, где восемь ротаций уложились в одну миллисекунду.
-    // Раньше вторая ротация переименовывала поверх первой и уничтожала её.
+    // Метка времени одна и та же для обеих ротаций: на tmpfs контейнера восемь
+    // ротаций укладываются в одну миллисекунду. Имя архива уникально по
+    // построению: иначе вторая ротация переименовала бы файл поверх первого
+    // архива и уничтожила его.
     const stamp = '2026-08-16T13:45:51.316Z';
 
     writeFileSync(logPath, 'first run\n', 'utf8');
@@ -354,8 +354,8 @@ test('a windows command resolves by PATH order first and extension order second'
         PATHEXT: windowsPathExtensions,
       });
 
-    // Ровно этот случай ронял каждую Claude-сессию: рабочий claude.exe лежал
-    // раньше в PATH, а код всё равно подставлял сломанный npm-шим claude.cmd.
+    // Ровно этот случай ронял бы каждую Claude-сессию: рабочий claude.exe лежит
+    // раньше в PATH, а подстановка сломанного npm-шима claude.cmd убивает запуск.
     assert.equal(resolve([native, npm]), path.join(native, 'claude.EXE'));
     // Каталог сильнее расширения: шим побеждает, если стоит раньше.
     assert.equal(resolve([npm, native]), path.join(npm, 'claude.CMD'));
@@ -363,9 +363,9 @@ test('a windows command resolves by PATH order first and extension order second'
     assert.equal(resolve([npm]), path.join(npm, 'claude.CMD'));
     assert.equal(resolve([path.join(root, 'empty')]), null);
 
-    // Элемент PATH в кавычках законен, и Windows кавычки снимает. Пока их не
-    // снимал этот код, установленный CLI выглядел как отсутствующий, а
-    // отсутствие команды здесь — жёсткая ошибка запуска.
+    // Элемент PATH в кавычках законен, и Windows кавычки снимает. Без этого
+    // установленный CLI выглядит как отсутствующий, а отсутствие команды
+    // здесь — жёсткая ошибка запуска.
     assert.equal(
       resolveWindowsExecutable('claude', {
         PATH: `"${native}"`,
@@ -416,7 +416,7 @@ test('a review is not retried when the failure cannot change between attempts', 
     assert.equal(calls, 1, code);
   }
 
-  // Технический сбой запуска по-прежнему повторяется.
+  // Технический сбой запуска повторяется.
   let attempts = 0;
   const result = await runReviewWithRetries(
     config,
@@ -484,7 +484,7 @@ test('подробности идут в журнал, а объёмный по�
   withTemporaryDirectory((directory) => {
     const logPath = path.join(directory, 'run.log');
     const printed = [];
-    // Вывод контейнера длиннее порога: именно такие куски и повторялись.
+    // Вывод контейнера длиннее порога: именно такие куски и повторяются.
     const containerOutput = `RALPH_VALIDATION_SCRIPT=lint\n${'x'.repeat(600)}`;
 
     let restore;

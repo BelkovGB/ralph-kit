@@ -1,42 +1,49 @@
-# Ralph validation isolation
+# Изоляция проверок Ralph
 
-## Approved issues
+Границу control plane и список файлов, которые сверяет проверка подделки,
+описывает `.agents/RALPH.md`. Здесь — журнал одобренных issues, договор о
+командах проверок и устройство контейнера, в котором они идут.
 
-`approved-issues.json` is the tracked approval ledger for explicitly pinned AFK
-issue prompts. By default, `autoApproveConfiguredIssues=true` also treats a
-committed `phases` plan as approval of the current title/body of issues in those
-milestones, provided their author is trusted. Ralph freezes the exact content in
-its persistent run state before the agent starts; later GitHub edits therefore
-stop the run. Review issues created by Ralph are frozen through the same
-mechanism, so an enabled milestone recovery loop can remain unattended. Set the
-option to `false` when every issue must be added to the tracked ledger manually.
+## Журнал одобренных issues
 
-## Control plane
+`approved-issues.json` хранит запомненный текст issues, одобренных вручную. При
+`autoApproveConfiguredIssues: true` — это умолчание — одобрением служит сам
+закоммиченный план `phases`: Ralph берёт текущие заголовок и тело issues этих
+milestone, если автор issue доверенный. Перед стартом агента Ralph замораживает
+точный текст в состоянии прогона, поэтому правка issue в GitHub после старта
+останавливает прогон. Issues с замечаниями ревью, которые Ralph заводит сам,
+замораживаются тем же механизмом, и круг исправлений milestone идёт без
+человека. Поставьте `false`, когда каждую issue нужно вносить в журнал руками.
 
-Ralph only implements product work. `.agents/**`, `scripts/ralph/**`, and every
-`AGENTS.md` are manual control-plane paths: milestone reviews do not create
-issues for them, queued infrastructure issues are ignored, and the executor
-rejects them.
+Журнал защищён константой `approvedIssueSnapshotsHash` в `ralph-config.mjs`:
+впишите новую сумму тем же коммитом, которым добавляете запись, иначе прогон
+останавливается на сверке контрольной суммы.
 
-## Command contract
+## Договор о командах
 
-`preflightScripts` and `validationScripts` hold shell commands, not script
-names. Each one runs as written from the repository root inside the container,
-for example `npm run lint`, `ruff check .`, or `uv run pytest`. A command must be
-non-empty, within the length limit, and free of line breaks: the entrypoint
-prints it as a marker line that the failure report parses line by line. Nothing
-restricts what a command may invoke — the config lives in the control plane, so
-an autonomous agent cannot add one.
+`preflightScripts` и `validationScripts` держат команды оболочки, а не имена
+скриптов. Каждая выполняется как написана, из корня репозитория внутри
+контейнера: `npm run lint`, `ruff check .`, `uv run pytest`. Команда обязана
+быть непустой, укладываться в предел длины и обходиться без переводов строки:
+entrypoint печатает её отдельной строкой-маркером, а отчёт о падении разбирает
+вывод построчно. Что вызывает команда, не ограничено ничем: файл настроек лежит
+в control plane, и автономная сессия своей команды туда не добавит.
 
-## Isolation
+## Изоляция
 
-Before any command runs, Ralph builds `Dockerfile.validation`. The set runs in a
-fresh, unprivileged container with no network, no Docker socket, a read-only
-image, and a bind mount containing only tracked or non-ignored workspace files.
-The entrypoint copies that snapshot into a writable workspace and initializes a
-disposable Git repository, so host Git metadata and host credential helpers stay
-out of reach.
+Перед первой командой Ralph собирает образ по `Dockerfile.validation`. Набор
+команд идёт в свежем непривилегированном контейнере: сети нет, сокета Docker
+нет, корневая файловая система только на чтение, а снимок рабочего дерева
+приезжает bind-монтированием — в снимке лежат все файлы, которых не исключает
+`.gitignore`. Entrypoint копирует снимок в рабочий каталог с правом записи и
+заводит там одноразовый репозиторий Git, поэтому Git-метаданные хоста и его
+хранилища паролей контейнеру недоступны.
 
-The image installs nothing project specific. A project adds its dependencies —
-and anything a command needs at run time, such as a database or a browser — to
-its own `Dockerfile.validation`, where network access is still available.
+Контекст сборки — не корень репозитория. В нём только пути из
+`validationDependencyPaths` и скрипты проверок Ralph, и берутся они из HEAD, а
+не из рабочего дерева: `COPY` любого другого файла падает, а незакоммиченная
+правка манифеста останавливает прогон.
+
+Образ не ставит ничего проектного. Свои зависимости — и всё, что команде нужно
+во время работы, например базу данных или браузер, — проект добавляет в свой
+`Dockerfile.validation`, где сеть ещё есть.

@@ -1,8 +1,9 @@
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { loadConfig } from './ralph-config.mjs';
+import { loadConfig, trustedFileHash } from './ralph-config.mjs';
 
 /**
  * Общие фикстуры тестов Ralph: те, которыми пользуется больше одного файла.
@@ -86,8 +87,8 @@ export function fakeClaudeScript(source) {
 
 /**
  * operation получает `receivedArguments()` — argv, который реально дошёл до
- * поддельного CLI. Без этого тесты проходили бы при аргументе, обрезанном
- * cmd.exe: именно так многострочная схема ревью доходила как «{».
+ * поддельного CLI. Без этого тест проходит и при аргументе, обрезанном
+ * cmd.exe: многострочная схема ревью доходит до него как «{».
  */
 export async function withFakeClaude(source, operation) {
   const directory = fakeClaudeScript(source);
@@ -114,6 +115,40 @@ export async function withFakeClaude(source, operation) {
     }
     rmSync(directory, { recursive: true, force: true });
   }
+}
+
+/**
+ * Временное дерево проекта: карта «путь через слеш → содержимое».
+ *
+ * Тест подделки control plane работает с настоящими файлами на диске, а корень
+ * доверенного набора — это корень проекта, куда набор поставлен. Тест, который
+ * пишет файлы туда, правит и удаляет чужие исходники, поэтому дерево живёт во
+ * временном каталоге. Вызывающий удаляет его сам.
+ */
+export function temporaryProjectTree(files) {
+  const root = mkdtempSync(path.join(tmpdir(), 'ralph-project-'));
+  for (const [relativePath, content] of Object.entries(files)) {
+    const file = path.join(root, ...relativePath.split('/'));
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, content, 'utf8');
+  }
+  return root;
+}
+
+/**
+ * Конфигурация прогона, где доверенными считаются только переданные файлы.
+ *
+ * Хеши считает та же функция, что и `loadConfig`, поэтому подделка файла из
+ * временного дерева останавливает сессию там же, где подделка файла проекта.
+ * Файлы проекта из карты убраны: тест отвечает за один файл, а правка любого
+ * другого файла набора, сделанная в это же время, роняла бы его чужой ошибкой.
+ */
+export function configTrustingOnly(trustedFiles, overrides = {}) {
+  return {
+    ...loadConfig(),
+    ...overrides,
+    trustedControlFileHashes: new Map(trustedFiles.map((file) => [file, trustedFileHash(file)])),
+  };
 }
 
 export function context(overrides = {}) {

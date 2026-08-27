@@ -7,6 +7,7 @@ import test from 'node:test';
 import { reasoningEffortsFor } from './ralph-agent-backends.mjs';
 import { developmentCodexArguments } from './ralph-codex-session.mjs';
 import {
+  agentInstructionFiles,
   agentSkillFiles,
   loadConfig,
   parseSkillFrontmatter,
@@ -131,7 +132,7 @@ test('review findings create, reuse, and reopen milestone issues without duplica
   );
   assert.deepEqual(created, [3]);
   // Повторно пришедшее замечание попадает в свою же группу, а не обрабатывается
-  // вторым проходом: раньше та же задача обновлялась дважды подряд.
+  // вторым проходом: иначе та же задача обновляется дважды подряд.
   assert.deepEqual(updated, [1, 2]);
   assert.deepEqual(reopened, [2]);
 });
@@ -357,8 +358,8 @@ test('a second iteration shows the issue commits only, not the range between the
   const inventory = issueChangeInventory({ number: 57 }, newest, { run });
 
   assert.deepEqual(inventory.commits, [newest, oldest]);
-  // Диапазон `oldest^..newest` втянул бы всё, что легло в ветку между ними:
-  // на #57 это 31 файл вместо четырёх, включая чужие правки control plane.
+  // Диапазон `oldest^..newest` втянул бы всё, что легло в ветку между ними,
+  // включая чужие правки control plane.
   assert.ok(!calls.some((call) => call.startsWith('rev-parse')));
   assert.ok(!calls.some((call) => call.startsWith('diff ')));
   // Оба commit перечислены в хронологическом порядке в одном вызове.
@@ -371,7 +372,7 @@ test('a second iteration shows the issue commits only, not the range between the
 
 test('a completion marker left by an older Ralph is read and then stripped', () => {
   const commit = 'a'.repeat(40);
-  // Литерал, а не вызов форматтера: писателя маркера больше нет, и тест должен
+  // Литерал, а не вызов форматтера: этот маркер Ralph не пишет, а тест обязан
   // проверять именно тот текст, который лежит в issue от прежних прогонов.
   const staleBody = `Original requirements\n\n<!-- ralph-issue-completion status:pending-review commit:${commit} -->`;
 
@@ -531,8 +532,8 @@ test('every project-local SKILL.md exposes loadable frontmatter', () => {
 
 test('skills of both CLI conventions are discovered, not just one', () => {
   // Codex reads `.agents/skills`, Claude Code reads `.claude/skills`. Checking
-  // one of them left the other's broken frontmatter to be discovered at
-  // runtime, where a skill that fails to load is only a line in the log.
+  // only one leaves the other's broken frontmatter to be discovered at runtime,
+  // where a skill that fails to load is only a line in the log.
   const directory = mkdtempSync(path.join(tmpdir(), 'ralph-skills-'));
   try {
     for (const [root, skill] of [
@@ -600,9 +601,9 @@ test('development codex arguments carry an explicit reasoning effort', () => {
 });
 
 test('the committed configuration sets an explicit effort valid for its agentCli', () => {
-  // Раньше здесь стояли конкретные значения, и штатное действие оператора —
-  // смена CLI или модели — роняло ворота валидации продукта. Проверяется
-  // свойство: усилие задано явно и допустимо для выбранного CLI.
+  // Проверяется свойство, а не конкретные значения: усилие задано явно и
+  // допустимо для выбранного CLI, поэтому смена CLI или модели оператором не
+  // роняет ворота валидации продукта.
   const config = loadConfig();
   const allowed = reasoningEffortsFor(config.agentCli);
   assert.equal(allowed.length > 0, true, config.agentCli);
@@ -632,7 +633,8 @@ test('reasoning effort falls back to medium/medium/high when the config omits it
 
 test('preflight stops when the active GitHub account cannot write to the repository', () => {
   // `gh auth status` завершается нулём при любом залогиненном аккаунте, поэтому
-  // раньше отказ приходил на push — после работы агента и создания commit.
+  // без этой проверки отказ приходит на push — после работы агента и создания
+  // commit.
   const calls = [];
   const runNetwork = (command, args, options) => {
     calls.push(args.join(' '));
@@ -658,9 +660,9 @@ test('preflight stops when the active GitHub account cannot write to the reposit
 });
 
 test('a runtime field the code does not read is rejected, not ignored', () => {
-  // Ровно этот случай уже произошёл: переименование codexTimeoutMs в
-  // agentTimeoutMs оставило в конфиге ключ, который можно было править
-  // без всякого эффекта на таймаут сессии.
+  // Без этой проверки неизвестное поле правилось бы без всякого эффекта: ключ
+  // codexTimeoutMs выглядит настройкой таймаута сессии, а код читает
+  // agentTimeoutMs.
   const original = JSON.parse(readFileSync(ralphConfigPath, 'utf8'));
   assert.throws(
     () =>
@@ -672,6 +674,63 @@ test('a runtime field the code does not read is rejected, not ignored', () => {
       ),
     /Неизвестные поля в "runtime": codexTimeoutMs/,
   );
+});
+
+test('a top-level field the code does not read is rejected, not ignored', () => {
+  // Поставляемый конфиг обязан пройти проверку: список допустимых ключей собран
+  // по коду, и разойтись с файлом он не должен.
+  assert.equal(typeof loadConfig().prompt, 'string');
+
+  // Опечатка в имени ключа иначе проходит молча: настройка берёт значение по
+  // умолчанию, а человек считает, что задал своё.
+  assert.throws(
+    () =>
+      withPatchedRalphConfig({ maxIteration: 5 }, () => {
+        throw new Error('loadConfig should have failed');
+      }),
+    /Неизвестные поля верхнего уровня: maxIteration/,
+  );
+});
+
+test('the validation image is derived per field when the config omits it', () => {
+  const original = JSON.parse(readFileSync(ralphConfigPath, 'utf8'));
+  const { image: _image, ...withoutImage } = original.validationContainer;
+
+  // Умолчание на всём объекте означало бы, что удаление одного ключа
+  // останавливает прогон. Имя образа выводится из имени каталога репозитория,
+  // поэтому проверяется форма имени, а не конкретная строка.
+  withPatchedRalphConfig({ validationContainer: withoutImage }, (config) => {
+    assert.equal(config.validationContainer.image.endsWith('-ralph-validation:latest'), true);
+    assert.equal(config.validationContainer.dockerfile, original.validationContainer.dockerfile);
+  });
+});
+
+test('the instruction boundary takes .agents/skills and skips dependency directories', () => {
+  // Скиллы из `.agents/skills` загружает Codex, и они меняют поведение будущей
+  // сессии наравне с AGENTS.md. Остальной `.agents` в границу не входит: отчёты
+  // ревью Ralph пишет туда сам во время прогона.
+  const directory = mkdtempSync(path.join(tmpdir(), 'ralph-instruction-boundary-'));
+  try {
+    mkdirSync(path.join(directory, '.agents', 'skills', 'deploy'), { recursive: true });
+    mkdirSync(path.join(directory, 'target'), { recursive: true });
+    mkdirSync(path.join(directory, '.venv'), { recursive: true });
+    writeFileSync(path.join(directory, 'AGENTS.md'), '# root\n', 'utf8');
+    writeFileSync(path.join(directory, '.agents', 'skills', 'deploy', 'SKILL.md'), '# s\n', 'utf8');
+    writeFileSync(path.join(directory, '.agents', 'last-review.json'), '{}\n', 'utf8');
+    // Каталоги зависимостей и сборки других стеков: найденная там инструкция
+    // принадлежит чужому пакету, а не проекту.
+    writeFileSync(path.join(directory, 'target', 'AGENTS.md'), '# vendored\n', 'utf8');
+    writeFileSync(path.join(directory, '.venv', 'CLAUDE.md'), '# vendored\n', 'utf8');
+
+    assert.deepEqual(
+      agentInstructionFiles(directory).map((file) =>
+        path.relative(directory, file).split(path.sep).join('/'),
+      ),
+      ['.agents/skills/deploy/SKILL.md', 'AGENTS.md'],
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test('an unsupported reasoning effort is rejected before a run starts', () => {
@@ -899,8 +958,7 @@ test('потерянный комментарий не роняет цикл, а
   console.error = (...args) => errors.push(args.join(' '));
 
   try {
-    // Публикация недоступна: 17 августа именно на ней обрывался цикл, уже
-    // сделавший работу, — до пятнадцати минут за раз.
+    // Публикация недоступна: обрыв цикла здесь стоил бы уже сделанной работы.
     reopenIssueWithComment('owner/repo', { number: 82 }, 'Findings', {
       issueState: () => 'OPEN',
       patchIssue: () => ({}),
@@ -940,9 +998,8 @@ test('после отказа ревью база следующей сесси�
     commit,
   );
 
-  // Ветка ушла вперёд, работа issue в её истории. Так было 17 августа: между
-  // коммитом issue и HEAD легли правки Ralph, и следующая итерация потребовала
-  // HEAD, отставший на два коммита.
+  // Ветка ушла вперёд, работа issue в её истории: между коммитом issue и HEAD
+  // ложатся правки Ralph, и следующая сессия обязана продолжать с HEAD.
   assert.equal(
     baseForNextSession(commit, {
       run: () => ({ status: 0, stdout: head }),
@@ -963,7 +1020,7 @@ test('после отказа ревью база следующей сесси�
 
 test('разбор git status переживает обрезку пробелов и переименование', () => {
   // `run` обрезает пробелы по краям вывода, поэтому первая строка приходит без
-  // ведущего пробела статуса. Срез на три символа съедал первый символ её пути.
+  // ведущего пробела статуса: срез на три символа съел бы первый символ её пути.
   const raw = ' M src/app/items/item-form.ts\n M e2e/example.spec.ts\n';
 
   assert.deepEqual(workingTreePaths(raw), workingTreePaths(raw.trim()));
@@ -984,8 +1041,8 @@ test('пределы повторов разведены по цене одно�
   const runtime = (patch) => ({ runtime: { ...original.runtime, ...patch } });
 
   // Повтор сетевой команды стоит секунд ожидания: трёх попыток с паузами 2 и 4
-  // секунды не хватило на мигающий GitHub, и это стоило трёх прогонов, каждый
-  // из которых уже сделал всю дорогую работу.
+  // секунды не хватает на мигающий GitHub, а обрыв теряет прогон, уже
+  // сделавший всю дорогую работу.
   withPatchedRalphConfig(runtime({ networkRetryAttempts: 30 }), (config) => {
     assert.equal(config.runtime.networkRetryAttempts, 30);
   });
@@ -1269,7 +1326,7 @@ The pull request remains draft so a human can make the final merge decision.`;
 test('уже застадированное удаление не попадает в git add', () => {
   // `git rm` убирает файл и из дерева, и из индекса. Путь остаётся в porcelain
   // как `D `, но `git add` по нему отвечает `did not match any files` и роняет
-  // прогон кодом 128 — так оборвалась issue #91 после пятнадцати минут работы.
+  // прогон кодом 128.
   const status = [
     ' M src/items/items.controller.ts',
     'D  src/items/services/item-uploader.service.ts',

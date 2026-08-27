@@ -41,6 +41,9 @@ contracts. Keep it short: an agent reads this file on every task.
   limits. A prohibition without a reason gets removed.
 - Documentation describing code behaviour needs a test or it starts lying. A
   wrong instruction costs more than a missing one.
+- Documentation states the current behaviour; the history of changes lives in
+  the changelog. A reader who needs today's answer pays for every superseded
+  one on the way to it.
 - Name the exact path, or the command that finds it. Guessing costs steps.
 - Put module instructions in an `AGENTS.md` beside the module, not in a shared
   file, and do not repeat the parent. A new one changes Ralph's trusted set, so

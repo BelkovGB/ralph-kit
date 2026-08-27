@@ -29,7 +29,6 @@ const maxStoredIssueRecords = 200;
 // Ревью всего milestone цикл пишет записью без номера issue. Пока такой записи в
 // журнале нет, сумма не покрывает самую дорогую сессию прогона, и страница
 // обязана об этом сказать, чтобы итог не выдавал себя за полную стоимость.
-// Старые журналы состоят только из таких записей.
 const milestoneReviewKeyPrefix = 'milestone-review:';
 
 // Итоги попытки: слева — что цикл пишет в журнал, справа — что это значит.
@@ -179,9 +178,9 @@ function agentTokens(agent) {
   const reasoning = Math.min(numberOrZero(agent.thinkingTokens), output);
 
   return {
-    // Поле входа переименовалось: старые записи хранят `inputTokens`, новые —
-    // `uncachedInputTokens`. Смысл один — вход мимо кэша, — и в одной записи
-    // оба имени не встречаются, поэтому читаются оба.
+    // Читаются оба имени поля входа: `inputTokens` в записях старого формата и
+    // `uncachedInputTokens` в новых. Смысл один — вход мимо кэша, — и в одной
+    // записи оба имени не встречаются.
     uncachedInput: numberOrZero(agent.uncachedInputTokens) + numberOrZero(agent.inputTokens),
     cacheCreation: numberOrZero(agent.cacheCreationTokens),
     cacheRead: numberOrZero(agent.cacheReadTokens),
@@ -303,8 +302,8 @@ function emptySpend(metricsUnreadable = false) {
 
 /**
  * Одна запись метрик — одна попытка, а не задача, поэтому попытки группируются
- * по номеру issue. `title` берётся из первой записи, где он есть: у попыток,
- * сделанных до появления поля, заголовка нет, и тогда он остаётся `null`.
+ * по номеру issue. `title` берётся из первой записи, где он есть: у попыток
+ * старого формата заголовка нет, и тогда он остаётся `null`.
  *
  * Запись без номера issue — это ревью milestone, а не задача. Такие записи стоят в
  * списке отдельной строкой с `issue: null` и группируются по milestone: два ревью
@@ -317,9 +316,9 @@ export function readTaskSpend(dependencies = {}) {
   const metricsPath =
     dependencies.metricsPath ??
     path.join(resolveRuntimeDirectory(dependencies), 'issue-metrics.json');
-  // Битый журнал и пустая история — разные беды, а выглядели одинаково. Файла
-  // нет — `readJsonFile` вернёт `null`; файл есть и не разбирается — бросит, и
-  // страница должна сказать про поломку, а не про то, что прогонов не было.
+  // Битый журнал и пустая история — разные беды. Файла нет — `readJsonFile`
+  // вернёт `null`; файл есть и не разбирается — бросит, и страница должна
+  // сказать про поломку, а не про то, что прогонов не было.
   let stored = null;
   let metricsUnreadable = false;
   try {

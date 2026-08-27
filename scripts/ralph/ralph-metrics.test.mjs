@@ -79,8 +79,8 @@ test('totals суммируют только присланные значени
     assert.equal(record.totals.costReportedBy, 1);
     assert.equal(record.totals.costUsd, 2.5);
     assert.equal(record.totals.turns, 46);
-    // Вход — это все три слагаемых. Одно из них выдавали за весь вход, и на
-    // реальном прогоне это показывало 3k вместо 5,8M.
+    // Вход — это все три слагаемых: uncachedInputTokens в одиночку меньше
+    // полного входа на порядки.
     assert.equal(record.totals.uncachedInputTokens, 200);
     assert.equal(record.totals.inputTokens, 200 + 1_000 + 50_000);
     assert.equal(record.totals.thinkingTokens, null);

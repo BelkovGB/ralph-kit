@@ -24,11 +24,12 @@
  *                нет: поле обязательно (`prompt`, `phases`), вычисляется при
  *                загрузке (`validationContainer.image`) или подставляется
  *                только вместе со всем родительским объектом. Третий случай —
- *                ключи внутри `review`, `milestoneReview` и
- *                `validationContainer`: `applyValidationAndReviewDefaults`
- *                в `ralph-config.mjs` заполняет эти объекты целиком, а
- *                одиночный удалённый ключ внутри них останавливает прогон, и
- *                обещать умолчание форме нельзя.
+ *                `enabled`, `schemaFile` и `outputFile` у `review` и
+ *                `milestoneReview` плюс `milestoneReview.model`:
+ *                `applyValidationAndReviewDefaults` в `ralph-config.mjs`
+ *                подставляет их только вместе с целым объектом, а удаление
+ *                одного такого ключа останавливает прогон. Остальные ключи
+ *                этих объектов своё умолчание имеют, и форма его показывает.
  *
  * Групп ровно пять, и каждая становится вкладкой формы; `id` группы — якорь
  * вкладки.
@@ -73,7 +74,7 @@ export const fieldGroups = [
         section: 'Запуск',
         label: 'Ralph включён',
         type: 'boolean',
-        hint: 'Пока выключен, команда запуска ничего не сделает.',
+        hint: 'Пока выключен, обе команды — и --check, и --run — печатают строку о выключении и выходят.',
         unit: null,
         default: null,
       },
@@ -393,6 +394,15 @@ export const fieldGroups = [
         default: null,
       },
       {
+        path: 'reviewDiffExcludedPaths',
+        section: 'Ревью каждой issue',
+        label: 'Файлы без diff в ревью',
+        type: 'list',
+        hint: 'Пути, чей построчный diff ревьюер issue не получает: сгенерированный файл вроде lock-файла меняется на сотни строк от одной зависимости и вытесняет из бюджета продуктовый код. Файл остаётся в списке изменений и в статистике, исчезает только его diff. По пути на строку, от корня проекта. На ревью milestone поле не действует: там по тем же соображениям исключён control plane.',
+        unit: null,
+        default: [],
+      },
+      {
         path: 'milestoneReview.enabled',
         section: 'Ревью milestone',
         label: 'Проверять milestone перед закрытием',
@@ -487,7 +497,7 @@ export const fieldGroups = [
         label: 'Образ проверок',
         type: 'text',
         hint:
-          'Основа имени docker-образа, внутри которого идут проверки. Ralph дописывает к ней отпечаток Dockerfile и файлов зависимостей, поэтому у каждого их состояния свой образ, а в списке docker-образов имя стоит с этим хвостом. По умолчанию основу Ralph берёт из имени каталога репозитория, чтобы проекты не перезаписывали образы друг другу.',
+          'Основа имени docker-образа, внутри которого идут проверки. Ralph дописывает к ней отпечаток Dockerfile и файлов зависимостей, поэтому у каждого их состояния свой образ, а в списке docker-образов имя стоит с этим хвостом. По умолчанию основу Ralph берёт из имени каталога репозитория, чтобы образы разных проектов различались в списке.',
         unit: null,
         default: null,
       },
@@ -530,10 +540,12 @@ export const fieldGroups = [
 
 // Неподтверждённых ключей нет: каждый ключ из `.agents/ralph.config.json`
 // встречается в `ralph-config.mjs`, и обратно — каждый ключ, который читает
-// `ralph-config.mjs`, описан выше. Единственный ключ, которого нет в текущем
-// `.agents/ralph.config.json`, но который код читает и валидирует, —
-// `validationDependencyPaths` (умолчание `[]`, проверка в
-// `validateValidationCommands`, использование в `ralph-validation-runner.mjs`).
+// `ralph-config.mjs`, описан выше. Двух ключей нет в текущем
+// `.agents/ralph.config.json`, но код их читает: `validationDependencyPaths`
+// (проверка в `validateValidationCommands`, использование в
+// `ralph-validation-runner.mjs`) и `reviewDiffExcludedPaths` (использование в
+// `ralph-loop.mjs` и `ralph-git.mjs`). Пустой список у обоих значит «ничего»,
+// поэтому форма показывает умолчание `[]`.
 //
 // Значения, выведенные кодом, а не записанные в конфигурации, помечены
 // `default: null`: `validationContainer.image` собирается из имени каталога

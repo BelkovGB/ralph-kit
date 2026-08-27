@@ -521,8 +521,8 @@ test('a dependency changed only in the working tree stops the run before the con
 
 test('снимок повторяет рабочее дерево, а не индекс: удалённый файл его не роняет', () => {
   // Отслеживаемый файл, удалённый в рабочем дереве, git ls-files по-прежнему
-  // перечисляет. Пока снимок копировал список дословно, он падал с ENOENT за
-  // секунду, и issue, требующая удалить файл, была невыполнима в принципе.
+  // перечисляет. Дословная копия этого списка падала бы с ENOENT, и issue,
+  // требующая удалить файл, была бы невыполнима в принципе.
   const victim = path.join('scripts', 'ralph', 'README.md');
   const absolute = path.join(process.cwd(), victim);
   const original = readFileSync(absolute);

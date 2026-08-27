@@ -35,8 +35,8 @@ function schemaWithoutDialect() {
 test('agentCli selects the backend and its reasoning-effort vocabulary', () => {
   assert.equal(agentBackend({ agentCli: 'claude' }).cli, 'claude');
   assert.equal(agentBackend({ agentCli: 'codex' }).cli, 'codex');
-  // Отсутствие поля — это Codex: конфигурации, написанные до появления выбора,
-  // должны продолжать работать без правки.
+  // Отсутствие поля — это Codex: конфигурация без `agentCli` работает без
+  // правки.
   assert.equal(agentBackend({}).cli, 'codex');
   assert.equal(agentBinary({ agentCli: 'claude' }), 'claude');
 
@@ -67,10 +67,10 @@ test('claude arguments always carry --verbose alongside stream-json', () => {
 });
 
 test('both roles keep the cached prefix free of per-machine sections', () => {
-  // Каждая сессия получает свой mkdtemp-HOME, и его путь печатался в секции
-  // памяти системного промпта: префикс двух соседних сессий расходился, кэш не
-  // переиспользовался. Замер в песочнице: без флага вторая сессия создаёт
-  // 6 168 токенов кэша, с флагом — 1 156.
+  // Каждая сессия получает свой mkdtemp-HOME, и его путь попадает в секцию
+  // памяти системного промпта: без флага префикс двух соседних сессий
+  // расходится и кэш не переиспользуется — вторая сессия создаёт префикс
+  // заново вместо того, чтобы прочитать готовый.
   for (const args of [
     developmentClaudeArguments({ developmentModel: 'claude-opus-5', developmentEffort: 'medium' }),
     reviewClaudeArguments({
@@ -86,7 +86,7 @@ test('both roles keep the cached prefix free of per-machine sections', () => {
 
 test('the development role is not handed tools it never calls', () => {
   // Схемы инструментов лежат в кэшируемом префиксе и оплачиваются каждой
-  // сессией: полный набор — 43 442 токена входа, урезанный — 25 961.
+  // сессией: полный набор стоит заметно дороже урезанного.
   const args = developmentClaudeArguments({
     developmentModel: 'claude-opus-5',
     developmentEffort: 'medium',
@@ -122,7 +122,7 @@ test('tool calls are counted from results, not from the step label', () => {
   assert.equal(twoResults.toolResults, 2);
   assert.match(twoResults.log, /первый/);
 
-  // Пустой результат по-прежнему ничего не печатает, но считается.
+  // Пустой результат ничего не печатает, но считается.
   const empty = claudeBackend.readEvent(
     JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', content: '' }] } }),
   );
@@ -149,9 +149,9 @@ test('reasoning is measured in tokens, not guessed from the log', () => {
 });
 
 test('a session killed by the step limit still reports what it spent', () => {
-  // При обрыве по лимиту CLI не успевает прислать итоговое событие, и раньше
-  // самая дорогая сессия — сто шагов, тридцать четыре минуты — оставалась
-  // единственной без чисел.
+  // При обрыве по лимиту CLI не успевает прислать итоговое событие, поэтому
+  // расход считается по ходу сессии: иначе самая дорогая из них — та, что
+  // упёрлась в лимит шагов, — осталась бы единственной без чисел.
   const first = claudeBackend.readEvent(
     JSON.stringify({
       type: 'assistant',
@@ -213,8 +213,8 @@ test('the claude review role gets a read-only tool set and an inline schema', ()
 test('the inline review schema drops the $schema key the CLI cannot resolve', () => {
   // Валидатор CLI 2.1.229 не знает мета-схему 2020-12 и отклоняет весь аргумент
   // до старта сессии: «--json-schema is not a valid JSON Schema: no schema with
-  // key or ref …», exit 1, пустой stdout. Отказ ронял подряд все ревью, поэтому
-  // ключ обязан отсутствовать — а в самом файле схемы остаться.
+  // key or ref …», exit 1, пустой stdout. Отказ роняет каждое ревью, поэтому
+  // ключ обязан отсутствовать в аргументе — а в самом файле схемы остаться.
   const onDisk = JSON.parse(readFileSync(schemaPath, 'utf8'));
   assert.equal(typeof onDisk.$schema, 'string');
 
@@ -400,10 +400,10 @@ test('an unauthenticated claude session fails even though the CLI exits 0', asyn
 
 test('a synthetic API-error message is an error, not an agent step', () => {
   // При ошибке API CLI подставляет сообщение от лица ассистента с обычным
-  // message.id. Пока оно считалось шагом, транзиентный 5xx съедал шаг из
-  // maxTurns и подменял собой lastAgentMessage — то есть COMMIT_MESSAGE агента
-  // и вердикт ревью терялись, а вину за исчерпанный лимит шагов Ralph
-  // приписывал агенту в комментарии к issue.
+  // message.id. Считайся оно шагом, транзиентный 5xx съедал бы шаг из maxTurns
+  // и подменял бы собой lastAgentMessage — COMMIT_MESSAGE агента и вердикт
+  // ревью терялись бы, а вину за исчерпанный лимит шагов Ralph приписывал бы
+  // агенту в комментарии к issue.
   const synthetic = claudeBackend.readEvent(
     JSON.stringify({
       type: 'assistant',
@@ -439,8 +439,8 @@ test('a synthetic API-error message is an error, not an agent step', () => {
 });
 
 test('api_retry events reach the log instead of leaving it silent', () => {
-  // Без этой ветки run.log замолкал на всё время отката: события system
-  // отбрасывались целиком, и оператор не отличал ожидание от зависания.
+  // Без этой ветки run.log молчит всё время отката: события system
+  // отбрасываются целиком, и оператор не отличает ожидание от зависания.
   const retry = claudeBackend.readEvent(
     JSON.stringify({
       type: 'system',
@@ -459,7 +459,7 @@ test('api_retry events reach the log instead of leaving it silent', () => {
   assert.equal(retry.stepId, undefined);
   assert.equal(retry.agentMessage, undefined);
 
-  // Остальные system-события по-прежнему шумом не идут.
+  // Остальные system-события шумом не идут.
   assert.deepEqual(
     claudeBackend.readEvent(JSON.stringify({ type: 'system', subtype: 'init' })),
     {},
@@ -484,10 +484,9 @@ test('a 401 from the real CLI is an auth failure even though its text matches no
   // него итерация считается обычным сбоем сессии и Ralph повторяет её
   // maxIterations раз, каждый раз получая тот же 401.
   //
-  // 403 раньше стоял здесь же и получал тот же код. Оказалось, это разные
-  // отказы: 401 гасит рабочий токен насовсем, а 403 приходит и уходит сам —
-  // трижды за сутки на живом токене, каждый раз останавливая цикл на самом
-  // дорогом шаге. Свой код делает его повторяемым.
+  // 401 и 403 — разные отказы: 401 гасит рабочий токен насовсем, а 403
+  // приходит на живом токене и уходит сам. Свой код делает его повторяемым:
+  // иначе он останавливает цикл на самом дорогом шаге.
   assert.equal(
     claudeBackend.readEvent(
       JSON.stringify({ ...recorded, api_error_status: 403, result: 'Forbidden' }),
@@ -598,7 +597,7 @@ test('a claude review writes its verdict to the outputPath the orchestrator read
 
         // Схема должна дойти до процесса целиком. На Windows аргументы проходят
         // через cmd.exe, который обрезает командную строку на первом переводе
-        // строки: pretty-printed схема доходила как «{», ревью падало всегда.
+        // строки: pretty-printed схема дошла бы как «{», и ревью падало бы всегда.
         const received = receivedArguments();
         const schemaArgument = received[received.indexOf('--json-schema') + 1];
         assert.deepEqual(JSON.parse(schemaArgument), schemaWithoutDialect());
@@ -644,9 +643,10 @@ test('the fake-claude output file stays a valid review payload path', () => {
 });
 
 test('403 «Request not allowed» повторяется, 401 остаётся фатальным', () => {
-  // Оба приходят под текстом «Failed to authenticate», но означают разное.
-  // 403 пришёл трижды за сутки на рабочем токене и каждый раз останавливал цикл
-  // на самом дорогом шаге — финальном ревью milestone.
+  // Оба приходят под текстом «Failed to authenticate», но означают разное:
+  // 403 приходит на рабочем токене и уходит сам, поэтому он повторяется: без
+  // своего кода он останавливал бы цикл на самом дорогом шаге — финальном
+  // ревью milestone.
   assert.equal(
     sessionFailureCode(
       { api_error_status: 403 },

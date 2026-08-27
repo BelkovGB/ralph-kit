@@ -49,8 +49,8 @@ const preparedValidationImages = new Set();
 // его PASS правильно, потому что дерево действительно проходило проверки.
 export function assertTrustedControlFilesUnchanged(config) {
   // Ожидаемый набор берётся из конфигурации, а не выводится из имён файлов:
-  // выводить его здесь значило бы держать правило «что считается инструкцией»
-  // в двух местах, и они уже расходились.
+  // выводить его здесь значит держать правило «что считается инструкцией» в
+  // двух местах, и они разойдутся.
   const trustedAgentInstructionFiles = new Set(config.agentInstructionFiles ?? []);
   const currentAgentInstructionFiles = new Set(agentInstructionFiles());
   if (
@@ -126,8 +126,8 @@ export function createValidationWorkspaceSnapshot() {
       // Удалённый в рабочем дереве файл git ls-files всё ещё перечисляет как
       // отслеживаемый. Снимок обязан повторять дерево, а не индекс: иначе
       // issue, которую нельзя выполнить без удаления файла, не проходит
-      // валидацию в принципе. На issue #84 три попытки подряд падали с ENOENT
-      // за секунду и съели остаток бюджета итераций.
+      // валидацию в принципе: попытки падают с ENOENT и съедают бюджет
+      // итераций.
       const sourceStats = lstatSync(sourcePath, { throwIfNoEntry: false });
       if (!sourceStats) continue;
       if (sourceStats.isSymbolicLink()) {

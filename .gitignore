@@ -1,0 +1,8 @@
+# Результат последнего ревью. Прогон стартует только на чистом рабочем дереве,
+# поэтому оставшийся файл остановил бы следующий запуск.
+.agents/last-review.json
+.agents/last-milestone-review.json
+
+# Файлы, которые инструмент пишет сам под конкретную машину.
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
