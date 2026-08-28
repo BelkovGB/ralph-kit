@@ -177,11 +177,21 @@ export function parseSkillFrontmatter(content) {
   }
 
   let lastKey = null;
+  // Чем склеить продолжение последнего поля: `>` и простое значение — пробелом,
+  // `|` — переводом строки.
+  let continuation = ' ';
   for (let index = 1; index < closingIndex; index += 1) {
     const line = lines[index];
     if (line.trim() === '') continue;
-    // Продолжение многострочного значения YAML.
-    if (lastKey && /^\s/.test(line)) continue;
+    // Продолжение многострочного значения YAML собирается в поле. Иначе в поле
+    // остаётся один индикатор `>-`, и два разных описания читаются как одно.
+    if (lastKey && /^\s/.test(line)) {
+      if (fields.has(lastKey)) {
+        const collected = fields.get(lastKey);
+        fields.set(lastKey, collected === '' ? line.trim() : collected + continuation + line.trim());
+      }
+      continue;
+    }
 
     const tabSeparated = /^([A-Za-z0-9_-]+)\t/.exec(line);
     if (tabSeparated) {
@@ -201,7 +211,12 @@ export function parseSkillFrontmatter(content) {
       continue;
     }
     lastKey = pair[1];
-    fields.set(pair[1], (pair[2] ?? '').trim());
+    const value = (pair[2] ?? '').trim();
+    // Индикатор блочного скаляра сам значением не является: текст идёт следующими
+    // строками, и без них поле пусто.
+    const blockScalar = /^([|>])[-+]?[0-9]*$/.exec(value);
+    continuation = blockScalar?.[1] === '|' ? '\n' : ' ';
+    fields.set(pair[1], blockScalar ? '' : value);
   }
 
   for (const required of ['name', 'description']) {

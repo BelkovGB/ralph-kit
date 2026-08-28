@@ -1,9 +1,18 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import { reasoningEffortsFor } from './ralph-agent-backends.mjs';
 import { fieldGroups } from './ralph-gui-fields.mjs';
@@ -513,6 +522,18 @@ test('skill frontmatter parser keeps multi-line values and quoted descriptions v
     '---\nname: ui-ux-pro-max\ndescription: >-\n  UI/UX design intelligence\n  for web and mobile.\n---\n',
   );
   assert.deepEqual(folded.errors, []);
+  // Собирается именно текст, а не индикатор: пара скиллов сверяется по
+  // значению поля, и два разных `>-` сошлись бы как одинаковые.
+  assert.equal(folded.fields.get('description'), 'UI/UX design intelligence for web and mobile.');
+
+  const literal = parseSkillFrontmatter(
+    '---\nname: read\ndescription: |\n  Первая\n  Вторая\n---\n',
+  );
+  assert.deepEqual(literal.errors, []);
+  assert.equal(literal.fields.get('description'), 'Первая\nВторая');
+
+  const indicatorOnly = parseSkillFrontmatter('---\nname: read\ndescription: >-\n---\n');
+  assert.deepEqual(indicatorOnly.errors, ['поле "description" пустое']);
 
   const quoted = parseSkillFrontmatter(
     '---\nname: prd\ndescription: "Создаю PRD: документ"\n---\n',
@@ -531,6 +552,90 @@ test('every project-local SKILL.md exposes loadable frontmatter', () => {
   }
   assert.doesNotThrow(() => verifyAgentSkills());
 });
+
+test('a skill body in .agents is mirrored by a link in .claude', () => {
+  // Claude Code loads skills from `.claude/skills`, Codex from
+  // `.agents/skills`. A skill that lives only in `.claude` is legitimate: it
+  // may need what Codex has not. A body with no link is not: the command
+  // disappears from Claude Code, and nothing reports it. Frontmatter decides
+  // whether the model raises the skill, so the pair must read identically.
+  const skillsByDirectory = (root) =>
+    new Map(
+      agentSkillFiles()
+        .filter((file) => file.split(path.sep).includes(root))
+        .map((file) => [path.basename(path.dirname(file)), file]),
+    );
+  const bodies = skillsByDirectory('.agents');
+  const links = skillsByDirectory('.claude');
+  // Without this the loop below would pass on an empty checkout.
+  assert.notEqual(bodies.size, 0, '.agents/skills holds no SKILL.md');
+
+  for (const [skill, body] of bodies) {
+    const link = links.get(skill);
+    assert.ok(link, `${skill}: body in .agents/skills has no link in .claude/skills`);
+    const bodyFields = parseSkillFrontmatter(readFileSync(body, 'utf8')).fields;
+    const linkFields = parseSkillFrontmatter(readFileSync(link, 'utf8')).fields;
+    for (const field of ['name', 'description']) {
+      assert.equal(linkFields.get(field), bodyFields.get(field), `${skill}: ${field} differs`);
+    }
+  }
+});
+
+// Пульт ставится не в каждую копию набора: без его модуля справочник команд
+// сверять не с чем.
+const guiPagePath = fileURLToPath(new URL('./ralph-gui-page.mjs', import.meta.url));
+const reviewersPath = fileURLToPath(new URL('../../.claude/agents', import.meta.url));
+const reviewSkillPath = fileURLToPath(
+  new URL('../../.agents/skills/review-all/SKILL.md', import.meta.url),
+);
+
+test(
+  'the console command guide names a real skill',
+  { skip: !existsSync(guiPagePath) },
+  async () => {
+    // Справочник пульта — константа модуля, скиллы — каталоги на диске.
+    // Переименование каталога оставляет на пульте команду, которой больше нет,
+    // и ни одна другая проверка её не открывает.
+    const { commandGuide } = await import('./ralph-gui-page.mjs');
+    const listed = commandGuide
+      .flatMap((group) => group.items)
+      .map((item) => /^\/([\w-]+)/.exec(item.command)?.[1])
+      .filter(Boolean);
+    const bodies = agentSkillFiles()
+      .filter((file) => file.split(path.sep).includes('.agents'))
+      .map((file) => path.basename(path.dirname(file)));
+
+    assert.deepEqual(listed.sort(), bodies.sort());
+  },
+);
+
+test(
+  'every reviewer is named by its file and reachable from the skill',
+  { skip: !existsSync(reviewersPath) || !existsSync(reviewSkillPath) },
+  () => {
+    // Субагента запускают по полю `name`, а скилл называет его файлом. Пока имя
+    // файла и поле совпадают, обе ссылки ведут в одно место; разойдутся —
+    // запуск по имени агента не найдёт, и в логе останется одна строка.
+    const files = readdirSync(reviewersPath).filter((name) => name.endsWith('.md'));
+    assert.notEqual(files.length, 0, '.claude/agents holds no reviewer');
+
+    for (const file of files) {
+      const { fields, errors } = parseSkillFrontmatter(
+        readFileSync(path.join(reviewersPath, file), 'utf8'),
+      );
+      assert.deepEqual(errors, [], `${file}: ${errors.join('; ')}`);
+      assert.equal(fields.get('name'), path.basename(file, '.md'), `${file}: name differs`);
+    }
+
+    const skill = readFileSync(reviewSkillPath, 'utf8');
+    const mentioned = [...skill.matchAll(/\.claude\/agents\/([\w-]+)\.md/g)].map((hit) => hit[1]);
+    assert.notEqual(mentioned.length, 0, 'review-all names no reviewer file');
+    for (const name of mentioned) {
+      assert.ok(files.includes(`${name}.md`), `${name}: review-all points at a missing file`);
+      assert.ok(skill.includes(`\`${name}\``), `${name}: review-all never names the subagent`);
+    }
+  },
+);
 
 test('skills of both CLI conventions are discovered, not just one', () => {
   // Codex reads `.agents/skills`, Claude Code reads `.claude/skills`. Checking

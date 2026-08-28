@@ -12,9 +12,9 @@ and of nothing else.
 - `.claude/agents/**` is versioned: a subagent decides how and what gets
   reviewed, so changing one changes the result and belongs in history.
 - Skills written for this project are versioned too, for the same reason and
-  because nothing else holds a copy. A subagent that reads an optional skill or
-  rules file must say so and stay usable when it is absent, as
-  `security-reviewer` does.
+  because nothing else holds a copy. A skill that reads an optional rules file
+  must say so and stay usable when it is absent, as `/review-all` does with
+  `.agents/review-rules.md`.
 - Files the tool writes itself belong to the machine, so `.gitignore` excludes
   `.claude/scheduled_tasks.lock` and `.claude/settings.local.json`. Ralph leaves
   only the lock out of its trusted set; `settings.local.json` stays in it, which

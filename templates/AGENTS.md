@@ -12,6 +12,9 @@ contracts. Keep it short: an agent reads this file on every task.
 
 ## Token efficiency
 
+- Every byte a tool returns stays in the context and is paid for on every later
+  request. Before a call, ask what the context already answers and how to make
+  the output smaller.
 - Start with compact output and expand it only when needed to diagnose a failure.
 - Use `git status --short`, `git diff --unified=0`, and `git log --oneline -10`.
 - Request only needed GitHub fields, for example
@@ -21,6 +24,8 @@ contracts. Keep it short: an agent reads this file on every task.
   `pipefail` in POSIX.
 - Prefer targeted file ranges. Do not dump complete logs, generated files,
   lockfiles, or large JSON documents when a focused query is sufficient.
+- Read a file whole when a range would not return fewer lines, when the task is
+  to learn how a module is built, or when the user asked for full output.
 - Search with the Grep tool rather than a shell `rg`: isolated sessions have no
   `rg`, and the failed command costs a step plus its error output.
 - Run repo-wide commands from the repository root. A path resolved against the
