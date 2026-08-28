@@ -240,7 +240,7 @@ node scripts/ralph/ralph-loop.mjs --check
 node --test --test-concurrency=1 "scripts/ralph/*.test.mjs"
 ```
 
-Проходят 232 теста, падать не должен ни один. Ключ `--test-concurrency=1`
+Проходят 234 теста, падать не должен ни один. Ключ `--test-concurrency=1`
 обязателен: четыре теста пишут в файлы самого репозитория — журнал одобренных
 issues `scripts/ralph/approved-issues.json` и пробный файл в `.claude` — и
 возвращают их на место за собой, а параллельный тестовый файл считает
