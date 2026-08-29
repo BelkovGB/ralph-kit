@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { loadConfig, trustedFileHash } from './ralph-config.mjs';
+import { loadConfig, prepareConfig, trustedFileHash } from './ralph-config.mjs';
 
 /**
  * Общие фикстуры тестов Ralph: те, которыми пользуется больше одного файла.
@@ -197,15 +197,25 @@ export const ralphConfigPath = fileURLToPath(
   new URL('../../.agents/ralph.config.json', import.meta.url),
 );
 
+/**
+ * Проверка настроек на изменённом конфиге — без записи на диск.
+ *
+ * Правка идёт в памяти, потому что файл конфигурации принадлежит проекту, а не
+ * тесту: параллельный тестовый файл считает его контрольную сумму ровно в
+ * момент подмены, а тест, упавший до восстановления, оставляет проекту чужие
+ * настройки. `prepareConfig` — это и есть весь разбор конфигурации: `loadConfig`
+ * добавляет к нему только чтение файла и `applyRuntimeSettings`, которая правит
+ * глобальные таймауты процесса и в проверке настроек не нужна.
+ *
+ * Ключ со значением `undefined` означает «ключа в файле нет»: запись на диск
+ * такие ключи отбрасывала, и проверки «поля нет» опираются на это.
+ */
 export function withPatchedRalphConfig(patch, assertConfig) {
-  const original = readFileSync(ralphConfigPath, 'utf8');
-  const candidate = { ...JSON.parse(original), ...patch };
-  writeFileSync(ralphConfigPath, `${JSON.stringify(candidate, null, 2)}\n`, 'utf8');
-  try {
-    assertConfig(loadConfig());
-  } finally {
-    writeFileSync(ralphConfigPath, original, 'utf8');
+  const candidate = { ...JSON.parse(readFileSync(ralphConfigPath, 'utf8')), ...patch };
+  for (const [field, value] of Object.entries(candidate)) {
+    if (value === undefined) delete candidate[field];
   }
+  assertConfig(prepareConfig(candidate));
 }
 
 let cachedControlPlane = null;

@@ -977,11 +977,6 @@ test('an unsupported reasoning effort is rejected before a run starts', () => {
       expected,
     );
   }
-  assert.match(
-    readFileSync(ralphConfigPath, 'utf8'),
-    /"developmentEffort": "medium"/,
-    'the real config must be restored after each failed load',
-  );
 });
 
 test('the milestone review marker records the effective model and effort', () => {

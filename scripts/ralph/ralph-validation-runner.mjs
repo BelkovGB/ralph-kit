@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { readJsonFile, writeJsonAtomic } from './ralph-runtime.mjs';
+import { readJsonFile, retryTransientOperation, writeJsonAtomic } from './ralph-runtime.mjs';
 import { fail } from './ralph-scope.mjs';
 import { credentialFreeEnvironment, run } from './ralph-process-runner.mjs';
 import { agentInstructionFiles, trustedFileHash } from './ralph-config.mjs';
@@ -278,11 +278,41 @@ export function ensureValidationImage(config, snapshotPath, dependencies = {}) {
     fail(`Не удалось проверить образ изоляции валидации ${image}.`);
   }
   console.log(`\n=== Validation isolation: docker build ${image} ===\n`);
-  execute('docker', ['build', '--file', dockerfilePath, '--tag', image, snapshotPath], {
-    echoOutput: true,
-    timeoutMs: config.runtime.validationTimeoutMs,
-    env: credentialFreeEnvironment(),
-  });
+  // Сборка образа — единственный шаг валидации с сетью, и тянет она весь слой
+  // зависимостей проекта разом. Обрыв на таком объёме — рядовое событие, а не
+  // отказ проекта: сеть виртуальной машины Docker Desktop роняет параллельные
+  // загрузки по idle-таймауту, пропуская при этом мелкие запросы. Без повтора
+  // такой обрыв останавливает прогон, и человек, ушедший от машины, возвращается
+  // к невыполненной итерации.
+  //
+  // Число попыток берётся из настроек сетевых команд, а не из отдельного поля:
+  // причина отказа та же самая, и второе поле означало бы два места для одного
+  // решения. Слои, которые успели собраться, Docker берёт из кеша, поэтому
+  // повтор продолжает сборку, а не начинает её заново. Повторов внутри самого
+  // шага установки зависимостей кит не делает: он видит только код возврата
+  // всей сборки. Как написать их в проекте, показывает комментарий в
+  // `Dockerfile.validation`.
+  //
+  // `validationTimeoutMs` после этого ограничивает попытку, а не все попытки
+  // вместе: зависшая сборка занимает его столько раз, сколько их задано.
+  retryTransientOperation(
+    () =>
+      execute('docker', ['build', '--file', dockerfilePath, '--tag', image, snapshotPath], {
+        echoOutput: true,
+        timeoutMs: config.runtime.validationTimeoutMs,
+        env: credentialFreeEnvironment(),
+      }),
+    {
+      attempts: config.runtime.networkRetryAttempts,
+      baseDelayMs: config.runtime.networkRetryBaseDelayMs,
+      ...(dependencies.wait === undefined ? {} : { wait: dependencies.wait }),
+      onRetry: (error, attempt, delay) =>
+        console.error(
+          `Сборка образа валидации ${image} оборвалась (попытка ${attempt}): ${error.message}. ` +
+            `Повтор через ${delay} ms.`,
+        ),
+    },
+  );
   preparedValidationImages.add(image);
   return image;
 }

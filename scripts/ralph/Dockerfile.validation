@@ -15,6 +15,35 @@ RUN apt-get update \
 # or a browser, if a command needs one, because the run itself has no network:
 #   Node:   COPY package.json package-lock.json ./ then RUN npm ci
 #   Python: COPY requirements.txt ./ then RUN pip install -r requirements.txt
+#
+# What the run gives the commands, and what follows from it:
+#
+# 1. No network, so the build is the only place with one. It is also the only
+#    step that downloads a whole dependency tree at once, and that is where an
+#    unstable connection breaks: the runner retries the build, but every retry
+#    restarts the failed layer from its beginning. A retry loop inside the
+#    install step keeps what it already downloaded, because the package cache
+#    lives in the same RUN, so each pass gets further:
+#      RUN ok=""; for attempt in 1 2 3 4 5; do \
+#            npm ci --prefer-offline && ok=1 && break \
+#            || echo "npm ci: attempt $attempt failed, retrying"; \
+#          done; test -n "$ok"
+#
+# 2. A read-only root filesystem, so the only writable places are /workspace and
+#    /tmp, both tmpfs. Dependencies installed here therefore live outside the
+#    workspace — /opt is the usual place — and a preflight script puts them where
+#    the commands expect them. Copy them, do not link them: test runners and
+#    bundlers write inside their own dependency tree (vitest creates
+#    node_modules/.vite-temp), and a symlink into /opt makes that a read-only
+#    path. Copying is what `preflightScripts` is for:
+#      "preflightScripts": ["cp -R /opt/deps/node_modules node_modules"]
+#
+# 3. A fresh container per run, so a service with state on disk cannot be baked
+#    into the image: its data directory would be read-only. A database is
+#    initialised by a preflight script into /tmp and started there. Give the
+#    cluster an explicit UTF-8 locale (C.UTF-8): the default C locale does not
+#    case-fold anything outside ASCII, and a project whose tests compare
+#    non-English strings fails on comparisons that pass everywhere else.
 
 COPY scripts/ralph/ralph-validation-entrypoint.sh /usr/local/bin/ralph-validation
 COPY scripts/ralph/ralph-validation-docker-shim.sh /usr/local/bin/docker

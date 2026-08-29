@@ -28,8 +28,27 @@ import {
   withPatchedRalphConfig,
 } from './ralph-test-support.mjs';
 
-test('validation dependency image is built from committed inputs, not the mutable workspace', () => {
+/**
+ * Есть ли файл в HEAD этого репозитория.
+ *
+ * Проверки, которые сравнивают снимок с закоммиченными байтами, без этого
+ * условия не выполнимы: в проекте, куда набор скопировали, но ещё не
+ * закоммитили, сравнивать не с чем, и тест падал бы на устройстве репозитория
+ * вместо проверяемого свойства.
+ */
+function committedInHead(gitPath) {
+  const listed = run('git', ['ls-tree', '--name-only', 'HEAD', '--', gitPath], {
+    allowFailure: true,
+  });
+  return listed.status === 0 && listed.stdout.trim() !== '';
+}
+
+test('validation dependency image is built from committed inputs, not the mutable workspace', (t) => {
   const dependency = 'scripts/ralph/ralph-validation-entrypoint.sh';
+  if (!committedInHead(dependency)) {
+    t.skip(`${dependency} не закоммичен: сравнивать снимок не с чем. Закоммитьте набор.`);
+    return;
+  }
   const dependencyPath = new URL(`../../${dependency}`, import.meta.url);
   const originalDependency = readFileSync(dependencyPath, 'utf8');
   let snapshot;
@@ -88,6 +107,122 @@ test('validation image cache hit returns the existing image without rebuilding i
   } finally {
     rmSync(snapshot, { recursive: true, force: true });
   }
+});
+
+/**
+ * Сборка образа с подставленным `docker`: каждая запись `attempts` — исход
+ * очередного вызова `docker build`.
+ *
+ * Снимок у каждого вызова свой: тег образа считается от его содержимого, а
+ * собранные теги раннер запоминает на процесс, и общий снимок сделал бы второй
+ * тест попаданием в кеш первого.
+ */
+function buildValidationImage(marker, attempts, dependencies = {}) {
+  const snapshot = mkdtempSync(path.join(tmpdir(), 'ralph-validation-build-'));
+  // Журналы принадлежат вызывающему: сборка, исчерпавшая попытки, бросает
+  // исключение, и вернуть их из функции она уже не может.
+  const delays = dependencies.delays ?? [];
+  const builds = dependencies.builds ?? [];
+
+  try {
+    writeFileSync(path.join(snapshot, 'dependencies.lock'), `${marker}\n`);
+    const image = ensureValidationImage(
+      { validationContainer: { image: 'ralph-validation:test' }, ...dependencies.config },
+      snapshot,
+      {
+        run: (command, args, options) => {
+          if (args[0] === 'image') return { status: 1, stdout: '' };
+          builds.push({ command, args, options });
+          const outcome = attempts[builds.length - 1];
+          if (outcome instanceof Error) throw outcome;
+          return { status: 0, stdout: '' };
+        },
+        wait: (delay) => delays.push(delay),
+      },
+    );
+    return { image, builds, delays };
+  } finally {
+    rmSync(snapshot, { recursive: true, force: true });
+  }
+}
+
+function interruptedBuild() {
+  // Форма настоящего отказа: docker отдаёт ненулевой код, а причину обрыва
+  // называет вывод шага установки зависимостей.
+  return Object.assign(new Error('Команда docker build завершилась с кодом 1.'), {
+    code: 'RALPH_COMMAND_FAILED',
+    status: 1,
+    stdout: '',
+    stderr: 'npm error code EIDLETIMEOUT\nnpm error network Idle timeout reached',
+  });
+}
+
+test('an interrupted image build is retried instead of stopping the run', () => {
+  // Сборка — единственный шаг валидации с сетью, и обрыв на слое зависимостей
+  // не означает, что проект сломан.
+  const { builds, delays } = buildValidationImage('retry', [interruptedBuild(), null], {
+    config: {
+      runtime: { validationTimeoutMs: 5_000, networkRetryAttempts: 3, networkRetryBaseDelayMs: 50 },
+    },
+  });
+
+  assert.equal(builds.length, 2);
+  assert.deepEqual(delays, [50]);
+  assert.deepEqual(builds[0].args.slice(0, 2), ['build', '--file']);
+});
+
+test('a build that fails for its own reason is not retried', () => {
+  // Повтор ошибки в Dockerfile проекта только умножает ожидание: результат у
+  // неё тот же самый.
+  const brokenBuild = Object.assign(new Error('Команда docker build завершилась с кодом 1.'), {
+    code: 'RALPH_COMMAND_FAILED',
+    status: 1,
+    stdout: '',
+    stderr: 'ERROR: failed to solve: process "/bin/sh -c pip install ." exit code: 1',
+  });
+  const builds = [];
+
+  assert.throws(
+    () =>
+      buildValidationImage('no-retry', [brokenBuild, brokenBuild], {
+        builds,
+        config: {
+          runtime: {
+            validationTimeoutMs: 5_000,
+            networkRetryAttempts: 3,
+            networkRetryBaseDelayMs: 50,
+          },
+        },
+      }),
+    /завершилась с кодом 1/u,
+  );
+  assert.equal(builds.length, 1);
+});
+
+test('the last interrupted build stops the run instead of retrying forever', () => {
+  // Число попыток — то же, что у остальных сетевых команд: причина отказа общая,
+  // и отдельное поле означало бы два места для одного решения.
+  const builds = [];
+
+  assert.throws(
+    () =>
+      buildValidationImage(
+        'exhausted',
+        [interruptedBuild(), interruptedBuild(), interruptedBuild()],
+        {
+          builds,
+          config: {
+            runtime: {
+              validationTimeoutMs: 5_000,
+              networkRetryAttempts: 2,
+              networkRetryBaseDelayMs: 50,
+            },
+          },
+        },
+      ),
+    /завершилась с кодом 1/u,
+  );
+  assert.equal(builds.length, 2);
 });
 
 // The Ralph suite does not pay for a full repository copy per case.
@@ -272,9 +407,10 @@ test('the validation entrypoint snapshots the workspace once and marks every com
 });
 
 test('the per-run validation budget is validated and defaults when omitted', () => {
+  // Значение по умолчанию проверяется на конфиге без этого поля, а не на
+  // значении из файла проекта: проект вправе задать своё, и тест, сверяющий
+  // умолчание с настройкой проекта, ловил бы её, а не поведение кода.
   const original = JSON.parse(readFileSync(ralphConfigPath, 'utf8'));
-  assert.equal(original.runtime.validationRunTimeoutMs, 3_600_000);
-
   const { validationRunTimeoutMs, ...runtimeWithoutBudget } = original.runtime;
   withPatchedRalphConfig({ runtime: runtimeWithoutBudget }, (config) => {
     assert.equal(config.runtime.validationRunTimeoutMs, 3_600_000);
