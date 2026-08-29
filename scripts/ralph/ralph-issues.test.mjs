@@ -725,13 +725,17 @@ test('the committed configuration sets an explicit effort valid for its agentCli
 
 test('reasoning effort falls back to medium/medium/high when the config omits it', () => {
   const original = JSON.parse(readFileSync(ralphConfigPath, 'utf8'));
-  const { developmentEffort: _development, ...withoutDevelopmentEffort } = original;
   const { effort: _review, ...review } = original.review;
   const { effort: _milestone, ...milestoneReview } = original.milestoneReview;
 
   // Значения по умолчанию записаны здесь потому, что проверяются именно они:
   // все три поля из конфигурации убраны, и она до результата не дотягивается.
-  withPatchedRalphConfig({ ...withoutDevelopmentEffort, review, milestoneReview }, (config) => {
+  //
+  // Поле верхнего уровня убирается значением `undefined`, а не копией конфига
+  // без него: правка накладывается на файл проекта, и ключ, которого в правке
+  // нет, остаётся из файла. Копия без ключа поэтому проверяла бы не умолчание, а
+  // настройку проекта — в проекте с `developmentEffort: "high"` тест падал.
+  withPatchedRalphConfig({ developmentEffort: undefined, review, milestoneReview }, (config) => {
     assert.equal(config.developmentEffort, 'medium');
     assert.equal(config.review.effort, 'medium');
     assert.equal(config.milestoneReview.effort, 'high');
@@ -1655,6 +1659,11 @@ test('конфликт с базой отменяет слияние и оста
   assert.ok(git.calls.includes('merge --abort'));
 });
 
-test('слияние базы включено по умолчанию и объявлено в конфиге', () => {
-  assert.equal(loadConfig().syncBaseBranch, true);
+test('слияние базы включено по умолчанию, когда конфиг о нём молчит', () => {
+  // Проверяется умолчание кода на конфиге без этого поля, а не значение из файла
+  // проекта: выключить слияние — право оператора, и тест, читающий его
+  // настройку, ловил бы её вместо поведения кода.
+  withPatchedRalphConfig({ syncBaseBranch: undefined }, (config) => {
+    assert.equal(config.syncBaseBranch, true);
+  });
 });

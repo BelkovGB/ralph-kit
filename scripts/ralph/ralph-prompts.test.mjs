@@ -394,9 +394,12 @@ test('the implementation prompt carries the full contract without the operator m
 
   // The contract is inlined, so reading the 268-line operator document would be
   // hundreds of lines of input tokens per issue for no requirement.
-  assert.match(prompt, /Не читай \.agents\/RALPH\.md/);
+  //
+  // Проверяется, что правила дошли до prompt целиком и что за операторской
+  // документацией он не посылает, а не формулировки шаблона: текст шаблона
+  // принадлежит проекту, и тест, приколоченный к нему, падал бы в проекте с
+  // другим prompt вместо потери правил.
   assert.equal(/Прочитай \.agents\/RALPH\.md/.test(prompt), false);
-  assert.match(prompt, /правила Ralph Loop, переданные ниже/);
   assert.match(prompt, /# Ralph Loop — правила автономной сессии/);
   // Проверяется, что запрет на control plane дошёл до prompt и называет все
   // защищённые каталоги, а не точная формулировка: правила переписываются, и
