@@ -47,6 +47,51 @@ test('every icon on the page is named or hidden', { skip: !existsSync(guiPagePat
   assert.equal(copyButton.test(page), true, 'кнопка копирования не называет действие');
 });
 
+test('commands that look alike carry a title', { skip: !existsSync(guiPagePath) }, async () => {
+  const { commandGuide } = await import('./ralph-gui-page.mjs');
+
+  // Скилл называет себя сам: у «/issues» и «/review-all» имя и есть заголовок.
+  // Команды терминала начинаются одним и тем же путём к файлу, и список из них
+  // читается как четыре одинаковые строки — их различает только заголовок.
+  for (const item of commandGuide.flatMap((group) => group.items)) {
+    if (!item.command.startsWith('node ')) continue;
+    assert.equal(typeof item.title, 'string', `${item.command}: нет заголовка`);
+    assert.notEqual(item.title.trim(), '', `${item.command}: заголовок пустой`);
+    assert.notEqual(item.title, item.command, `${item.command}: заголовок повторяет команду`);
+  }
+});
+
+test('a command is split into coloured parts', { skip: !existsSync(guiPagePath) }, async () => {
+  const { commandTokens } = await import('./ralph-gui-page.mjs');
+
+  // Команду красят по частям, как терминал: различает команды не путь к файлу,
+  // а ключ в конце, и он должен быть виден с первого взгляда.
+  assert.deepEqual(commandTokens('node scripts/ralph/ralph-loop.mjs --check'), [
+    { text: 'node', kind: 'exec' },
+    { text: 'scripts/ralph/ralph-loop.mjs', kind: 'path' },
+    { text: '--check', kind: 'flag' },
+  ]);
+
+  // Скилл — имя команды, всё остальное в строке аргумент.
+  assert.deepEqual(commandTokens('/plan-phase docs/prd-слаг.md'), [
+    { text: '/plan-phase', kind: 'exec' },
+    { text: 'docs/prd-слаг.md', kind: 'path' },
+  ]);
+  assert.deepEqual(commandTokens('/prd описание фичи'), [
+    { text: '/prd', kind: 'exec' },
+    { text: 'описание', kind: 'arg' },
+    { text: 'фичи', kind: 'arg' },
+  ]);
+
+  // Раскраска не смеет менять саму команду: её копируют в терминал посимвольно.
+  for (const item of (await import('./ralph-gui-page.mjs')).commandGuide.flatMap((g) => g.items)) {
+    const joined = commandTokens(item.command)
+      .map((token) => token.text)
+      .join(' ');
+    assert.equal(joined, item.command, `${item.command}: разбор потерял часть команды`);
+  }
+});
+
 test('the command fields fold, and «Делает» stays open', { skip: !existsSync(guiPagePath) }, async () => {
   const { renderPage } = await import('./ralph-gui-page.mjs');
   const page = renderPage();

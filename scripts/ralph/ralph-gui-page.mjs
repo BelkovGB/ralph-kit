@@ -45,6 +45,7 @@ export const commandGuide = [
     note: 'Команды запускаются из корня репозитория.',
     items: [
       {
+        title: 'Проверяет готовность к прогону',
         command: 'node scripts/ralph/ralph-loop.mjs --check',
         does:
           'Проверяет, что стоят git, gh и CLI агента, а конфиг, milestone и ветка сходятся. ' +
@@ -57,12 +58,14 @@ export const commandGuide = [
           'Если текущая ветка не совпадает с веткой фазы, команда останавливается с ошибкой.',
       },
       {
+        title: 'Проверяет готовность без ключа',
         command: 'node scripts/ralph/ralph-loop.mjs',
         does: 'То же, что --check: без аргумента это режим по умолчанию.',
         when: 'Отдельного повода нет: --check делает то же и явно называет режим.',
         omits: 'Прогон не начинает. Ralph работает только от явного --run.',
       },
       {
+        title: 'Ведёт прогон Ralph',
         command: 'node scripts/ralph/ralph-loop.mjs --run',
         does:
           'Ведёт прогон: берёт открытые issues milestone по возрастанию номера, отдаёт агенту, гоняет ' +
@@ -75,6 +78,7 @@ export const commandGuide = [
           'которые перечислены в конфиге.',
       },
       {
+        title: 'Открывает пульт',
         command: 'node scripts/ralph/ralph-gui.mjs',
         does: 'Поднимает пульт на localhost и открывает его в браузере: состояние прогона, расход токенов по задачам, редактор настроек.',
         when: 'Когда правите настройки и смотрите, на что ушли токены.',
@@ -115,6 +119,31 @@ export const commandGuide = [
     ],
   },
 ];
+
+/**
+ * Разбор команды на части для раскраски, как её красит терминал.
+ *
+ * Разбор идёт по пробелам и различает четыре вида: чем команду запускают
+ * (`node`, имя скилла), путь к файлу, ключ и остальной аргумент. Ключ важнее
+ * прочего: четыре команды набора начинаются одним и тем же путём, и различает
+ * их именно он.
+ *
+ * Склейка частей через пробел возвращает исходную строку: команду копируют в
+ * терминал посимвольно, и раскраска не вправе её менять.
+ */
+export function commandTokens(command) {
+  return String(command ?? '')
+    .split(' ')
+    .filter((part) => part !== '')
+    .map((text, index) => {
+      if (index === 0) return { text, kind: 'exec' };
+      if (text.startsWith('-')) return { text, kind: 'flag' };
+      // Путь узнаётся по разделителю каталогов или по расширению файла:
+      // плейсхолдер вида «docs/prd-слаг.md» тоже путь, хоть и не существует.
+      if (text.includes('/') || /\.\w+$/u.test(text)) return { text, kind: 'path' };
+      return { text, kind: 'arg' };
+    });
+}
 
 /* Тема одна, ночная: пульт открывают рядом с терминалом, и светлая вкладка
    между тёмными окнами бьёт по глазам. Вторая палитра под системную настройку
@@ -721,20 +750,18 @@ textarea:disabled { color: var(--muted); background: var(--surface); }
    слева сканируется глазом, а объяснение справа держит читаемую длину строки.
    На всю ширину пульта строка вышла бы под 140 знаков — вдвое длиннее того,
    что глаз проходит без усилия. */
-.command {
-  display: grid;
-  /* Правая колонка шире метки на 60 знаков текста: столько глаз проходит по
-     строке, не теряя начало следующей. */
-  grid-template-columns: minmax(220px, 300px) minmax(0, 72ch);
-  gap: 4px 28px;
-  padding: 16px 0;
-  border-top: 1px solid var(--border);
-}
+/* Команда, её заголовок и три поля — одна колонка шириной в меру текста:
+   объяснение на всю ширину пульта доходило до 140 знаков в строке. */
+.command { max-width: 70ch; margin-bottom: 28px; }
+.command:last-child { margin-bottom: 4px; }
 
-/* Разделитель отделяет команды друг от друга; у первой в группе его роль
-   играет заголовок группы вместе с примечанием под ним. */
-.commands-title + .command,
-.commands-note + .command { border-top: 0; padding-top: 4px; }
+/* Заголовок называет команду словами: четыре команды терминала начинаются
+   одним путём, и без него список читается как одна повторяющаяся строка. */
+.command-title {
+  margin: 0 0 6px;
+  font-size: 15px;
+  font-weight: 600;
+}
 
 /* Кнопка копирования держится верхней строки команды и не переносится под неё:
    команда занимает остаток ширины и переносит текст внутри себя. */
@@ -744,32 +771,41 @@ textarea:disabled { color: var(--muted); background: var(--surface); }
   gap: 6px;
 }
 
-/* Шеврон смотрит вниз у свёрнутого поля и вверх у раскрытого. */
-.command-chevron {
+/* Знак раскрытия у правого края карточки. */
+.command-mark {
   display: grid;
   place-content: center;
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
   flex: none;
-  transition: transform 0.18s ease;
+  color: var(--muted);
 }
 
-.command-chevron svg { width: 14px; height: 14px; }
-
 /* Моноширинный только у самой команды: это код, который человек набирает
-   символ в символ. Объяснение рядом — обычный текст страницы. */
+   символ в символ. Фона и рамки у неё нет — рамку носят карточки полей, а
+   коробка внутри коробки читается как чужая вставка. */
 .command-name {
   flex: 1 1 auto;
   min-width: 0;
-  padding: 5px 8px;
-  background: var(--subtle);
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  padding: 4px 0;
+  color: var(--muted);
   font-family: ui-monospace, 'SF Mono', Consolas, 'Liberation Mono', monospace;
   font-size: 13px;
   line-height: 1.4;
   overflow-wrap: anywhere;
 }
+
+/* Раскраска команды повторяет терминал: тем, чем её запускают, — приглушённо,
+   путь к файлу — основным цветом, ключ — акцентом. Ключ различает четыре
+   команды с одинаковым путём, поэтому он ярче всего. */
+.cmd-exec { color: var(--muted); }
+.cmd-path { color: var(--text); }
+.cmd-flag { color: var(--accent); }
+.cmd-arg { color: var(--muted); font-style: italic; }
+
+/* Скилл вызывают именем, и оно же его команда: путь рядом с ним — аргумент. */
+.command.is-skill .cmd-exec { color: var(--accent); }
+.command.is-skill .cmd-path { color: var(--muted); }
 
 /* Кнопка-иконка: подпись «Копировать» повторялась у каждой команды и спорила
    с самой командой за внимание. Цель нажатия остаётся 30×30 при рисунке 16. */
@@ -797,61 +833,49 @@ textarea:disabled { color: var(--muted); background: var(--surface); }
 .command-status.is-ok { color: var(--ok); }
 .command-status.is-bad { color: var(--bad); }
 
-/* Мера держится и когда колонка одна: без этого объяснение растянулось бы на
-   всю ширину пульта. */
-.command-body { max-width: 72ch; }
+.command-body { margin-top: 10px; }
 
-/* Три поля объяснения: метки стоят одной колонкой и набраны иначе, чем текст,
-   поэтому поля читаются как три ответа, а не как один абзац. */
+/* Каждое поле — своя карточка: три ответа подряд читались как один абзац, а
+   в отдельных карточках видно, где кончается один и начинается другой. */
 .command-line {
-  display: grid;
-  grid-template-columns: 104px minmax(0, 1fr);
-  /* Метка держится первой строки текста: растянутая на всю ячейку кнопка
-     уводила бы её к середине абзаца. */
-  align-items: start;
-  gap: 2px 12px;
-  margin: 0 0 12px;
+  margin-bottom: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
 }
 
 .command-line:last-child { margin-bottom: 0; }
 
-/* Свёрнутое поле — одна строка с меткой, поэтому зазор между полями ему велик. */
-.command-line.is-folded { margin-bottom: 2px; }
-
-/* Метка — кнопка: поле сворачивается по клику, и три ответа подряд перестают
-   складываться в стену текста. Прописные мелкие отделяют метку от текста
-   сильнее, чем цвет. */
+/* Метка — кнопка во всю ширину карточки: попасть по ней проще, чем по слову,
+   а знак справа говорит, что сделает клик. */
 .command-lead {
   display: flex;
   align-items: center;
-  gap: 5px;
-  /* Отступы сверху и снизу держат цель нажатия в 24 пикселя: сама метка ниже,
-     а промахиваться по ней человек будет каждый раз. */
-  padding: 4px 0;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 12px 14px;
   background: none;
   border: 0;
+  border-radius: 12px;
   color: var(--muted);
   cursor: pointer;
   font: inherit;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
+  font-size: 13px;
+  font-weight: 500;
   text-align: left;
-  text-transform: uppercase;
 }
 
 .command-lead:hover { color: var(--text); }
-.command-lead[aria-expanded='true'] .command-chevron { transform: rotate(180deg); }
+.command-lead:hover .command-mark { color: var(--text); }
 
-/* Текст опущен на те же четыре пикселя, что и метка: иначе первая строка
-   объяснения встаёт выше своей метки. */
-.command-text { margin: 0; padding-top: 3px; }
+/* У раскрытого поля метка — заголовок ответа под ней, поэтому она ярче. */
+.command-lead[aria-expanded='true'] { color: var(--text); padding-bottom: 6px; }
 
-/* Двум колонкам нужна вся ширина: в промежутке команда забирает свои 300px, а
-   недостачу принимает объяснение, и строка усыхает до трёх слов. Пока места на
-   обе колонки не хватает, объяснение встаёт под командой во всю ширину. */
-@media (max-width: 1180px) {
-  .command { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+.command-text {
+  margin: 0;
+  padding: 0 14px 13px;
+  color: var(--muted);
 }
 
 /* Совсем узкий экран: метка не отнимает у текста половину строки, а встаёт
@@ -932,8 +956,10 @@ const icons = {
   copy: icon('<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>'),
   // Галочка: команда легла в буфер.
   check: icon('<path d="M20 6 9 17l-5-5"/>'),
-  // Шеврон вниз: команда свёрнута. У раскрытой он повёрнут стилем.
-  chevron: icon('<path d="m6 9 6 6 6-6"/>'),
+  // Плюс у свёрнутого поля и крест у раскрытого: знак говорит, что сделает
+  // клик, а не в какую сторону поедет текст.
+  plus: icon('<path d="M5 12h14"/><path d="M12 5v14"/>'),
+  close: icon('<path d="M18 6 6 18"/><path d="m6 6 12 12"/>'),
 };
 
 const markup = `
@@ -968,7 +994,8 @@ const markup = `
      собирает разметкой: innerHTML на странице не используется нигде. -->
 <template id="icon-copy">${icons.copy}</template>
 <template id="icon-check">${icons.check}</template>
-<template id="icon-chevron">${icons.chevron}</template>
+<template id="icon-plus">${icons.plus}</template>
+<template id="icon-close">${icons.close}</template>
 `;
 
 // Клиентский скрипт. Внутри нет шаблонных литералов и обратных кавычек:
@@ -980,7 +1007,14 @@ const script = `
   var token = window.__RALPH_TOKEN__ || '';
   // Перечень команд статичен и приезжает вместе со страницей: вкладка
   // «Команды» не ходит на сервер вовсе.
-  var commandGuide = ${jsonLiteral(commandGuide)};
+  var commandGuide = ${jsonLiteral(
+    commandGuide.map((group) => ({
+      ...group,
+      // Команда приезжает уже разобранной на части: раскраску считает модуль,
+      // страница только рисует span на каждую часть.
+      items: group.items.map((item) => ({ ...item, tokens: commandTokens(item.command) })),
+    })),
+  )};
   var tab = 'usage';
   var stateData = null;
   var tasksData = null;
@@ -2536,24 +2570,27 @@ const script = `
      Роль region панели не дают: таких панелей на странице два десятка, и
      скринридер получил бы столько же одинаковых ориентиров. */
   function commandLine(lead, text, open, key) {
-    var line = el('div', 'command-line' + (open ? '' : ' is-folded'));
+    var line = el('div', 'command-line');
     var button = el('button', 'command-lead');
     button.type = 'button';
-    button.appendChild(document.createTextNode(lead));
-    var chevron = el('span', 'command-chevron');
-    setIcon(chevron, 'icon-chevron');
-    button.appendChild(chevron);
+    button.appendChild(el('span', '', lead));
+    var mark = el('span', 'command-mark');
+    button.appendChild(mark);
 
     var body = el('p', 'command-text', text);
     body.id = key;
-    body.hidden = !open;
-    button.setAttribute('aria-controls', key);
-    button.setAttribute('aria-expanded', open ? 'true' : 'false');
-    button.addEventListener('click', function () {
-      var next = button.getAttribute('aria-expanded') !== 'true';
+
+    function apply(next) {
       button.setAttribute('aria-expanded', next ? 'true' : 'false');
       body.hidden = !next;
-      line.className = 'command-line' + (next ? '' : ' is-folded');
+      // Знак говорит про следующий клик: плюс раскроет поле, крест закроет.
+      setIcon(mark, next ? 'icon-close' : 'icon-plus');
+    }
+
+    button.setAttribute('aria-controls', key);
+    apply(open);
+    button.addEventListener('click', function () {
+      apply(button.getAttribute('aria-expanded') !== 'true');
     });
 
     line.appendChild(button);
@@ -2569,13 +2606,25 @@ const script = `
       if (group.note) frag.appendChild(el('p', 'commands-note', group.note));
       group.items.forEach(function (item) {
         index += 1;
-        var box = el('div', 'command');
+        // Скилл зовут по имени, поэтому красится оно, а не путь за ним.
+        var box = el('div', item.command.charAt(0) === '/' ? 'command is-skill' : 'command');
 
-        // Левая колонка: сама команда, кнопка копирования и исход клика.
+        // Заголовок есть не у всех: скилл называет себя сам, а четыре команды
+        // терминала начинаются одним путём и различаются только им.
+        if (item.title) box.appendChild(el('h3', 'command-title', item.title));
+
+        // Над карточками полей: сама команда, кнопка копирования и исход клика.
         var side = el('div', 'command-side');
         var row = el('div', 'command-row');
-        var name = el('code', 'command-name', item.command);
+        // Части команды красятся по отдельности, как в терминале. Текст узла
+        // при этом равен самой команде: его читает скринридер и выделяет
+        // человек, когда буфер отказал.
+        var name = el('code', 'command-name');
         name.id = 'command-' + index;
+        (item.tokens || []).forEach(function (token, position) {
+          if (position > 0) name.appendChild(document.createTextNode(' '));
+          name.appendChild(el('span', 'cmd-' + token.kind, token.text));
+        });
         row.appendChild(name);
 
         var copy = el('button', 'command-copy');
