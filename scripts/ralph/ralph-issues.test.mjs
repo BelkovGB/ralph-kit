@@ -610,6 +610,21 @@ test(
 );
 
 test(
+  'кнопка копирования на пульте показывает иконку и всё равно называет себя словами',
+  { skip: !existsSync(guiPagePath) },
+  async () => {
+    // Иконка имени не несёт: без aria-label чтение с экрана объявит кнопку
+    // безымянной. Сама иконка от него скрыта, иначе её объявят вторым узлом
+    // рядом с именем кнопки.
+    const { renderPage } = await import('./ralph-gui-page.mjs');
+    const page = renderPage();
+
+    assert.match(page, /'aria-label', 'Скопировать команду'/u);
+    assert.match(page, /svg\.setAttribute\('aria-hidden', 'true'\)/u);
+  },
+);
+
+test(
   'every reviewer is named by its file and reachable from the skill',
   { skip: !existsSync(reviewersPath) || !existsSync(reviewSkillPath) },
   () => {

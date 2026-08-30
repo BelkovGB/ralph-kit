@@ -580,25 +580,36 @@ textarea:disabled { color: var(--muted); background: var(--subtle); }
 
 /* Вкладка «Команды» */
 
-/* Свой класс, а не .section-title: тот оформляет подписи разделов формы —
-   мелкие прописные, — и заголовок группы команд выглядел бы слабее команд
-   под ним. */
+/* Заголовок группы оформлен как подпись раздела формы — мелкие прописные.
+   Слабый заголовок здесь намеренный: первой в глаза попадает сама команда,
+   единственное на вкладке, что человек переносит в терминал символ в символ. */
 .commands-title {
-  margin: 28px 0 6px;
-  font-size: 15px;
+  margin: 32px 0 0;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
   font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
 }
 
 .commands-title:first-child { margin-top: 4px; }
 
 .commands-note {
-  margin: 0 0 16px;
+  margin: 10px 0 0;
   color: var(--muted);
   font-size: 13px;
 }
 
-.command { margin-bottom: 20px; }
-.command:last-child { margin-bottom: 4px; }
+/* Команды разделяет линия, а не пустое место: список читается сплошной
+   колонкой, и границу записи видно без отступа в четверть экрана. */
+.command {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.command:last-child { border-bottom: 0; }
 
 .command-row {
   display: flex;
@@ -609,35 +620,80 @@ textarea:disabled { color: var(--muted); background: var(--subtle); }
 /* Моноширинный только у самой команды: это код, который человек набирает
    символ в символ. Объяснение под ним — обычный текст страницы. */
 .command-name {
-  padding: 5px 8px;
-  background: var(--subtle);
-  border: 1px solid var(--border);
-  border-radius: 6px;
   font-family: ui-monospace, 'SF Mono', Consolas, 'Liberation Mono', monospace;
-  font-size: 13px;
+  font-size: 13.5px;
   overflow-wrap: anywhere;
 }
 
+/* Кнопка размером с касание пальцем, без рамки и заливки: рядом с командой
+   она не должна спорить с ней за внимание. */
 .command-copy {
+  display: flex;
   flex: none;
-  padding: 4px 8px;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
   background: none;
   border: 0;
   border-radius: 6px;
   color: var(--muted);
   cursor: pointer;
-  font: inherit;
-  font-size: 13px;
 }
 
 .command-copy:hover { color: var(--text); background: var(--hover); }
+.command-copy.is-done { color: var(--ok); }
+.command-copy svg { width: 15px; height: 15px; }
 
-.command-status { flex: none; font-size: 13px; }
-.command-status.is-ok { color: var(--ok); }
-.command-status.is-bad { color: var(--bad); }
+/* Успех виден по галочке, поэтому его текст остаётся только для чтения с
+   экрана. Отказ показан словами: он просит нажать Ctrl+C, и без текста эта
+   просьба не дойдёт. */
+.command-status {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
 
-.command-line { margin: 6px 0 0; }
-.command-lead { color: var(--muted); }
+.command-status.is-bad {
+  position: static;
+  flex: none;
+  width: auto;
+  height: auto;
+  overflow: visible;
+  clip-path: none;
+  color: var(--bad);
+  font-size: 13px;
+  white-space: normal;
+}
+
+/* Подпись строки вынесена в свою колонку: три объяснения читаются сверху вниз
+   одним движением глаза, а не выбираются из сплошного текста. */
+.command-line {
+  display: grid;
+  /* Ширина текста ограничена: на широком мониторе строка в сто знаков теряет
+     начало следующей, а объяснение читают целиком. */
+  grid-template-columns: 104px minmax(0, 70ch);
+  gap: 4px 12px;
+  margin: 10px 0 0;
+}
+
+.command-lead {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  line-height: 1.75;
+  text-transform: uppercase;
+}
+
+/* На узком экране колонка подписей съела бы половину ширины текста. */
+@media (max-width: 720px) {
+  .command-line { grid-template-columns: 1fr; gap: 2px; }
+}
 
 .unknown-row {
   display: flex;
@@ -2116,10 +2172,45 @@ const script = `
 
   /* --- вкладка «Команды» --- */
 
-  function resetCopy(status) {
-    if (status.resetTimer) window.clearTimeout(status.resetTimer);
-    status.textContent = '';
-    status.className = 'command-status';
+  /* Иконки строятся через createElementNS: страница нигде не пишет innerHTML,
+     а createElement('svg') вернул бы HTML-элемент, который браузер не рисует. */
+  var copyIconPaths = [
+    'M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1',
+    'M9 9h11a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2z'
+  ];
+  var doneIconPaths = ['M20 6 9 17l-5-5'];
+
+  function icon(paths) {
+    var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('fill', 'none');
+    svg.setAttribute('stroke', 'currentColor');
+    svg.setAttribute('stroke-width', '2');
+    svg.setAttribute('stroke-linecap', 'round');
+    svg.setAttribute('stroke-linejoin', 'round');
+    // Иконка скрыта от чтения с экрана: имя кнопке даёт aria-label, а
+    // объявленная вторым узлом иконка это имя бы удвоила.
+    svg.setAttribute('aria-hidden', 'true');
+    paths.forEach(function (d) {
+      var path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('d', d);
+      svg.appendChild(path);
+    });
+    return svg;
+  }
+
+  function showIcon(control, done) {
+    var next = icon(done ? doneIconPaths : copyIconPaths);
+    control.button.replaceChild(next, control.button.firstChild);
+    if (done) control.button.classList.add('is-done');
+    else control.button.classList.remove('is-done');
+  }
+
+  function resetCopy(control) {
+    if (control.resetTimer) window.clearTimeout(control.resetTimer);
+    control.status.textContent = '';
+    control.status.className = 'command-status';
+    showIcon(control, false);
   }
 
   /* Исход клика пишется в отдельный узел role="status", а не в текст кнопки:
@@ -2127,35 +2218,36 @@ const script = `
      доходила. Успех гаснет через полторы секунды, отказ — только на следующем
      клике: «Скопируйте вручную» — задание человеку, и пропустить его дороже,
      чем увидеть лишний раз. */
-  function markCopy(status, kind, text) {
-    if (status.resetTimer) window.clearTimeout(status.resetTimer);
-    status.textContent = text;
-    status.className = 'command-status is-' + kind;
+  function markCopy(control, kind, text) {
+    if (control.resetTimer) window.clearTimeout(control.resetTimer);
+    control.status.textContent = text;
+    control.status.className = 'command-status is-' + kind;
+    showIcon(control, kind === 'ok');
     if (kind !== 'ok') return;
-    status.resetTimer = window.setTimeout(function () {
-      resetCopy(status);
+    control.resetTimer = window.setTimeout(function () {
+      resetCopy(control);
     }, 1600);
   }
 
   /* Буфер отказал — человек копирует сам: текст команды выделен, остаётся
      нажать Ctrl+C. */
-  function manualCopy(status, name) {
+  function manualCopy(control) {
     try {
       var range = document.createRange();
-      range.selectNodeContents(name);
+      range.selectNodeContents(control.name);
       var selection = window.getSelection();
       selection.removeAllRanges();
       selection.addRange(range);
     } catch (error) {
       // Выделение — подсказка, а не результат: без него сообщение всё равно верно.
     }
-    markCopy(status, 'bad', 'Скопируйте вручную: Ctrl+C');
+    markCopy(control, 'bad', 'Скопируйте вручную: Ctrl+C');
   }
 
   /* Запасной путь нужен не ради старых браузеров: navigator.clipboard живёт
      только в защищённом контексте, а пульт открывается по http://127.0.0.1
      и в части браузеров этот API там отсутствует. */
-  function copyFallback(text, status, name) {
+  function copyFallback(text, control) {
     var focused = document.activeElement;
     var area = document.createElement('textarea');
     area.value = text;
@@ -2175,33 +2267,33 @@ const script = `
     // Фокус возвращается туда, откуда пришёл клик: иначе нажавший Enter на
     // кнопке окажется на body, и следующий Tab начнёт обход страницы заново.
     if (focused && focused.focus) focused.focus();
-    if (copied) markCopy(status, 'ok', 'Скопировано');
-    else manualCopy(status, name);
+    if (copied) markCopy(control, 'ok', 'Скопировано');
+    else manualCopy(control);
   }
 
-  function copyCommand(text, status, name) {
-    resetCopy(status);
+  function copyCommand(text, control) {
+    resetCopy(control);
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(text).then(
         function () {
-          markCopy(status, 'ok', 'Скопировано');
+          markCopy(control, 'ok', 'Скопировано');
         },
         function () {
           // Обработчик отклонённого промиса выполняется уже вне жеста
           // пользователя, а там Safari отклоняет и execCommand: запасной путь
           // отсюда вернул бы false, поэтому сразу просим скопировать руками.
-          manualCopy(status, name);
+          manualCopy(control);
         }
       );
       return;
     }
-    copyFallback(text, status, name);
+    copyFallback(text, control);
   }
 
   function commandLine(lead, text) {
     var line = el('p', 'command-line');
-    line.appendChild(el('span', 'command-lead', lead + '. '));
-    line.appendChild(document.createTextNode(text));
+    line.appendChild(el('span', 'command-lead', lead));
+    line.appendChild(el('span', null, text));
     return line;
   }
 
@@ -2218,15 +2310,19 @@ const script = `
         var name = el('code', 'command-name', item.command);
         name.id = 'command-' + index;
         row.appendChild(name);
-        var copy = el('button', 'command-copy', 'Копировать');
+        var copy = el('button', 'command-copy');
         copy.type = 'button';
-        // Имя кнопки — её собственный текст, команда идёт описанием: aria-label
-        // перекрыл бы текст кнопки целиком.
+        copy.appendChild(icon(copyIconPaths));
+        // Кнопка показывает иконку, поэтому имя ей даёт aria-label, а какую
+        // именно команду она копирует, говорит описание: имена всех кнопок на
+        // вкладке одинаковы.
+        copy.setAttribute('aria-label', 'Скопировать команду');
         copy.setAttribute('aria-describedby', name.id);
         var status = el('span', 'command-status');
         status.setAttribute('role', 'status');
+        var control = { button: copy, status: status, name: name, resetTimer: 0 };
         copy.addEventListener('click', function () {
-          copyCommand(item.command, status, name);
+          copyCommand(item.command, control);
         });
         row.appendChild(copy);
         row.appendChild(status);
