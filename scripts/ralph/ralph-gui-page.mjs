@@ -282,22 +282,31 @@ a { color: var(--accent); }
 
 .head {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   justify-content: space-between;
   gap: 24px;
   max-width: 1160px;
-  margin: 0 auto 20px;
-  padding: 18px 0 14px;
+  margin: 0 auto 24px;
+  padding: 28px 0 18px;
   border-bottom: 1px solid var(--border);
-  /* Высота фиксирована, чтобы опрос состояния не дёргал вёрстку. */
-  min-height: 63px;
 }
+
+.head-text { min-width: 0; }
 
 .head-title {
   margin: 0;
-  font-size: 17px;
+  font-size: 26px;
   font-weight: 600;
-  letter-spacing: 0.01em;
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+}
+
+/* Строка под заголовком отвечает на вопрос «что я здесь вижу»: раздел, который
+   называет себя одним словом, этого не объясняет. */
+.head-note {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 13px;
 }
 
 /* Полоса состояния живёт в шапке: точка и одна строка без своей рамки. */
@@ -943,7 +952,10 @@ const markup = `
   </aside>
   <div class="main">
     <header class="head">
-      <h1 class="head-title" id="head-title">Расход</h1>
+      <div class="head-text">
+        <h1 class="head-title" id="head-title">Расход</h1>
+        <p class="head-note" id="head-note">Токены и время по задачам из журнала прогона.</p>
+      </div>
       <div class="status">
         <span class="dot" id="status-dot"></span>
         <span class="status-text" id="status-text">Состояние загружается</span>
@@ -995,9 +1007,15 @@ const script = `
   var statusDot = document.getElementById('status-dot');
   var statusText = document.getElementById('status-text');
   var headTitle = document.getElementById('head-title');
-  // Заголовок над содержимым повторяет подпись кнопки: в свёрнутой панели
-  // подписей не видно, и раздел называет только он.
-  var tabTitles = { usage: 'Расход', settings: 'Настройки', commands: 'Команды' };
+  var headNote = document.getElementById('head-note');
+  /* Заголовок над содержимым называет раздел: в свёрнутой панели подписей у
+     кнопок не видно. Строка под ним говорит, что человек здесь видит и откуда
+     эти данные — из журнала, из файла настроек или из самого набора. */
+  var tabTitles = {
+    usage: ['Расход', 'Токены и время по задачам из журнала прогона.'],
+    settings: ['Настройки', 'Файл .agents/ralph.config.json: поля с подсказками и проверкой ввода.'],
+    commands: ['Команды', 'Что делает каждая команда, когда её звать и чего она не делает.']
+  };
 
   /* --- запросы --- */
 
@@ -2606,7 +2624,10 @@ const script = `
 
   function selectTab(next) {
     tab = next;
-    if (headTitle && tabTitles[tab]) headTitle.textContent = tabTitles[tab];
+    if (tabTitles[tab]) {
+      if (headTitle) headTitle.textContent = tabTitles[tab][0];
+      if (headNote) headNote.textContent = tabTitles[tab][1];
+    }
     /* Разделы — не вкладки ARIA: роль tab обещает переключение стрелками,
        которого здесь нет. Текущий раздел отмечает aria-current. */
     Array.prototype.forEach.call(document.querySelectorAll('.tab'), function (button) {

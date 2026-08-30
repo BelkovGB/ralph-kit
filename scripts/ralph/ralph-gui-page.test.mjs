@@ -63,6 +63,22 @@ test('the command fields fold, and «Делает» stays open', { skip: !exists
   assert.equal(/commandLine\('Делает',[^)]*true/u.test(page), true, '«Делает» свёрнуто по умолчанию');
 });
 
+test('every section is titled and explained', { skip: !existsSync(guiPagePath) }, async () => {
+  const { renderPage } = await import('./ralph-gui-page.mjs');
+  const page = renderPage();
+
+  // Раздел называет заголовок страницы, а под ним строка о том, что человек
+  // здесь видит: без неё пульт открывается таблицей чисел без объяснения.
+  assert.match(page, /<h1 class="head-title" id="head-title">/u);
+  assert.match(page, /id="head-note"/u);
+
+  // Подпись называет источник данных раздела: журнал прогона, файл настроек
+  // или сам набор. Без неё пульт открывается таблицей чисел без объяснения.
+  for (const note of ['журнала прогона', 'ralph.config.json', 'чего она не делает']) {
+    assert.equal(page.includes(note), true, `нет подписи раздела: ${note}`);
+  }
+});
+
 test('the GUI page keeps every section reachable', { skip: !existsSync(guiPagePath) }, async () => {
   const { renderPage } = await import('./ralph-gui-page.mjs');
   const page = renderPage();
