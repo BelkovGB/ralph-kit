@@ -116,48 +116,36 @@ export const commandGuide = [
   },
 ];
 
+/* Тема одна, ночная: пульт открывают рядом с терминалом, и светлая вкладка
+   между тёмными окнами бьёт по глазам. Вторая палитра под системную настройку
+   жила бы мёртвым грузом и расходилась с живой при каждой правке. */
 const styles = `
 :root {
-  color-scheme: light;
-  --bg: #fcfcfc;
-  --surface: #ffffff;
-  --subtle: #f6f7f8;
-  --hover: #f2f3f5;
-  --text: #15171c;
-  --muted: #6b727c;
-  --border: #e6e8eb;
-  --border-strong: #d6d9de;
-  --accent: #2f6fd0;
-  --ok: #1e7a45;
-  --bad: #b32d24;
-  --warn: #9a5b12;
-  --bar-1: #98a0a9;
-  --bar-2: #c2c8ce;
-  --bar-3: #e1e4e8;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    color-scheme: dark;
-    --bg: #17191c;
-    --surface: #1d2024;
-    --subtle: #212529;
-    --hover: #262a2f;
-    --text: #e7e9ec;
-    --muted: #99a0a9;
-    --border: #2c3036;
-    --border-strong: #3a3f46;
-    --accent: #6ea3ef;
-    --ok: #5cb47c;
-    --bad: #e0796e;
-    --warn: #d0a05a;
-    --bar-1: #7d858e;
-    --bar-2: #565d65;
-    --bar-3: #383d44;
-  }
+  color-scheme: dark;
+  --bg: #131518;
+  --side: #0e1013;
+  --surface: #191c21;
+  --subtle: #1f2329;
+  --hover: #252a31;
+  --text: #e8eaec;
+  --muted: #9aa3ad;
+  --border: #2a2e36;
+  --border-strong: #3a404a;
+  --accent: #82abf5;
+  --accent-ink: #10131a;
+  --ok: #6cbd8a;
+  --bad: #e8867c;
+  --warn: #d3a35f;
+  --bar-1: #8a93a0;
+  --bar-2: #5b636e;
+  --bar-3: #3b424c;
+  --side-w: 236px;
+  --rail-w: 56px;
 }
 
 * { box-sizing: border-box; }
+
+html { scrollbar-color: var(--border-strong) transparent; }
 
 body {
   margin: 0;
@@ -167,29 +155,62 @@ body {
   font-size: 14px;
   line-height: 1.45;
   font-variant-numeric: tabular-nums;
+  caret-color: var(--accent);
 }
+
+::selection { background: rgba(130, 171, 245, 0.3); }
 
 a { color: var(--accent); }
 
-.shell {
-  max-width: 1100px;
-  margin: 0 auto;
-  padding: 0 24px 48px;
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
 }
 
-/* Шапка */
-.top {
+/* Каркас: слева панель разделов, справа содержимое. */
+.app { display: flex; min-height: 100vh; }
+
+/* Панель темнее содержимого: второй нейтральный слой отделяет навигацию от
+   рабочей области без рамок и теней. */
+.side {
+  position: sticky;
+  top: 0;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 24px;
-  padding: 18px 0 0;
+  flex-direction: column;
+  width: var(--side-w);
+  height: 100vh;
+  flex: none;
+  padding: 14px 10px;
+  background: var(--side);
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+  /* Анимируется именно ширина: содержимое должно занять освободившееся место,
+     transform его не сдвинет. Один элемент, один клик — рефлоу не мешает. */
+  transition: width 0.2s ease, padding 0.2s ease;
 }
 
 .brand {
-  font-size: 15px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 6px 14px;
+}
+
+.brand-mark {
+  display: grid;
+  place-content: center;
+  width: 28px;
+  height: 28px;
+  flex: none;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.brand-text {
+  font-size: 14px;
   font-weight: 600;
   letter-spacing: 0.01em;
+  white-space: nowrap;
 }
 
 .brand-version {
@@ -199,76 +220,93 @@ a { color: var(--accent); }
   color: var(--muted);
 }
 
-.tabs { display: flex; gap: 4px; }
-
-.tab {
-  appearance: none;
-  background: none;
-  border: 0;
-  border-bottom: 2px solid transparent;
-  color: var(--muted);
-  cursor: pointer;
-  font: inherit;
-  padding: 6px 10px;
-}
-
-.tab:hover { color: var(--text); }
-
-.tab[aria-selected='true'] {
-  color: var(--text);
-  border-bottom-color: var(--accent);
-}
-
-/* Вкладки внутри настроек. Они намеренно тише главных: ни акцентной черты, ни
-   жирного начертания — два одинаковых по силе ряда не дают понять, что чему
-   подчинено. Прозрачная рамка стоит и у невыбранных, чтобы выбор не сдвигал
-   соседей на пиксель. */
-.subtabs {
+.side-nav {
   display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin: 20px 0 16px;
+  flex-direction: column;
+  gap: 2px;
 }
 
-.subtab {
+.tab,
+.side-toggle {
   appearance: none;
-  background: none;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  color: var(--muted);
-  cursor: pointer;
-  font: inherit;
-  font-size: 13px;
-  padding: 4px 10px;
-}
-
-.subtab:hover { color: var(--text); background: var(--hover); }
-
-.subtab[aria-selected='true'] {
-  background: var(--subtle);
-  border-color: var(--border);
-  color: var(--text);
-}
-
-.subtab.is-warn { color: var(--warn); }
-
-.settings-warn {
-  margin: -6px 0 14px;
-  color: var(--warn);
-  font-size: 12px;
-}
-
-/* Полоса состояния: высота фиксирована, чтобы опрос не дёргал вёрстку */
-.status {
   display: flex;
   align-items: center;
   gap: 10px;
-  min-height: 42px;
-  margin-top: 12px;
-  padding: 0 12px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  width: 100%;
+  padding: 8px 10px;
+  background: none;
+  border: 0;
+  border-radius: 8px;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+}
+
+.tab:hover, .side-toggle:hover { background: var(--hover); color: var(--text); }
+
+.tab[aria-current='page'] { background: var(--subtle); color: var(--text); }
+.tab[aria-current='page'] .tab-icon { color: var(--accent); }
+
+.tab-icon {
+  display: grid;
+  place-content: center;
+  width: 20px;
+  height: 20px;
+  flex: none;
+}
+
+.tab-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.side-toggle { margin-top: auto; }
+
+/* Свёрнутая панель: остаются иконки, подписи прячутся только визуально —
+   имя кнопки должно дожить до скринридера. */
+.is-rail .side { width: var(--rail-w); padding: 14px 8px; }
+.is-rail .brand { justify-content: center; padding-left: 0; padding-right: 0; }
+.is-rail .tab, .is-rail .side-toggle { justify-content: center; padding: 8px; }
+
+.is-rail .tab-label,
+.is-rail .brand-text {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.is-rail .side-toggle .tab-icon svg { transform: rotate(180deg); }
+
+/* Содержимое */
+.main { flex: 1; min-width: 0; padding: 0 28px 48px; }
+
+.head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  max-width: 1160px;
+  margin: 0 auto 20px;
+  padding: 18px 0 14px;
+  border-bottom: 1px solid var(--border);
+  /* Высота фиксирована, чтобы опрос состояния не дёргал вёрстку. */
+  min-height: 63px;
+}
+
+.head-title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+/* Полоса состояния живёт в шапке: точка и одна строка без своей рамки. */
+.status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--muted);
 }
 
 .dot {
@@ -287,16 +325,56 @@ a { color: var(--accent); }
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-size: 13px;
 }
 
-.panel { margin-top: 24px; }
+.panel { max-width: 1160px; margin: 0 auto; }
+
+/* Вкладки внутри настроек. Они намеренно тише боковой навигации: ни акцентной
+   иконки, ни жирного начертания — два одинаковых по силе ряда не дают понять,
+   что чему подчинено. Прозрачная рамка стоит и у невыбранных, чтобы выбор не
+   сдвигал соседей на пиксель. */
+.subtabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0 0 16px;
+}
+
+.subtab {
+  appearance: none;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  padding: 4px 10px;
+}
+
+.subtab:hover { color: var(--text); background: var(--hover); }
+
+.subtab[aria-current='true'] {
+  background: var(--subtle);
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.subtab.is-warn { color: var(--warn); }
+
+.settings-warn {
+  margin: -6px 0 14px;
+  color: var(--warn);
+  font-size: 12px;
+}
 
 /* Сводка расхода */
 .summary {
-  padding: 14px 16px;
+  padding: 16px 18px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 12px;
 }
 
 .summary-line {
@@ -306,7 +384,7 @@ a { color: var(--accent); }
   flex-wrap: wrap;
 }
 
-.summary-total { font-size: 20px; font-weight: 600; }
+.summary-total { font-size: 21px; font-weight: 600; }
 .summary-counts { color: var(--muted); }
 
 .note {
@@ -326,7 +404,7 @@ a { color: var(--accent); }
   margin-top: 16px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 12px;
   /* На узком экране таблица прокручивается внутри себя, а не растягивает страницу. */
   overflow-x: auto;
 }
@@ -334,7 +412,9 @@ a { color: var(--accent); }
 table { width: 100%; border-collapse: collapse; }
 /* Колонки не переносятся, чтобы числа не расползались на две строки. */
 .tasks th, .tasks td { white-space: nowrap; }
-.tasks td:nth-child(2), .tasks td.detail-cell { white-space: normal; }
+/* Milestone и исход — фразы, а не числа: пусть переносятся, иначе длинный
+   исход выталкивает таблицу за обёртку и вешает горизонтальную прокрутку. */
+.tasks td:nth-child(2), .tasks td:nth-child(4), .tasks td.detail-cell { white-space: normal; }
 
 th {
   padding: 9px 12px;
@@ -443,21 +523,56 @@ tr:last-child td { border-bottom: 0; }
 .agent-right { color: var(--muted); white-space: nowrap; }
 
 .empty {
-  margin-top: 16px;
   padding: 24px 16px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 12px;
   color: var(--muted);
   text-align: center;
 }
 
+/* Скелет на время загрузки: серые плашки по форме будущих блоков вместо
+   мигающей пустой карточки с текстом. Текст остаётся для скринридера. */
+.skeleton {
+  padding: 16px 18px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.skeleton + .skeleton { margin-top: 16px; }
+
+.skel {
+  height: 13px;
+  margin: 10px 0;
+  border-radius: 6px;
+  background: var(--subtle);
+  animation: skel 1.1s ease-in-out infinite alternate;
+}
+
+.skel.is-title { height: 20px; margin-top: 2px; }
+
+@keyframes skel {
+  from { opacity: 0.55; }
+  to { opacity: 1; }
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 /* Настройки */
 .banner {
+  margin-bottom: 16px;
   padding: 10px 12px;
   background: var(--subtle);
   border: 1px solid var(--border-strong);
-  border-radius: 6px;
+  border-radius: 8px;
 }
 
 .banner-title { font-weight: 600; }
@@ -475,11 +590,6 @@ tr:last-child td { border-bottom: 0; }
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px 24px;
-}
-
-@media (max-width: 720px) {
-  .grid { grid-template-columns: minmax(0, 1fr); }
-  .shell { padding: 0 16px 48px; }
 }
 
 /* Над заголовком блока воздуха больше, чем под ним: иначе заголовок читается
@@ -520,10 +630,10 @@ select,
 textarea {
   width: 100%;
   padding: 6px 8px;
-  background: var(--surface);
+  background: var(--subtle);
   color: var(--text);
   border: 1px solid var(--border-strong);
-  border-radius: 6px;
+  border-radius: 8px;
   font: inherit;
   font-variant-numeric: tabular-nums;
 }
@@ -544,10 +654,10 @@ button:focus-visible {
 
 input:disabled,
 select:disabled,
-textarea:disabled { color: var(--muted); background: var(--subtle); }
+textarea:disabled { color: var(--muted); background: var(--surface); }
 
 .check { display: flex; align-items: center; gap: 8px; }
-.check input { width: auto; }
+.check input { width: auto; accent-color: var(--accent); }
 
 .phases { width: 100%; border-collapse: collapse; }
 .phases th { padding: 4px 8px 4px 0; }
@@ -556,10 +666,10 @@ textarea:disabled { color: var(--muted); background: var(--subtle); }
 
 .btn {
   padding: 6px 12px;
-  background: var(--surface);
+  background: var(--subtle);
   color: var(--text);
   border: 1px solid var(--border-strong);
-  border-radius: 6px;
+  border-radius: 8px;
   cursor: pointer;
   font: inherit;
 }
@@ -567,10 +677,11 @@ textarea:disabled { color: var(--muted); background: var(--subtle); }
 .btn:hover:not(:disabled) { background: var(--hover); }
 .btn:disabled { color: var(--muted); cursor: default; }
 
+/* Тёмный текст на акценте: белый на этом голубом не дотягивает до контраста. */
 .btn-primary {
   background: var(--accent);
   border-color: var(--accent);
-  color: #ffffff;
+  color: var(--accent-ink);
 }
 
 .btn-primary:hover:not(:disabled) { background: var(--accent); opacity: 0.9; }
@@ -604,6 +715,9 @@ textarea:disabled { color: var(--muted); background: var(--subtle); }
   display: flex;
   align-items: center;
   gap: 8px;
+  /* Сообщение «Скопируйте вручную» на узком экране уходит на свою строку,
+     а не сжимает команду в столбик из букв. */
+  flex-wrap: wrap;
 }
 
 /* Моноширинный только у самой команды: это код, который человек набирает
@@ -667,23 +781,72 @@ textarea:disabled { color: var(--muted); background: var(--subtle); }
 .save-message { font-size: 13px; }
 .save-message.is-ok { color: var(--ok); }
 .save-message.is-bad { color: var(--bad); }
+
+/* На узком экране панель сама складывается в рейку: место дороже подписей. */
+@media (max-width: 720px) {
+  .app .side { width: var(--rail-w); padding: 14px 8px; }
+  .app .brand { justify-content: center; padding-left: 0; padding-right: 0; }
+  .app .tab, .app .side-toggle { justify-content: center; padding: 8px; }
+  .app .tab-label,
+  .app .brand-text {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .app .side-toggle { display: none; }
+  .main { padding: 0 14px 48px; }
+  .grid { grid-template-columns: minmax(0, 1fr); }
+}
 `;
 
+/* Иконки — встроенные SVG в одной графике: штрих 1.75, скруглённые концы.
+   Символы из набора Lucide (ISC), пакет для четырёх картинок не нужен. */
+function icon(paths) {
+  return '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" ' +
+    'stroke="currentColor" stroke-width="1.75" stroke-linecap="round" ' +
+    'stroke-linejoin="round" aria-hidden="true">' + paths + '</svg>';
+}
+
+const icons = {
+  // Петля из двух стрелок: сам цикл Ralph.
+  brand: icon('<path d="m17 2 4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="m7 22-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/>'),
+  // Столбики: расход по задачам.
+  usage: icon('<path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/>'),
+  // Ползунки: настройки.
+  settings: icon('<line x1="21" x2="14" y1="4" y2="4"/><line x1="10" x2="3" y1="4" y2="4"/><line x1="21" x2="12" y1="12" y2="12"/><line x1="8" x2="3" y1="12" y2="12"/><line x1="21" x2="16" y1="20" y2="20"/><line x1="12" x2="3" y1="20" y2="20"/><line x1="14" x2="14" y1="2" y2="6"/><line x1="8" x2="8" y1="10" y2="14"/><line x1="16" x2="16" y1="18" y2="22"/>'),
+  // Приглашение терминала: команды.
+  commands: icon('<polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/>'),
+  // Шевроны внутрь: свернуть панель. В рейке разворачиваются наружу стилем.
+  collapse: icon('<path d="m11 17-5-5 5-5"/><path d="m18 17-5-5 5-5"/>'),
+};
+
 const markup = `
-<div class="shell">
-  <header class="top">
-    <div class="brand">Ralph<span class="brand-version">${KIT_VERSION}</span></div>
-    <nav class="tabs" role="tablist" aria-label="Разделы">
-      <button class="tab" type="button" role="tab" id="tab-usage" data-tab="usage" aria-selected="true">Расход</button>
-      <button class="tab" type="button" role="tab" id="tab-settings" data-tab="settings" aria-selected="false">Настройки</button>
-      <button class="tab" type="button" role="tab" id="tab-commands" data-tab="commands" aria-selected="false">Команды</button>
+<div class="app" id="app">
+  <aside class="side">
+    <div class="brand">
+      <span class="brand-mark">${icons.brand}</span>
+      <span class="brand-text">Ralph<span class="brand-version">${KIT_VERSION}</span></span>
+    </div>
+    <nav class="side-nav" aria-label="Разделы">
+      <button class="tab" type="button" id="tab-usage" data-tab="usage" aria-current="page"><span class="tab-icon">${icons.usage}</span><span class="tab-label">Расход</span></button>
+      <button class="tab" type="button" id="tab-settings" data-tab="settings"><span class="tab-icon">${icons.settings}</span><span class="tab-label">Настройки</span></button>
+      <button class="tab" type="button" id="tab-commands" data-tab="commands"><span class="tab-icon">${icons.commands}</span><span class="tab-label">Команды</span></button>
     </nav>
-  </header>
-  <div class="status">
-    <span class="dot" id="status-dot"></span>
-    <span class="status-text" id="status-text">Состояние загружается</span>
+    <button class="side-toggle" type="button" id="side-toggle" aria-expanded="true"><span class="tab-icon">${icons.collapse}</span><span class="tab-label">Свернуть</span></button>
+  </aside>
+  <div class="main">
+    <header class="head">
+      <h1 class="head-title" id="head-title">Расход</h1>
+      <div class="status">
+        <span class="dot" id="status-dot"></span>
+        <span class="status-text" id="status-text">Состояние загружается</span>
+      </div>
+    </header>
+    <main class="panel" id="panel" aria-labelledby="tab-usage"></main>
   </div>
-  <main class="panel" id="panel" role="tabpanel" aria-labelledby="tab-usage"></main>
 </div>
 `;
 
@@ -722,6 +885,10 @@ const script = `
   var panel = document.getElementById('panel');
   var statusDot = document.getElementById('status-dot');
   var statusText = document.getElementById('status-text');
+  var headTitle = document.getElementById('head-title');
+  // Заголовок над содержимым повторяет подпись кнопки: в свёрнутой панели
+  // подписей не видно, и раздел называет только он.
+  var tabTitles = { usage: 'Расход', settings: 'Настройки', commands: 'Команды' };
 
   /* --- запросы --- */
 
@@ -978,6 +1145,20 @@ const script = `
     while (node.firstChild) node.removeChild(node.firstChild);
   }
 
+  /* Скелет на время загрузки: плашки по форме будущего блока вместо текста в
+     пустой карточке. Глазам — заготовка раздела, скринридеру — скрытая
+     подпись. Ширины в процентах, чтобы скелет дышал вместе с колонкой. */
+  function renderSkeleton(widths) {
+    var box = el('div', 'skeleton');
+    box.appendChild(el('span', 'sr-only', 'Данные загружаются'));
+    widths.forEach(function (width, index) {
+      var bar = el('div', index === 0 ? 'skel is-title' : 'skel');
+      bar.style.maxWidth = width;
+      box.appendChild(bar);
+    });
+    return box;
+  }
+
   /* --- полоса состояния --- */
 
   function statusLine(data) {
@@ -1190,7 +1371,9 @@ const script = `
       return frag;
     }
     if (!tasksData) {
-      frag.appendChild(el('div', 'empty', 'Данные загружаются'));
+      // Два скелета повторяют раздел: карточка сводки и таблица под ней.
+      frag.appendChild(renderSkeleton(['34%', '62%', '46%']));
+      frag.appendChild(renderSkeleton(['22%', '100%', '100%', '100%']));
       return frag;
     }
 
@@ -2006,14 +2189,14 @@ const script = `
 
   function renderSubtabs(groups, active) {
     var nav = el('nav', 'subtabs');
-    nav.setAttribute('role', 'tablist');
     nav.setAttribute('aria-label', 'Разделы настроек');
     groups.forEach(function (group, index) {
       var button = el('button', badFields(group).length ? 'subtab is-warn' : 'subtab', group.title);
       button.type = 'button';
       button.id = 'subtab-' + index;
-      button.setAttribute('role', 'tab');
-      button.setAttribute('aria-selected', index === active ? 'true' : 'false');
+      /* Та же история, что у боковой навигации: роли вкладок без стрелочной
+         навигации врали бы скринридеру, текущую отмечает aria-current. */
+      if (index === active) button.setAttribute('aria-current', 'true');
       button.addEventListener('click', function () {
         selectSettingsTab(group.id);
       });
@@ -2030,7 +2213,8 @@ const script = `
       return frag;
     }
     if (!configData || !draft) {
-      frag.appendChild(el('div', 'empty', 'Данные загружаются'));
+      // Скелет повторяет форму: заголовок ряда вкладок и поля под ним.
+      frag.appendChild(renderSkeleton(['28%', '52%', '38%', '52%', '33%']));
       return frag;
     }
 
@@ -2073,7 +2257,6 @@ const script = `
       }
       // Заголовок группы не дублируется: её называет выбранная вкладка.
       var box = el('div');
-      box.setAttribute('role', 'tabpanel');
       box.setAttribute('aria-labelledby', 'subtab-' + active);
       // Поля с одинаковым именем секции, стоящие подряд, образуют озаглавленный
       // блок. Вкладка без секций рисуется одной сеткой.
@@ -2254,8 +2437,12 @@ const script = `
 
   function selectTab(next) {
     tab = next;
+    if (headTitle && tabTitles[tab]) headTitle.textContent = tabTitles[tab];
+    /* Разделы — не вкладки ARIA: роль tab обещает переключение стрелками,
+       которого здесь нет. Текущий раздел отмечает aria-current. */
     Array.prototype.forEach.call(document.querySelectorAll('.tab'), function (button) {
-      button.setAttribute('aria-selected', button.getAttribute('data-tab') === tab ? 'true' : 'false');
+      if (button.getAttribute('data-tab') === tab) button.setAttribute('aria-current', 'page');
+      else button.removeAttribute('aria-current');
     });
     // Неудачный запрос повторяется при возврате на вкладку: иначе одна ошибка
     // держится до перезагрузки страницы.
@@ -2269,6 +2456,49 @@ const script = `
       selectTab(button.getAttribute('data-tab'));
     });
   });
+
+  /* --- боковая панель --- */
+
+  /* Свёрнутая панель переживает перезагрузку: состояние в localStorage.
+     В приватном окне доступ к хранилищу бросает исключение — обе стороны
+     в try, отказ хранилища оставляет панель развёрнутой. */
+  var railKey = 'ralph-gui-rail';
+  var app = document.getElementById('app');
+  var sideToggle = document.getElementById('side-toggle');
+
+  function readRail() {
+    try {
+      return window.localStorage.getItem(railKey) === '1';
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function writeRail(on) {
+    try {
+      window.localStorage.setItem(railKey, on ? '1' : '0');
+    } catch (error) {}
+  }
+
+  function applyRail(on) {
+    if (app) app.className = on ? 'app is-rail' : 'app';
+    if (!sideToggle) return;
+    sideToggle.setAttribute('aria-expanded', on ? 'false' : 'true');
+    // Подпись меняется вместе с действием: в рейке она скрыта визуально,
+    // но именно её читает скринридер.
+    var label = sideToggle.querySelector('.tab-label');
+    if (label) label.textContent = on ? 'Развернуть' : 'Свернуть';
+  }
+
+  var rail = readRail();
+  applyRail(rail);
+  if (sideToggle) {
+    sideToggle.addEventListener('click', function () {
+      rail = !rail;
+      writeRail(rail);
+      applyRail(rail);
+    });
+  }
 
   renderStatus();
   renderPanel();
