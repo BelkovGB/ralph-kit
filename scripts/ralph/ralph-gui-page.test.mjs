@@ -92,6 +92,17 @@ test('a command is split into coloured parts', { skip: !existsSync(guiPagePath) 
   }
 });
 
+test('commands are split by where they are typed', { skip: !existsSync(guiPagePath) }, async () => {
+  const { renderPage, commandGuide } = await import('./ralph-gui-page.mjs');
+  const page = renderPage();
+
+  // Команды терминала и команды чата набирают в разных местах, и вперемешку
+  // они читаются как один длинный список. Группа выбирается вкладкой, на
+  // экране всегда одна.
+  assert.equal(page.includes("el('button', 'commands-tab'"), true, 'нет вкладок групп');
+  assert.equal(commandGuide.length > 1, true, 'группам команд не из чего выбирать');
+});
+
 test('the command fields fold, and «Делает» stays open', { skip: !existsSync(guiPagePath) }, async () => {
   const { renderPage } = await import('./ralph-gui-page.mjs');
   const page = renderPage();

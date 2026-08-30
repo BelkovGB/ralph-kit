@@ -729,19 +729,37 @@ textarea:disabled { color: var(--muted); background: var(--surface); }
 
 /* Вкладка «Команды» */
 
-/* Свой класс, а не .section-title: тот оформляет подписи разделов формы —
-   мелкие прописные, — и заголовок группы команд выглядел бы слабее команд
-   под ним. */
-.commands-title {
-  margin: 28px 0 6px;
-  font-size: 15px;
-  font-weight: 600;
+/* Вкладки групп: терминал или чат с агентом. Оформлены как вкладки настроек —
+   один и тот же переключатель второго уровня на всём пульте. */
+.commands-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0 0 14px;
 }
 
-.commands-title:first-child { margin-top: 4px; }
+.commands-tab {
+  appearance: none;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  padding: 5px 12px;
+}
+
+.commands-tab:hover { color: var(--text); background: var(--hover); }
+
+.commands-tab[aria-current='true'] {
+  background: var(--subtle);
+  border-color: var(--border);
+  color: var(--text);
+}
 
 .commands-note {
-  margin: 0 0 16px;
+  margin: 0 0 20px;
   color: var(--muted);
   font-size: 13px;
 }
@@ -763,12 +781,28 @@ textarea:disabled { color: var(--muted); background: var(--surface); }
   font-weight: 600;
 }
 
-/* Кнопка копирования держится верхней строки команды и не переносится под неё:
-   команда занимает остаток ширины и переносит текст внутри себя. */
+/* Сама команда набрана как строка терминала: тёмная полоса с приглашением и
+   кнопкой копирования у правого края. Полоса темнее и карточек полей, и фона
+   страницы — на неё смотрят первой, её и набирают. */
 .command-row {
   display: flex;
   align-items: flex-start;
-  gap: 6px;
+  gap: 8px;
+  padding: 9px 10px 9px 12px;
+  background: var(--side);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+/* Приглашение только рисуется: в текст команды оно не входит. */
+.command-prompt {
+  flex: none;
+  padding: 4px 0;
+  color: var(--ok);
+  font-family: ui-monospace, 'SF Mono', Consolas, 'Liberation Mono', monospace;
+  font-size: 13px;
+  line-height: 1.4;
+  user-select: none;
 }
 
 /* Знак раскрытия у правого края карточки. */
@@ -1036,6 +1070,8 @@ const script = `
   var settingsTab = readSettingsTab();
   // Пути полей, от значения которых зависят чужие списки вариантов.
   var dependencyPaths = Object.create(null);
+  // Выбранная группа справочника команд: терминал или чат с агентом.
+  var commandsGroup = 0;
 
   var panel = document.getElementById('panel');
   var statusDot = document.getElementById('status-dot');
@@ -2601,8 +2637,27 @@ const script = `
   function renderCommands() {
     var frag = document.createDocumentFragment();
     var index = 0;
-    commandGuide.forEach(function (group) {
-      frag.appendChild(el('h2', 'commands-title', group.title));
+
+    /* Команды терминала и команды чата набирают в разных местах: вперемешку
+       они читаются как один длинный список, поэтому группа выбирается вкладкой
+       и на экране всегда одна. */
+    var tabs = el('nav', 'commands-tabs');
+    tabs.setAttribute('aria-label', 'Где набирают команды');
+    commandGuide.forEach(function (group, position) {
+      var button = el('button', 'commands-tab', group.title);
+      button.type = 'button';
+      if (position === commandsGroup) button.setAttribute('aria-current', 'true');
+      button.addEventListener('click', function () {
+        if (commandsGroup === position) return;
+        commandsGroup = position;
+        renderPanel();
+      });
+      tabs.appendChild(button);
+    });
+    frag.appendChild(tabs);
+
+    var groups = commandGuide[commandsGroup] ? [commandGuide[commandsGroup]] : commandGuide;
+    groups.forEach(function (group) {
       if (group.note) frag.appendChild(el('p', 'commands-note', group.note));
       group.items.forEach(function (item) {
         index += 1;
@@ -2616,6 +2671,14 @@ const script = `
         // Над карточками полей: сама команда, кнопка копирования и исход клика.
         var side = el('div', 'command-side');
         var row = el('div', 'command-row');
+        /* Приглашение стоит вне узла команды: текст этого узла выделяют, когда
+           буфер отказал, и доллар попал бы в терминал вместе с командой. В чате
+           агента приглашения нет — там команду вводят строкой сообщения. */
+        if (item.command.charAt(0) !== '/') {
+          var prompt = el('span', 'command-prompt', '$');
+          prompt.setAttribute('aria-hidden', 'true');
+          row.appendChild(prompt);
+        }
         // Части команды красятся по отдельности, как в терминале. Текст узла
         // при этом равен самой команде: его читает скринридер и выделяет
         // человек, когда буфер отказал.
