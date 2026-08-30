@@ -5,10 +5,35 @@ this paragraph. Name the stack, where each part of the code lives, the exact
 commands that build, lint and test it, and the documents that hold the live
 contracts. Keep it short: an agent reads this file on every task.
 
+## Ground rules
+
 - Update relevant documentation when changing architecture or public contracts.
 - Ralph AFK sessions receive their full contract inside the prompt and must not
   read `.agents/RALPH.md`, which is operator documentation. The orchestrator owns
   complete validation runs.
+
+## Code structure and naming
+
+- Split by reason to change, not by line count: one subject area lives in one
+  file and can be read without reading its neighbours. Size is a signal, not a
+  target.
+- About 300 lines in a file and about 30 lines in a function are the point to
+  stop and ask whether the unit has more than one reason to change. Passing
+  either number is not a defect on its own, and it is not a licence to split
+  into single-method helpers: a reader who opens five files to follow one
+  behaviour pays more than the long file cost.
+- A name must not promise more than the code delivers. A misleading name is
+  worse than a vague one: a vague name makes the reader open the code, a
+  misleading one does not.
+- One name, one behaviour. Two same-named functions with different output are a
+  silent bug waiting for the next person who deduplicates them.
+- Name the unit or the scope whenever more than one exists — `validationTimeoutMs`
+  per container next to `validationRunTimeoutMs` per run.
+- A shared type belongs to the contract module, not to the component that first
+  needed it.
+- Do not combine a redesign, a behaviour change and a structural extraction in
+  one commit. Each is reviewed against a different question, and together they
+  hide each other.
 
 ## Token efficiency
 
@@ -37,6 +62,10 @@ contracts. Keep it short: an agent reads this file on every task.
 
 ## Writing instructions and documentation
 
+- Put the rules that apply to every task at the top of the file and the ones
+  that apply to a single kind of change below them. Attention falls off down the
+  page, and a reader who stops halfway must already hold the rules that change
+  the outcome.
 - Prioritise by size times read frequency. A line in every issue prompt costs
   more than a page read once a month.
 - Duplicate a short fact; link to a long one. A link costs a step plus the whole
@@ -53,22 +82,3 @@ contracts. Keep it short: an agent reads this file on every task.
 - Put module instructions in an `AGENTS.md` beside the module, not in a shared
   file, and do not repeat the parent. A new one changes Ralph's trusted set, so
   add it between runs.
-
-## Code structure and naming
-
-- A name must not promise more than the code delivers. A misleading name is
-  worse than a vague one: a vague name makes the reader open the code, a
-  misleading one does not.
-- One name, one behaviour. Two same-named functions with different output are a
-  silent bug waiting for the next person who deduplicates them.
-- Name the unit or the scope whenever more than one exists — `validationTimeoutMs`
-  per container next to `validationRunTimeoutMs` per run.
-- A shared type belongs to the contract module, not to the component that first
-  needed it.
-- Do not combine a redesign, a behaviour change and a structural extraction in
-  one commit. Each is reviewed against a different question, and together they
-  hide each other.
-- Size is a signal, not a target. Split where a unit has more than one reason to
-  change, so one subject area lives in one file and can be read without reading
-  its neighbours. Do not split into single-method helpers: that makes things
-  harder to find, not easier.
