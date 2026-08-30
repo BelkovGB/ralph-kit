@@ -47,14 +47,13 @@ test('every icon on the page is named or hidden', { skip: !existsSync(guiPagePat
   assert.equal(copyButton.test(page), true, 'кнопка копирования не называет действие');
 });
 
-test('commands that look alike carry a title', { skip: !existsSync(guiPagePath) }, async () => {
+test('every command carries a title', { skip: !existsSync(guiPagePath) }, async () => {
   const { commandGuide } = await import('./ralph-gui-page.mjs');
 
-  // Скилл называет себя сам: у «/issues» и «/review-all» имя и есть заголовок.
-  // Команды терминала начинаются одним и тем же путём к файлу, и список из них
-  // читается как четыре одинаковые строки — их различает только заголовок.
+  // Человек ищет команду по тому, что она делает: четыре команды терминала
+  // начинаются одним путём к файлу, а «/prd» и «/plan-phase» ничего не говорят
+  // тому, кто видит набор впервые.
   for (const item of commandGuide.flatMap((group) => group.items)) {
-    if (!item.command.startsWith('node ')) continue;
     assert.equal(typeof item.title, 'string', `${item.command}: нет заголовка`);
     assert.notEqual(item.title.trim(), '', `${item.command}: заголовок пустой`);
     assert.notEqual(item.title, item.command, `${item.command}: заголовок повторяет команду`);
