@@ -708,50 +708,147 @@ textarea:disabled { color: var(--muted); background: var(--surface); }
   font-size: 13px;
 }
 
-.command { margin-bottom: 20px; }
-.command:last-child { margin-bottom: 4px; }
-
-.command-row {
-  display: flex;
+/* Команда и её объяснение стоят рядом, а не друг под другом: столбец команд
+   слева сканируется глазом, а объяснение справа держит читаемую длину строки.
+   На всю ширину пульта строка вышла бы под 140 знаков — вдвое длиннее того,
+   что глаз проходит без усилия. */
+/* Раскрыта одна команда за раз: девять команд по три поля подряд сливались в
+   стену текста, а нужна из них всегда одна. Свёрнутые остаются списком, по
+   которому глаз идёт сверху вниз. */
+.command {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 8px;
-  /* Сообщение «Скопируйте вручную» на узком экране уходит на свою строку,
-     а не сжимает команду в столбик из букв. */
-  flex-wrap: wrap;
+  /* Строка не тянется на всю ширину пульта: иначе значки уезжают от команды
+     через полэкрана пустоты. Ширина та же, что у раскрытого объяснения. */
+  max-width: 76ch;
+  border-top: 1px solid var(--border);
 }
 
+/* Разделитель отделяет команды друг от друга; у первой в группе его роль
+   играет заголовок группы вместе с примечанием под ним. */
+.commands-title + .command,
+.commands-note + .command { border-top: 0; }
+
+/* Заголовок — это вся строка: попасть по ней проще, чем по значку. */
+.command-head { margin: 0; font-size: inherit; font-weight: 400; }
+
+.command-toggle {
+  display: flex;
+  align-items: center;
+  /* Команда слева, шеврон у правого края рядом с кнопкой копирования: два
+     значка стоят одной колонкой, а не разбегаются по строке. */
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 8px 10px 0;
+  background: none;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.command-toggle:hover .command-name { border-color: var(--border-strong); }
+
+/* Шеврон смотрит вниз у свёрнутой команды и вверх у раскрытой. */
+.command-chevron {
+  display: grid;
+  place-content: center;
+  width: 20px;
+  height: 20px;
+  flex: none;
+  color: var(--muted);
+  transition: transform 0.18s ease;
+}
+
+.command-toggle[aria-expanded='true'] .command-chevron { transform: rotate(180deg); }
+
 /* Моноширинный только у самой команды: это код, который человек набирает
-   символ в символ. Объяснение под ним — обычный текст страницы. */
+   символ в символ. Объяснение под ней — обычный текст страницы. */
 .command-name {
+  flex: 0 1 auto;
+  min-width: 0;
   padding: 5px 8px;
   background: var(--subtle);
   border: 1px solid var(--border);
   border-radius: 6px;
   font-family: ui-monospace, 'SF Mono', Consolas, 'Liberation Mono', monospace;
   font-size: 13px;
+  line-height: 1.4;
   overflow-wrap: anywhere;
 }
 
+/* Кнопка-иконка: подпись «Копировать» повторялась у каждой команды и спорила
+   с самой командой за внимание. Цель нажатия остаётся 30×30 при рисунке 16. */
 .command-copy {
+  display: grid;
+  place-content: center;
+  width: 30px;
+  height: 30px;
   flex: none;
-  padding: 4px 8px;
+  padding: 0;
   background: none;
   border: 0;
   border-radius: 6px;
   color: var(--muted);
   cursor: pointer;
-  font: inherit;
-  font-size: 13px;
 }
 
 .command-copy:hover { color: var(--text); background: var(--hover); }
+.command-copy.is-ok { color: var(--ok); }
 
-.command-status { flex: none; font-size: 13px; }
+/* Исход клика занимает всю ширину строки под командой. В покое узел пуст, и
+   его отступ иначе добавлял бы полосу пустоты каждой строке списка. */
+.command-status {
+  display: block;
+  grid-column: 1 / -1;
+  padding-bottom: 8px;
+  font-size: 12px;
+}
+
+.command-status:empty { display: none; }
+
 .command-status.is-ok { color: var(--ok); }
 .command-status.is-bad { color: var(--bad); }
 
-.command-line { margin: 6px 0 0; }
-.command-lead { color: var(--muted); }
+/* Раскрытое объяснение: своя полоса под заголовком во всю ширину строки. */
+.command-body {
+  grid-column: 1 / -1;
+  max-width: 72ch;
+  padding: 2px 0 18px;
+}
+
+/* Три поля объяснения: метки стоят одной колонкой и набраны иначе, чем текст,
+   поэтому поля читаются как три ответа, а не как один абзац. */
+.command-line {
+  display: grid;
+  grid-template-columns: 104px minmax(0, 1fr);
+  gap: 2px 12px;
+  margin: 0 0 12px;
+}
+
+.command-line:last-child { margin-bottom: 0; }
+
+.command-lead {
+  padding-top: 2px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.command-text { margin: 0; }
+
+/* Узкий экран: метка не отнимает у текста половину строки, а встаёт над ним.
+   Команда там же забирает всю строку: сжиматься ей некуда, а перенос по любому
+   символу иначе ужимает её в столбик из букв. */
+@media (max-width: 720px) {
+  .command-line { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  .command-name { flex: 1 1 auto; }
+}
 
 .unknown-row {
   display: flex;
@@ -821,6 +918,12 @@ const icons = {
   commands: icon('<polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/>'),
   // Шевроны внутрь: свернуть панель. В рейке разворачиваются наружу стилем.
   collapse: icon('<path d="m11 17-5-5 5-5"/><path d="m18 17-5-5 5-5"/>'),
+  // Два листа: копировать команду в буфер.
+  copy: icon('<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>'),
+  // Галочка: команда легла в буфер.
+  check: icon('<path d="M20 6 9 17l-5-5"/>'),
+  // Шеврон вниз: команда свёрнута. У раскрытой он повёрнут стилем.
+  chevron: icon('<path d="m6 9 6 6 6-6"/>'),
 };
 
 const markup = `
@@ -848,6 +951,11 @@ const markup = `
     <main class="panel" id="panel" aria-labelledby="tab-usage"></main>
   </div>
 </div>
+<!-- Иконки для кнопок, которые рисует скрипт. Он клонирует их из шаблона, а не
+     собирает разметкой: innerHTML на странице не используется нигде. -->
+<template id="icon-copy">${icons.copy}</template>
+<template id="icon-check">${icons.check}</template>
+<template id="icon-chevron">${icons.chevron}</template>
 `;
 
 // Клиентский скрипт. Внутри нет шаблонных литералов и обратных кавычек:
@@ -881,6 +989,9 @@ const script = `
   var settingsTab = readSettingsTab();
   // Пути полей, от значения которых зависят чужие списки вариантов.
   var dependencyPaths = Object.create(null);
+  // Раскрытая команда справочника и список его строк: раскрыта всегда одна.
+  var openCommandKey = null;
+  var panels = [];
 
   var panel = document.getElementById('panel');
   var statusDot = document.getElementById('status-dot');
@@ -2299,46 +2410,65 @@ const script = `
 
   /* --- вкладка «Команды» --- */
 
-  function resetCopy(status) {
-    if (status.resetTimer) window.clearTimeout(status.resetTimer);
-    status.textContent = '';
-    status.className = 'command-status';
+  /* Иконка приезжает со страницей шаблоном и клонируется: собирать SVG
+     разметкой значило бы писать innerHTML, а его на странице нет нигде. */
+  function iconNode(id) {
+    var source = document.getElementById(id);
+    if (!source || !source.content) return null;
+    return source.content.cloneNode(true);
   }
 
-  /* Исход клика пишется в отдельный узел role="status", а не в текст кнопки:
-     имя кнопки читается один раз, и подмена её текста до скринридера не
-     доходила. Успех гаснет через полторы секунды, отказ — только на следующем
-     клике: «Скопируйте вручную» — задание человеку, и пропустить его дороже,
-     чем увидеть лишний раз. */
-  function markCopy(status, kind, text) {
-    if (status.resetTimer) window.clearTimeout(status.resetTimer);
-    status.textContent = text;
-    status.className = 'command-status is-' + kind;
+  function setIcon(button, id) {
+    clear(button);
+    var node = iconNode(id);
+    if (node) button.appendChild(node);
+  }
+
+  function resetCopy(ui) {
+    if (ui.status.resetTimer) window.clearTimeout(ui.status.resetTimer);
+    ui.status.textContent = '';
+    ui.status.className = 'command-status';
+    ui.button.className = 'command-copy';
+    setIcon(ui.button, 'icon-copy');
+  }
+
+  /* Исход клика пишется в отдельный узел role="status", а не в имя кнопки: имя
+     читается один раз, и подмена его до скринридера не доходила. Кнопка тем
+     временем меняет рисунок на галочку — глазу этого достаточно. Успех гаснет
+     через полторы секунды, отказ — только на следующем клике: «Скопируйте
+     вручную» — задание человеку, и пропустить его дороже, чем увидеть лишний
+     раз. */
+  function markCopy(ui, kind, text) {
+    if (ui.status.resetTimer) window.clearTimeout(ui.status.resetTimer);
+    ui.status.textContent = text;
+    ui.status.className = 'command-status is-' + kind;
     if (kind !== 'ok') return;
-    status.resetTimer = window.setTimeout(function () {
-      resetCopy(status);
+    ui.button.className = 'command-copy is-ok';
+    setIcon(ui.button, 'icon-check');
+    ui.status.resetTimer = window.setTimeout(function () {
+      resetCopy(ui);
     }, 1600);
   }
 
   /* Буфер отказал — человек копирует сам: текст команды выделен, остаётся
      нажать Ctrl+C. */
-  function manualCopy(status, name) {
+  function manualCopy(ui) {
     try {
       var range = document.createRange();
-      range.selectNodeContents(name);
+      range.selectNodeContents(ui.name);
       var selection = window.getSelection();
       selection.removeAllRanges();
       selection.addRange(range);
     } catch (error) {
       // Выделение — подсказка, а не результат: без него сообщение всё равно верно.
     }
-    markCopy(status, 'bad', 'Скопируйте вручную: Ctrl+C');
+    markCopy(ui, 'bad', 'Скопируйте вручную: Ctrl+C');
   }
 
   /* Запасной путь нужен не ради старых браузеров: navigator.clipboard живёт
      только в защищённом контексте, а пульт открывается по http://127.0.0.1
      и в части браузеров этот API там отсутствует. */
-  function copyFallback(text, status, name) {
+  function copyFallback(text, ui) {
     var focused = document.activeElement;
     var area = document.createElement('textarea');
     area.value = text;
@@ -2358,68 +2488,119 @@ const script = `
     // Фокус возвращается туда, откуда пришёл клик: иначе нажавший Enter на
     // кнопке окажется на body, и следующий Tab начнёт обход страницы заново.
     if (focused && focused.focus) focused.focus();
-    if (copied) markCopy(status, 'ok', 'Скопировано');
-    else manualCopy(status, name);
+    if (copied) markCopy(ui, 'ok', 'Скопировано');
+    else manualCopy(ui);
   }
 
-  function copyCommand(text, status, name) {
-    resetCopy(status);
+  function copyCommand(text, ui) {
+    resetCopy(ui);
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(text).then(
         function () {
-          markCopy(status, 'ok', 'Скопировано');
+          markCopy(ui, 'ok', 'Скопировано');
         },
         function () {
           // Обработчик отклонённого промиса выполняется уже вне жеста
           // пользователя, а там Safari отклоняет и execCommand: запасной путь
           // отсюда вернул бы false, поэтому сразу просим скопировать руками.
-          manualCopy(status, name);
+          manualCopy(ui);
         }
       );
       return;
     }
-    copyFallback(text, status, name);
+    copyFallback(text, ui);
   }
 
+  /* Метка и текст — две ячейки одной сетки: метки выстраиваются в столбик, и
+     нужное поле находится взглядом, а не чтением абзаца целиком. */
   function commandLine(lead, text) {
-    var line = el('p', 'command-line');
-    line.appendChild(el('span', 'command-lead', lead + '. '));
-    line.appendChild(document.createTextNode(text));
+    var line = el('div', 'command-line');
+    line.appendChild(el('span', 'command-lead', lead));
+    line.appendChild(el('p', 'command-text', text));
     return line;
+  }
+
+  /* Раскрытая команда одна на весь раздел: соседняя закрывается сама. Номер
+     живёт вне разметки, поэтому переключение вкладок возвращает раздел в том
+     же виде. Скрытая панель убирается атрибутом hidden — она не должна
+     доставаться ни поиску по странице, ни Tab. */
+  function openCommand(key) {
+    openCommandKey = key;
+    panels.forEach(function (entry) {
+      var open = entry.key === key;
+      entry.toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+      entry.body.hidden = !open;
+    });
   }
 
   function renderCommands() {
     var frag = document.createDocumentFragment();
     var index = 0;
+    // Раздел строится заново при каждом входе, поэтому список панелей начинают
+    // с чистого: узлы прошлого рендера уже выброшены из документа.
+    panels = [];
     commandGuide.forEach(function (group) {
       frag.appendChild(el('h2', 'commands-title', group.title));
       if (group.note) frag.appendChild(el('p', 'commands-note', group.note));
       group.items.forEach(function (item) {
         index += 1;
         var box = el('div', 'command');
-        var row = el('div', 'command-row');
+
+        // Заголовок строки: сама команда и шеврон, вся строка — кнопка.
+        var head = el('h3', 'command-head');
+        var toggle = el('button', 'command-toggle');
+        toggle.type = 'button';
+        toggle.id = 'command-toggle-' + index;
         var name = el('code', 'command-name', item.command);
         name.id = 'command-' + index;
-        row.appendChild(name);
-        var copy = el('button', 'command-copy', 'Копировать');
+        toggle.appendChild(name);
+        var chevron = el('span', 'command-chevron');
+        setIcon(chevron, 'icon-chevron');
+        toggle.appendChild(chevron);
+        head.appendChild(toggle);
+        box.appendChild(head);
+
+        var copy = el('button', 'command-copy');
         copy.type = 'button';
-        // Имя кнопки — её собственный текст, команда идёт описанием: aria-label
-        // перекрыл бы текст кнопки целиком.
+        // Текста у кнопки нет, поэтому действие называет подпись, а саму
+        // команду кнопка получает описанием.
+        copy.setAttribute('aria-label', 'Копировать');
         copy.setAttribute('aria-describedby', name.id);
+        copy.title = 'Копировать';
+        setIcon(copy, 'icon-copy');
         var status = el('span', 'command-status');
         status.setAttribute('role', 'status');
+        var ui = { button: copy, status: status, name: name };
         copy.addEventListener('click', function () {
-          copyCommand(item.command, status, name);
+          copyCommand(item.command, ui);
         });
-        row.appendChild(copy);
-        row.appendChild(status);
-        box.appendChild(row);
-        box.appendChild(commandLine('Делает', item.does));
-        box.appendChild(commandLine('Когда звать', item.when));
-        box.appendChild(commandLine('Не делает', item.omits));
+        box.appendChild(copy);
+        box.appendChild(status);
+
+        // Объяснение: что команда делает, когда её звать и чего не делает.
+        var body = el('div', 'command-body');
+        body.id = 'command-body-' + index;
+        body.setAttribute('role', 'region');
+        body.setAttribute('aria-labelledby', toggle.id);
+        body.appendChild(commandLine('Делает', item.does));
+        body.appendChild(commandLine('Когда звать', item.when));
+        body.appendChild(commandLine('Не делает', item.omits));
+        toggle.setAttribute('aria-controls', body.id);
+        box.appendChild(body);
+
+        var entry = { key: index, toggle: toggle, body: body };
+        panels.push(entry);
+        toggle.addEventListener('click', function () {
+          // Повторный клик по раскрытой команде закрывает её: список
+          // возвращается к оглавлению без единого раскрытого объяснения.
+          openCommand(openCommandKey === entry.key ? null : entry.key);
+        });
         frag.appendChild(box);
       });
     });
+    // Состояние применяется после сборки: раскрытой остаётся та же команда, что
+    // и до ухода на соседний раздел, а при первом входе — ни одной.
+    openCommand(openCommandKey);
     return frag;
   }
 

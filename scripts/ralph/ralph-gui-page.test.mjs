@@ -29,6 +29,36 @@ test('the GUI page loads nothing from the network', { skip: !existsSync(guiPageP
   assert.equal(page.includes('@import'), false);
 });
 
+test('every icon on the page is named or hidden', { skip: !existsSync(guiPagePath) }, async () => {
+  const { renderPage } = await import('./ralph-gui-page.mjs');
+  const page = renderPage();
+
+  // Иконка ничего не говорит скринридеру. Картинка внутри кнопки с подписью
+  // прячется от него совсем, а кнопка без видимого текста называет действие
+  // сама: без имени она читается как «кнопка».
+  for (const svg of page.match(/<svg[^>]*>/gu) ?? []) {
+    assert.equal(svg.includes('aria-hidden="true"'), true, `SVG без aria-hidden: ${svg}`);
+  }
+
+  // Кнопку копирования рисует клиентский скрипт, DOM в тестах нет — проверяем
+  // его текст: имя присваивается рядом с классом кнопки. Ищется сам вызов, а не
+  // слово: упоминание в комментарии кнопку не называет.
+  const copyButton = /command-copy[\s\S]{0,400}?setAttribute\('aria-label'/u;
+  assert.equal(copyButton.test(page), true, 'кнопка копирования не называет действие');
+});
+
+test('the command guide opens one entry at a time', { skip: !existsSync(guiPagePath) }, async () => {
+  const { renderPage } = await import('./ralph-gui-page.mjs');
+  const page = renderPage();
+
+  // Объяснения трёх полей у девяти команд подряд сливаются в стену текста,
+  // поэтому раскрыта одна команда: её заголовок — кнопка, которая говорит
+  // скринридеру, раскрыта она или нет, и указывает на свою панель.
+  assert.equal(page.includes("el('button', 'command-toggle')"), true, 'заголовок команды не кнопка');
+  assert.equal(page.includes("setAttribute('aria-expanded'"), true, 'кнопка не сообщает о раскрытии');
+  assert.equal(page.includes("setAttribute('aria-controls'"), true, 'кнопка не указывает на панель');
+});
+
 test('the GUI page keeps every section reachable', { skip: !existsSync(guiPagePath) }, async () => {
   const { renderPage } = await import('./ralph-gui-page.mjs');
   const page = renderPage();
