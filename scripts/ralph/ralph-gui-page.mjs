@@ -712,63 +712,45 @@ textarea:disabled { color: var(--muted); background: var(--surface); }
    слева сканируется глазом, а объяснение справа держит читаемую длину строки.
    На всю ширину пульта строка вышла бы под 140 знаков — вдвое длиннее того,
    что глаз проходит без усилия. */
-/* Раскрыта одна команда за раз: девять команд по три поля подряд сливались в
-   стену текста, а нужна из них всегда одна. Свёрнутые остаются списком, по
-   которому глаз идёт сверху вниз. */
 .command {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  /* Строка не тянется на всю ширину пульта: иначе значки уезжают от команды
-     через полэкрана пустоты. Ширина та же, что у раскрытого объяснения. */
-  max-width: 76ch;
+  /* Правая колонка шире метки на 60 знаков текста: столько глаз проходит по
+     строке, не теряя начало следующей. */
+  grid-template-columns: minmax(220px, 300px) minmax(0, 72ch);
+  gap: 4px 28px;
+  padding: 16px 0;
   border-top: 1px solid var(--border);
 }
 
 /* Разделитель отделяет команды друг от друга; у первой в группе его роль
    играет заголовок группы вместе с примечанием под ним. */
 .commands-title + .command,
-.commands-note + .command { border-top: 0; }
+.commands-note + .command { border-top: 0; padding-top: 4px; }
 
-/* Заголовок — это вся строка: попасть по ней проще, чем по значку. */
-.command-head { margin: 0; font-size: inherit; font-weight: 400; }
-
-.command-toggle {
+/* Кнопка копирования держится верхней строки команды и не переносится под неё:
+   команда занимает остаток ширины и переносит текст внутри себя. */
+.command-row {
   display: flex;
-  align-items: center;
-  /* Команда слева, шеврон у правого края рядом с кнопкой копирования: два
-     значка стоят одной колонкой, а не разбегаются по строке. */
-  justify-content: space-between;
-  gap: 10px;
-  width: 100%;
-  padding: 10px 8px 10px 0;
-  background: none;
-  border: 0;
-  color: inherit;
-  cursor: pointer;
-  font: inherit;
-  text-align: left;
+  align-items: flex-start;
+  gap: 6px;
 }
 
-.command-toggle:hover .command-name { border-color: var(--border-strong); }
-
-/* Шеврон смотрит вниз у свёрнутой команды и вверх у раскрытой. */
+/* Шеврон смотрит вниз у свёрнутого поля и вверх у раскрытого. */
 .command-chevron {
   display: grid;
   place-content: center;
-  width: 20px;
-  height: 20px;
+  width: 14px;
+  height: 14px;
   flex: none;
-  color: var(--muted);
   transition: transform 0.18s ease;
 }
 
-.command-toggle[aria-expanded='true'] .command-chevron { transform: rotate(180deg); }
+.command-chevron svg { width: 14px; height: 14px; }
 
 /* Моноширинный только у самой команды: это код, который человек набирает
-   символ в символ. Объяснение под ней — обычный текст страницы. */
+   символ в символ. Объяснение рядом — обычный текст страницы. */
 .command-name {
-  flex: 0 1 auto;
+  flex: 1 1 auto;
   min-width: 0;
   padding: 5px 8px;
   background: var(--subtle);
@@ -799,55 +781,74 @@ textarea:disabled { color: var(--muted); background: var(--surface); }
 .command-copy:hover { color: var(--text); background: var(--hover); }
 .command-copy.is-ok { color: var(--ok); }
 
-/* Исход клика занимает всю ширину строки под командой. В покое узел пуст, и
-   его отступ иначе добавлял бы полосу пустоты каждой строке списка. */
-.command-status {
-  display: block;
-  grid-column: 1 / -1;
-  padding-bottom: 8px;
-  font-size: 12px;
-}
-
+/* Исход клика стоит под командой и в покое пуст: его отступ иначе добавлял бы
+   полосу пустоты каждой команде списка. */
+.command-status { display: block; margin-top: 4px; font-size: 12px; }
 .command-status:empty { display: none; }
-
 .command-status.is-ok { color: var(--ok); }
 .command-status.is-bad { color: var(--bad); }
 
-/* Раскрытое объяснение: своя полоса под заголовком во всю ширину строки. */
-.command-body {
-  grid-column: 1 / -1;
-  max-width: 72ch;
-  padding: 2px 0 18px;
-}
+/* Мера держится и когда колонка одна: без этого объяснение растянулось бы на
+   всю ширину пульта. */
+.command-body { max-width: 72ch; }
 
 /* Три поля объяснения: метки стоят одной колонкой и набраны иначе, чем текст,
    поэтому поля читаются как три ответа, а не как один абзац. */
 .command-line {
   display: grid;
   grid-template-columns: 104px minmax(0, 1fr);
+  /* Метка держится первой строки текста: растянутая на всю ячейку кнопка
+     уводила бы её к середине абзаца. */
+  align-items: start;
   gap: 2px 12px;
   margin: 0 0 12px;
 }
 
 .command-line:last-child { margin-bottom: 0; }
 
+/* Свёрнутое поле — одна строка с меткой, поэтому зазор между полями ему велик. */
+.command-line.is-folded { margin-bottom: 2px; }
+
+/* Метка — кнопка: поле сворачивается по клику, и три ответа подряд перестают
+   складываться в стену текста. Прописные мелкие отделяют метку от текста
+   сильнее, чем цвет. */
 .command-lead {
-  padding-top: 2px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  /* Отступы сверху и снизу держат цель нажатия в 24 пикселя: сама метка ниже,
+     а промахиваться по ней человек будет каждый раз. */
+  padding: 4px 0;
+  background: none;
+  border: 0;
   color: var(--muted);
+  cursor: pointer;
+  font: inherit;
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.04em;
+  text-align: left;
   text-transform: uppercase;
 }
 
-.command-text { margin: 0; }
+.command-lead:hover { color: var(--text); }
+.command-lead[aria-expanded='true'] .command-chevron { transform: rotate(180deg); }
 
-/* Узкий экран: метка не отнимает у текста половину строки, а встаёт над ним.
-   Команда там же забирает всю строку: сжиматься ей некуда, а перенос по любому
-   символу иначе ужимает её в столбик из букв. */
+/* Текст опущен на те же четыре пикселя, что и метка: иначе первая строка
+   объяснения встаёт выше своей метки. */
+.command-text { margin: 0; padding-top: 3px; }
+
+/* Двум колонкам нужна вся ширина: в промежутке команда забирает свои 300px, а
+   недостачу принимает объяснение, и строка усыхает до трёх слов. Пока места на
+   обе колонки не хватает, объяснение встаёт под командой во всю ширину. */
+@media (max-width: 1180px) {
+  .command { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+}
+
+/* Совсем узкий экран: метка не отнимает у текста половину строки, а встаёт
+   над ним. */
 @media (max-width: 720px) {
   .command-line { grid-template-columns: minmax(0, 1fr); gap: 2px; }
-  .command-name { flex: 1 1 auto; }
 }
 
 .unknown-row {
@@ -989,9 +990,6 @@ const script = `
   var settingsTab = readSettingsTab();
   // Пути полей, от значения которых зависят чужие списки вариантов.
   var dependencyPaths = Object.create(null);
-  // Раскрытая команда справочника и список его строк: раскрыта всегда одна.
-  var openCommandKey = null;
-  var panels = [];
 
   var panel = document.getElementById('panel');
   var statusDot = document.getElementById('status-dot');
@@ -2512,33 +2510,42 @@ const script = `
   }
 
   /* Метка и текст — две ячейки одной сетки: метки выстраиваются в столбик, и
-     нужное поле находится взглядом, а не чтением абзаца целиком. */
-  function commandLine(lead, text) {
-    var line = el('div', 'command-line');
-    line.appendChild(el('span', 'command-lead', lead));
-    line.appendChild(el('p', 'command-text', text));
-    return line;
-  }
+     нужное поле находится взглядом, а не чтением абзаца целиком.
 
-  /* Раскрытая команда одна на весь раздел: соседняя закрывается сама. Номер
-     живёт вне разметки, поэтому переключение вкладок возвращает раздел в том
-     же виде. Скрытая панель убирается атрибутом hidden — она не должна
-     доставаться ни поиску по странице, ни Tab. */
-  function openCommand(key) {
-    openCommandKey = key;
-    panels.forEach(function (entry) {
-      var open = entry.key === key;
-      entry.toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
-      entry.body.hidden = !open;
+     Метка при этом кнопка: поле сворачивается отдельно от соседних, иначе три
+     ответа подряд у каждой команды сливаются в стену текста. «Делает» открыто
+     всегда — свёрнутый список из одних меток не говорит, о чём команда.
+     Роль region панели не дают: таких панелей на странице два десятка, и
+     скринридер получил бы столько же одинаковых ориентиров. */
+  function commandLine(lead, text, open, key) {
+    var line = el('div', 'command-line' + (open ? '' : ' is-folded'));
+    var button = el('button', 'command-lead');
+    button.type = 'button';
+    button.appendChild(document.createTextNode(lead));
+    var chevron = el('span', 'command-chevron');
+    setIcon(chevron, 'icon-chevron');
+    button.appendChild(chevron);
+
+    var body = el('p', 'command-text', text);
+    body.id = key;
+    body.hidden = !open;
+    button.setAttribute('aria-controls', key);
+    button.setAttribute('aria-expanded', open ? 'true' : 'false');
+    button.addEventListener('click', function () {
+      var next = button.getAttribute('aria-expanded') !== 'true';
+      button.setAttribute('aria-expanded', next ? 'true' : 'false');
+      body.hidden = !next;
+      line.className = 'command-line' + (next ? '' : ' is-folded');
     });
+
+    line.appendChild(button);
+    line.appendChild(body);
+    return line;
   }
 
   function renderCommands() {
     var frag = document.createDocumentFragment();
     var index = 0;
-    // Раздел строится заново при каждом входе, поэтому список панелей начинают
-    // с чистого: узлы прошлого рендера уже выброшены из документа.
-    panels = [];
     commandGuide.forEach(function (group) {
       frag.appendChild(el('h2', 'commands-title', group.title));
       if (group.note) frag.appendChild(el('p', 'commands-note', group.note));
@@ -2546,19 +2553,12 @@ const script = `
         index += 1;
         var box = el('div', 'command');
 
-        // Заголовок строки: сама команда и шеврон, вся строка — кнопка.
-        var head = el('h3', 'command-head');
-        var toggle = el('button', 'command-toggle');
-        toggle.type = 'button';
-        toggle.id = 'command-toggle-' + index;
+        // Левая колонка: сама команда, кнопка копирования и исход клика.
+        var side = el('div', 'command-side');
+        var row = el('div', 'command-row');
         var name = el('code', 'command-name', item.command);
         name.id = 'command-' + index;
-        toggle.appendChild(name);
-        var chevron = el('span', 'command-chevron');
-        setIcon(chevron, 'icon-chevron');
-        toggle.appendChild(chevron);
-        head.appendChild(toggle);
-        box.appendChild(head);
+        row.appendChild(name);
 
         var copy = el('button', 'command-copy');
         copy.type = 'button';
@@ -2574,33 +2574,21 @@ const script = `
         copy.addEventListener('click', function () {
           copyCommand(item.command, ui);
         });
-        box.appendChild(copy);
-        box.appendChild(status);
+        row.appendChild(copy);
+        side.appendChild(row);
+        side.appendChild(status);
+        box.appendChild(side);
 
         // Объяснение: что команда делает, когда её звать и чего не делает.
+        // Открыто первое поле, два других человек раскрывает сам.
         var body = el('div', 'command-body');
-        body.id = 'command-body-' + index;
-        body.setAttribute('role', 'region');
-        body.setAttribute('aria-labelledby', toggle.id);
-        body.appendChild(commandLine('Делает', item.does));
-        body.appendChild(commandLine('Когда звать', item.when));
-        body.appendChild(commandLine('Не делает', item.omits));
-        toggle.setAttribute('aria-controls', body.id);
+        body.appendChild(commandLine('Делает', item.does, true, 'command-does-' + index));
+        body.appendChild(commandLine('Когда звать', item.when, false, 'command-when-' + index));
+        body.appendChild(commandLine('Не делает', item.omits, false, 'command-omits-' + index));
         box.appendChild(body);
-
-        var entry = { key: index, toggle: toggle, body: body };
-        panels.push(entry);
-        toggle.addEventListener('click', function () {
-          // Повторный клик по раскрытой команде закрывает её: список
-          // возвращается к оглавлению без единого раскрытого объяснения.
-          openCommand(openCommandKey === entry.key ? null : entry.key);
-        });
         frag.appendChild(box);
       });
     });
-    // Состояние применяется после сборки: раскрытой остаётся та же команда, что
-    // и до ухода на соседний раздел, а при первом входе — ни одной.
-    openCommand(openCommandKey);
     return frag;
   }
 

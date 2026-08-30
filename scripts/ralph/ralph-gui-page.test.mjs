@@ -47,16 +47,20 @@ test('every icon on the page is named or hidden', { skip: !existsSync(guiPagePat
   assert.equal(copyButton.test(page), true, 'кнопка копирования не называет действие');
 });
 
-test('the command guide opens one entry at a time', { skip: !existsSync(guiPagePath) }, async () => {
+test('the command fields fold, and «Делает» stays open', { skip: !existsSync(guiPagePath) }, async () => {
   const { renderPage } = await import('./ralph-gui-page.mjs');
   const page = renderPage();
 
-  // Объяснения трёх полей у девяти команд подряд сливаются в стену текста,
-  // поэтому раскрыта одна команда: её заголовок — кнопка, которая говорит
-  // скринридеру, раскрыта она или нет, и указывает на свою панель.
-  assert.equal(page.includes("el('button', 'command-toggle')"), true, 'заголовок команды не кнопка');
-  assert.equal(page.includes("setAttribute('aria-expanded'"), true, 'кнопка не сообщает о раскрытии');
-  assert.equal(page.includes("setAttribute('aria-controls'"), true, 'кнопка не указывает на панель');
+  // Три поля подряд у каждой команды сливались в стену текста, поэтому
+  // сворачивается каждое поле по отдельности: метка — кнопка, которая говорит
+  // скринридеру, раскрыто ли поле, и указывает на свой текст.
+  assert.equal(page.includes("el('button', 'command-lead')"), true, 'метка поля не кнопка');
+  assert.equal(page.includes("setAttribute('aria-expanded'"), true, 'метка не сообщает о раскрытии');
+  assert.equal(page.includes("setAttribute('aria-controls'"), true, 'метка не указывает на текст');
+
+  // Первое поле открыто у всех команд: свёрнутый список из одних меток не
+  // говорит, о чём команда, и требует клика ради каждой строки.
+  assert.equal(/commandLine\('Делает',[^)]*true/u.test(page), true, '«Делает» свёрнуто по умолчанию');
 });
 
 test('the GUI page keeps every section reachable', { skip: !existsSync(guiPagePath) }, async () => {
