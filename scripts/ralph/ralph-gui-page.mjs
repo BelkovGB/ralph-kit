@@ -729,32 +729,36 @@ textarea:disabled { color: var(--muted); background: var(--surface); }
 
 /* Вкладка «Команды» */
 
-/* Вкладки групп: терминал или чат с агентом. Оформлены как вкладки настроек —
-   один и тот же переключатель второго уровня на всём пульте. */
+/* Вкладки групп заодно и заголовки: это два имени того, где команду набирают,
+   и мелкая кнопка рядом с командами читалась бы слабее их самих. */
 .commands-tabs {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
-  margin: 0 0 14px;
+  gap: 24px;
+  margin: 0 0 16px;
+  border-bottom: 1px solid var(--border);
 }
 
 .commands-tab {
   appearance: none;
+  padding: 4px 0 10px;
   background: none;
-  border: 1px solid transparent;
-  border-radius: 6px;
+  border: 0;
+  /* Черта под выбранной вкладкой ложится поверх линии ряда. */
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
   color: var(--muted);
   cursor: pointer;
   font: inherit;
-  font-size: 13px;
-  padding: 5px 12px;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
 }
 
-.commands-tab:hover { color: var(--text); background: var(--hover); }
+.commands-tab:hover { color: var(--text); }
 
 .commands-tab[aria-current='true'] {
-  background: var(--subtle);
-  border-color: var(--border);
+  border-bottom-color: var(--accent);
   color: var(--text);
 }
 
