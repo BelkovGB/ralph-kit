@@ -656,7 +656,7 @@ function prepareValidationContainer(config) {
     fail('Поле "validationContainer" должно быть объектом.');
   }
   // Набор символов ограничен не ради опечаток: на Windows commandSpec
-  // запускает codex, claude, npm и npx через `cmd.exe /d /s /c <name>.cmd`,
+  // запускает CLI агента через `cmd.exe /d /s /c <name>.cmd`,
   // то есть через настоящий shell, который заново разбирает аргументы. Тот же
   // довод действует для имён моделей ниже — они попадают в argv агента.
   for (const field of ['image', 'dockerfile']) {

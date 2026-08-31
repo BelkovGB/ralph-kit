@@ -87,10 +87,12 @@ export function executable(name) {
   return `${name}.exe`;
 }
 
-// Имена, которые на Windows могут оказаться батником, а не исполняемым файлом:
-// npm и npx поставляются только шимом .cmd, а у codex и claude есть и нативная
-// установка (.exe), и установка через npm (.cmd).
-export const windowsShimCandidates = ['codex', 'claude', 'npm', 'npx'];
+// Имена, которые на Windows могут оказаться батником, а не исполняемым файлом.
+// Здесь только те команды, которые запускает сам Ralph: у обоих CLI агента есть
+// и нативная установка (.exe), и установка пакетным менеджером (.cmd). Команды
+// проверок в этот список не входят — их запускает оболочка, а не поиск по PATH,
+// и какой инструмент за ними стоит, знает только проект.
+export const windowsShimCandidates = ['codex', 'claude'];
 
 // cmd.exe нужен только батнику: .exe и .com запускаются напрямую.
 const windowsShimExtensions = new Set(['.BAT', '.CMD']);

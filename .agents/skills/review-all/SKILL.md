@@ -31,7 +31,7 @@ git symbolic-ref --short refs/remotes/origin/HEAD
 ```
 git diff --stat <база>...HEAD
 git diff --name-status <база>...HEAD
-git diff <база>...HEAD -- . ':(exclude)package-lock.json'
+git diff <база>...HEAD -- . ':(exclude)<lock-файл проекта>'
 git status --short
 git diff HEAD
 ```

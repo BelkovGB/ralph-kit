@@ -115,12 +115,6 @@ Ralph собирает образ по `Dockerfile.validation`. Набор
 
 `validationContainer.writableVolumes` добавляет анонимные Docker volumes в
 каталоги, куда инструменты должны писать при read-only root filesystem.
-Укажите абсолютные POSIX-пути, например `/opt/pnpm-store`. Docker создаёт volume
-из содержимого образа и удаляет его после проверки вместе с `--rm`.
-
-Для pnpm задайте `COREPACK_HOME` и store вне `HOME`. В слое сборки выполните
-`corepack enable`, затем `corepack install`, установите зависимости и отдайте
-каталоги uid 65532. Добавьте store в `writableVolumes`. Так runtime использует
-pnpm из образа и не скачивает его перед проверкой. BuildKit cache mounts можно
-использовать для архива Corepack и store: повтор сборки продолжит загрузку
-после сетевого обрыва.
+Укажите абсолютные POSIX-пути. Docker создаёт volume из содержимого образа и
+удаляет его после проверки вместе с `--rm`. Примеры для конкретных пакетных
+менеджеров — в `docs/tips.md` репозитория набора.

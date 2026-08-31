@@ -44,7 +44,7 @@
   },
   "validationDependencyPaths": [],
   "preflightScripts": [],
-  "validationScripts": ["npm run lint", "npm run build", "npm test"],
+  "validationScripts": [],
   "review": {
     "enabled": true,
     "model": "claude-opus-5",
