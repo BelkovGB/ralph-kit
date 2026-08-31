@@ -416,9 +416,9 @@ function configuredValidationEnvironment(config) {
  * Профиль оператора командам не отдают: там лежат credentials агента и `gh`.
  * Пустое место HOME тоже не годится — go, cargo, npm, pip и JVM ищут в нём кэш
  * и останавливаются до первой команды проекта. Поэтому Ralph выдаёт свой
- * каталог внутри системного temp: он переживает прогоны вместе с кэшами,
- * но не попадает внутрь workspace. Это важно для Next.js: Turbopack игнорирует
- * pnpm-workspace, если его корень включает HOME.
+ * каталог внутри системного temp: он переживает прогоны вместе с кэшами и не
+ * попадает внутрь рабочей папки. Каталог внутри неё сбивал бы инструменты,
+ * которые ищут корень проекта вверх по дереву и находили бы его в HOME.
  */
 const hostHomeProjectKey = createHash('sha256').update(projectRoot).digest('hex').slice(0, 16);
 export const hostHomeDirectory = path.join(
@@ -428,20 +428,57 @@ export const hostHomeDirectory = path.join(
   'host-home',
 );
 
+/**
+ * Путь оператора берётся, только если он абсолютный и непустой. Пустая строка
+ * роняла бы `mkdir` на ENOENT, а относительный путь создавал бы домашний каталог
+ * внутри рабочей папки: там его находят инструменты, ищущие корень проекта, и
+ * созданные файлы останавливают проверку как изменение дерева.
+ */
+function hostDirectory(name, value, fallback) {
+  if (value === undefined || value === '') return fallback;
+  if (!path.isAbsolute(value)) {
+    fail(`Значение ${name} в validationEnvironment должно быть абсолютным путём: ${value}`);
+  }
+  return value;
+}
+
 export function hostValidationEnvironment(config, source = process.env) {
   const configured = configuredValidationEnvironment(config);
-  const home = configured.HOME ?? hostHomeDirectory;
-  const userProfile = configured.USERPROFILE ?? home;
-  return {
-    ...credentialFreeEnvironment(source),
+  const home = hostDirectory('HOME', configured.HOME, hostHomeDirectory);
+  const userProfile = hostDirectory('USERPROFILE', configured.USERPROFILE, home);
+  // Каталоги перечислены отдельно: они проверены и не должны перетираться
+  // сырым значением из конфига, в том числе пустой строкой.
+  const directories = {
     HOME: home,
     USERPROFILE: userProfile,
-    APPDATA: configured.APPDATA ?? path.join(userProfile, 'AppData', 'Roaming'),
-    LOCALAPPDATA: configured.LOCALAPPDATA ?? path.join(userProfile, 'AppData', 'Local'),
-    XDG_CONFIG_HOME: configured.XDG_CONFIG_HOME ?? path.join(home, '.config'),
-    XDG_CACHE_HOME: configured.XDG_CACHE_HOME ?? path.join(home, '.cache'),
-    // Значения оператора идут последними: проект вправе задать свои каталоги.
-    ...configured,
+    APPDATA: hostDirectory(
+      'APPDATA',
+      configured.APPDATA,
+      path.join(userProfile, 'AppData', 'Roaming'),
+    ),
+    LOCALAPPDATA: hostDirectory(
+      'LOCALAPPDATA',
+      configured.LOCALAPPDATA,
+      path.join(userProfile, 'AppData', 'Local'),
+    ),
+    XDG_CONFIG_HOME: hostDirectory(
+      'XDG_CONFIG_HOME',
+      configured.XDG_CONFIG_HOME,
+      path.join(home, '.config'),
+    ),
+    XDG_CACHE_HOME: hostDirectory(
+      'XDG_CACHE_HOME',
+      configured.XDG_CACHE_HOME,
+      path.join(home, '.cache'),
+    ),
+  };
+
+  return {
+    ...credentialFreeEnvironment(source),
+    ...directories,
+    ...Object.fromEntries(
+      Object.entries(configured).filter(([name]) => !(name in directories)),
+    ),
   };
 }
 
