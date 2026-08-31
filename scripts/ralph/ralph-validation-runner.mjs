@@ -7,6 +7,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  readlinkSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -432,20 +433,39 @@ export function hostValidationEnvironment(config, source = process.env) {
 }
 
 /**
- * Хеш каждого отслеживаемого и нового файла рабочего дерева.
+ * Отпечаток рабочего дерева host-режима: путь и хеш каждого файла, который
+ * отличается от закоммиченного состояния.
  *
- * Хранится карта, а не один хеш: по ней остановка называет изменённые файлы, а
- * задание «верните прежний diff» без их списка невыполнимо.
+ * Список берётся у `git status`, а не обходом всех файлов: содержимое, которое
+ * изменилось, обязано попасть в его вывод, поэтому читать нужно только
+ * названные им пути. Неизменённые файлы git берёт из своего кэша состояния и с
+ * диска не поднимает, а раньше набор перечитывал весь проект целиком, и так
+ * дважды за одну проверку.
+ *
+ * Размен назван честно: git считает файл неизменённым по размеру и времени
+ * правки, поэтому запись, вернувшая прежние размер и время, отпечаток не
+ * изменит. От случайной правки форматтером, генератором или тестом со снимками
+ * это защищает полностью; подделать время может только код, который и так
+ * выполняется на машине оператора.
+ *
+ * Карта, а не один хеш: по ней остановка называет изменённые файлы, а задание
+ * «верните прежний diff» без их списка невыполнимо.
  */
 export function hostWorkingTreeEntries(dependencies = {}) {
   const execute = dependencies.run ?? run;
-  const files = execute('git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard'])
-    .stdout.split('\0')
-    .filter(Boolean)
-    .sort((left, right) => left.localeCompare(right));
+  const listPaths = (args) =>
+    execute('git', args)
+      .stdout.split(String.fromCharCode(0))
+      .filter(Boolean);
+  // Два списка вместо обхода всего проекта: изменённые относительно коммита
+  // отслеживаемые файлы и новые файлы, которые не исключает `.gitignore`.
+  const changedPaths = new Set([
+    ...listPaths(['diff', '--name-only', '-z', 'HEAD']),
+    ...listPaths(['ls-files', '-z', '--others', '--exclude-standard']),
+  ]);
   const entries = new Map();
 
-  for (const relativePath of files) {
+  for (const relativePath of [...changedPaths].sort((left, right) => left.localeCompare(right))) {
     const normalizedPath = path.normalize(relativePath);
     if (
       normalizedPath === '.' ||
@@ -453,7 +473,7 @@ export function hostWorkingTreeEntries(dependencies = {}) {
       normalizedPath.startsWith(`..${path.sep}`) ||
       normalizedPath === '..'
     ) {
-      fail(`Небезопасный путь в git ls-files: ${relativePath}`);
+      fail(`Небезопасный путь в выводе git: ${relativePath}`);
     }
     const filePath = path.join(projectRoot, normalizedPath);
     const stats = lstatSync(filePath, { throwIfNoEntry: false });
@@ -462,8 +482,11 @@ export function hostWorkingTreeEntries(dependencies = {}) {
       entries.set(key, 'deleted');
       continue;
     }
+    // Символьная ссылка хешируется своей целью: читать по ней файл значит выйти
+    // за пределы проекта, а подмена цели — такое же изменение дерева.
     if (stats.isSymbolicLink()) {
-      fail(`Host validation не допускает symbolic link: ${relativePath}`);
+      entries.set(key, createHash('sha256').update(readlinkSync(filePath)).digest('hex'));
+      continue;
     }
     if (!stats.isFile()) {
       fail(`Host validation ожидает файл: ${relativePath}`);

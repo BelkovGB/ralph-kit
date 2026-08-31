@@ -329,13 +329,14 @@ test('host validation runs preflight and checks in the project without Docker', 
 });
 
 test('host validation rejects a check that changes project files', () => {
-  let hashes = 0;
+  // Один снимок дерева — два вызова git: изменённые отслеживаемые файлы и новые.
+  let gitCalls = 0;
   const execute = (command) => {
     if (command !== 'git') return { status: 0, stdout: '', stderr: '' };
-    hashes += 1;
+    gitCalls += 1;
     return {
       status: 0,
-      stdout: `${hashes === 1 ? 'scripts/ralph/README.md' : 'README.md'}\0`,
+      stdout: `${gitCalls <= 2 ? 'scripts/ralph/README.md' : 'README.md'}\0`,
       stderr: '',
     };
   };
@@ -389,7 +390,7 @@ test('host validation reports both a failed command and its file mutation', () =
       gitCalls += 1;
       return {
         status: 0,
-        stdout: `${gitCalls === 1 ? 'scripts/ralph/README.md' : 'README.md'}\0`,
+        stdout: `${gitCalls <= 2 ? 'scripts/ralph/README.md' : 'README.md'}\0`,
         stderr: '',
       };
     }
@@ -929,7 +930,8 @@ test('host: preflight готовит окружение до снимка дер
   });
 
   assert.equal(result.ran, true);
-  assert.deepEqual(log, ['pnpm db:migrate', 'git', 'pnpm check', 'git']);
+  // Два вызова git на снимок: изменённые отслеживаемые файлы и новые.
+  assert.deepEqual(log, ['pnpm db:migrate', 'git', 'git', 'pnpm check', 'git', 'git']);
 });
 
 test('остановка host-проверки называет изменённые файлы', () => {
@@ -941,7 +943,7 @@ test('остановка host-проверки называет изменённ
       gitCalls += 1;
       return {
         status: 0,
-        stdout: gitCalls === 1 ? 'README.md\0' : 'README.md\0CHANGELOG.md\0',
+        stdout: gitCalls <= 2 ? 'README.md\0' : 'README.md\0CHANGELOG.md\0',
         stderr: '',
       };
     }
