@@ -30,7 +30,7 @@
   удаляются после проверки.
 - Документация контейнера описывает настройку Corepack и pnpm store. pnpm можно
   установить при сборке образа и не скачивать перед каждой проверкой.
-- Codex принимает effort `low`, `medium`, `high`, `xhigh`, `max`, `ultra`.
+- Codex принимает effort `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra`.
   Пульт предлагает модели GPT-5.6 Sol, Terra и Luna, GPT-5.5, GPT-5.4,
   GPT-5.4 Mini и GPT-5.3 Codex Spark, но по-прежнему разрешает своё имя модели.
 - Событие Codex `turn.completed` записывает непересекающиеся категории токенов.

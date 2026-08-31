@@ -55,6 +55,7 @@ import {
 
 import {
   assertTrustedControlFilesUnchanged,
+  hostWorkingTreeHash,
   runConfiguredValidation,
   runPreflight,
 } from './ralph-validation-runner.mjs';
@@ -611,6 +612,14 @@ async function commitAndCompleteIssue(config, repository, issue, startingCommit,
     try {
       measuredValidation(() => runConfiguredValidation(config));
     } catch (error) {
+      if (error.code === 'RALPH_VALIDATION_MUTATED') {
+        activeStateStore()?.updateIssue({
+          phase: 'validation-mutated',
+          validationExpectedTreeHash: error.expectedTreeHash,
+          ...recordedFailure(error),
+        });
+        throw error;
+      }
       const attempts = (activeStateStore()?.issue?.validationFixAttempts ?? 0) + 1;
       activeStateStore()?.updateIssue({
         phase: 'working-tree',
@@ -635,6 +644,14 @@ async function commitAndCompleteIssue(config, repository, issue, startingCommit,
   try {
     measuredValidation(() => runConfiguredValidation(config));
   } catch (error) {
+    if (error.code === 'RALPH_VALIDATION_MUTATED') {
+      activeStateStore()?.updateIssue({
+        phase: 'validation-mutated',
+        validationExpectedTreeHash: error.expectedTreeHash,
+        ...recordedFailure(error),
+      });
+      throw error;
+    }
     const attempts = (activeStateStore()?.issue?.validationFixAttempts ?? 0) + 1;
     activeStateStore()?.updateIssue({
       phase: 'working-tree',
@@ -721,7 +738,12 @@ async function commitAndCompleteIssue(config, repository, issue, startingCommit,
 // -----------------------------------------------------------------------------
 
 // Фазы, на которых работа issue лежит незакоммиченной в рабочем дереве.
-const uncommittedWorkPhases = new Set(['agent-running', 'working-tree', 'validating']);
+const uncommittedWorkPhases = new Set([
+  'agent-running',
+  'working-tree',
+  'validating',
+  'validation-mutated',
+]);
 
 /**
  * Можно ли продолжить issue, если ветка ушла вперёд с сохранённого commit.
@@ -754,6 +776,35 @@ export function advanceStartingCommitIfBranchMovedOn(stateStore = activeStateSto
   return true;
 }
 
+export function recoverHostValidationMutation(
+  storedIssue,
+  stateStore = activeStateStore(),
+  dependencies = {},
+) {
+  if (storedIssue?.phase !== 'validation-mutated') return false;
+  const hashTree = dependencies.hostWorkingTreeHash ?? hostWorkingTreeHash;
+  const currentTreeHash = hashTree();
+  if (
+    !storedIssue.validationExpectedTreeHash ||
+    currentTreeHash !== storedIssue.validationExpectedTreeHash
+  ) {
+    fail(
+      `Issue #${storedIssue.number}: host-проверка изменила рабочее дерево. ` +
+        'Удалите созданные проверкой изменения; Ralph продолжит только после восстановления ' +
+        'точного diff, который был до проверки.',
+    );
+  }
+  stateStore?.updateIssue({
+    phase: 'working-tree',
+    validationExpectedTreeHash: null,
+    ...clearedFailure,
+  });
+  console.log(
+    `Issue #${storedIssue.number}: изменения host-проверки удалены; продолжаем с исходным diff.`,
+  );
+  return true;
+}
+
 function branchMovedWithoutDisturbingIssue(storedIssue, currentHead) {
   const storedStart = storedIssue?.startingCommit;
   if (!storedStart || storedStart === currentHead) return false;
@@ -781,6 +832,7 @@ export async function runAgentOnIssue(config, repository, issue, rules) {
   issue = assertTrustedIssue(config, issue, repository);
   const storedIssue =
     activeStateStore()?.issue?.number === issue.number ? activeStateStore().issue : null;
+  recoverHostValidationMutation(storedIssue);
   if (storedIssue?.commit && committedRecoveryPhases.includes(storedIssue.phase)) {
     assertCleanTree(`Issue #${issue.number}: committed recovery требует чистое рабочее дерево.`);
     const commit = verifiedIssueCommit(storedIssue.commit, issue);

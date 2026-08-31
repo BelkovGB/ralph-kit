@@ -73,7 +73,7 @@ export const codexModels = [
 // Codex Desktop сейчас предлагает эти значения для моделей GPT-5.6. Проверка
 // конфигурации использует объединение, потому что CLI проверяет совместимость
 // модели и effort перед запуском, а список моделей обновляется независимо.
-export const reasoningEfforts = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+export const reasoningEfforts = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 
 export function reasoningEffortArguments(effort) {
   return ['-c', `model_reasoning_effort="${effort}"`];
