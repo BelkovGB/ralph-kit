@@ -549,6 +549,15 @@ export const fieldGroups = [
         default: null,
       },
       {
+        path: 'validationContainer.writableVolumes',
+        label: 'Записываемые каталоги контейнера',
+        type: 'list',
+        hint:
+          'Абсолютные пути внутри контейнера, которым нужен временный том: корень образа смонтирован только для чтения. Так пакетный менеджер обновляет свой store, например /opt/pnpm-store. Тома удаляются вместе с контейнером. Пути /source, /workspace и /tmp заданы Ralph и здесь не повторяются.',
+        unit: null,
+        default: [],
+      },
+      {
         path: 'preflightScripts',
         label: 'Команды подготовки',
         type: 'list',
@@ -588,12 +597,10 @@ export const fieldGroups = [
 
 // Неподтверждённых ключей нет: каждый ключ из `.agents/ralph.config.json`
 // встречается в `ralph-config.mjs`, и обратно — каждый ключ, который читает
-// `ralph-config.mjs`, описан выше. Двух ключей нет в текущем
-// `.agents/ralph.config.json`, но код их читает: `validationDependencyPaths`
-// (контейнерный режим в `ralph-validation-runner.mjs`) и
-// `reviewDiffExcludedPaths` (использование в
-// `ralph-loop.mjs` и `ralph-git.mjs`). Пустой список у обоих значит «ничего»,
-// поэтому форма показывает умолчание `[]`.
+// `ralph-config.mjs`, описан выше. Одного ключа нет в текущем
+// `.agents/ralph.config.json`, но код его читает: `reviewDiffExcludedPaths`
+// (использование в `ralph-loop.mjs` и `ralph-git.mjs`). Пустой список значит
+// «ничего», поэтому форма показывает умолчание `[]`.
 //
 // Значения, выведенные кодом, а не записанные в конфигурации, помечены
 // `default: null`: `validationContainer.image` собирается из имени каталога

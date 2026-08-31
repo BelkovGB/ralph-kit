@@ -21,6 +21,34 @@ export function repositoryName() {
 }
 
 /**
+ * Проверяет, что `gh` авторизован тем аккаунтом, которым Ralph будет работать.
+ *
+ * Без `githubAccount` хост не называется: Ralph работает активной авторизацией
+ * `gh`, а она может быть выдана GitHub Enterprise, и требование github.com
+ * остановило бы такую установку на ровном месте.
+ *
+ * С `githubAccount` проверяется именно он, а не активный аккаунт: команды `gh`
+ * получают токен выбранного аккаунта, и проверка активного подтвердила бы не ту
+ * авторизацию — отказ пришёл бы уже посреди прогона.
+ */
+export function verifyGitHubAuthentication(config, dependencies = {}) {
+  const execute = dependencies.runNetwork ?? runNetwork;
+  if (config.githubAccount == null) {
+    execute('gh', ['auth', 'status']);
+    return null;
+  }
+  const login = execute('gh', ['api', 'user', '--jq', '.login']).stdout.trim();
+  if (login.toLowerCase() !== config.githubAccount.toLowerCase()) {
+    fail(
+      `GitHub CLI отдаёт токен аккаунта ${login || '(имя не получено)'}, ` +
+        `а в конфиге задан githubAccount "${config.githubAccount}". ` +
+        'Выполните gh auth login для этого аккаунта или исправьте поле.',
+    );
+  }
+  return login;
+}
+
+/**
  * `gh auth status` завершается нулём при любом залогиненном аккаунте и ничего
  * не говорит о правах на целевой репозиторий. Без этой проверки отказ приходит
  * на push ветки или закрытии issue — то есть после того, как агент отработал,

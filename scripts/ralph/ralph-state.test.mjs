@@ -309,3 +309,28 @@ test('вердикт PASS переживает падение на закрыт�
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test('остановка host-проверки не мешает продолжить работу с грязным деревом', () => {
+  // Host-проверка останавливает цикл фазой `validation-mutated`, а работа
+  // агента остаётся незакоммиченной в дереве. Пока эта фаза не разрешает
+  // грязное восстановление, следующий запуск падает на проверке чистоты
+  // дерева и до восстановления diff дело не доходит.
+  const directory = mkdtempSync(path.join(tmpdir(), 'ralph-state-mutated-'));
+  const statePath = path.join(directory, 'state.json');
+  const config = { branch: 'feature/host', baseBranch: 'main', milestone: 'Host phase' };
+  const startingCommit = 'b'.repeat(40);
+
+  try {
+    const store = createStateStore(config, '--run', statePath);
+    store.reserveIteration();
+    store.beginIssue(
+      { number: 7, title: 'Host', body: 'Body', url: 'https://example.test/issues/7' },
+      startingCommit,
+    );
+    store.updateIssue({ phase: 'validation-mutated' });
+
+    assert.equal(store.allowsDirtyRecovery(config.branch, startingCommit), true);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

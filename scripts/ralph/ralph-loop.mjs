@@ -88,6 +88,7 @@ import {
   refreshIssue,
   reopenIssueWithComment,
   repositoryName,
+  verifyGitHubAuthentication,
   verifyMilestone,
   verifyRepositoryWriteAccess,
 } from './ralph-github-client.mjs';
@@ -246,7 +247,7 @@ function verifyTools(config) {
   ) {
     run('docker', ['version']);
   }
-  runNetwork('gh', ['auth', 'status', '--active', '--hostname', 'github.com']);
+  verifyGitHubAuthentication(config);
 }
 
 // -----------------------------------------------------------------------------

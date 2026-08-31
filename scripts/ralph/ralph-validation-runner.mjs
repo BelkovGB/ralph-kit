@@ -106,6 +106,9 @@ export function validationContainerRunArgs(config, scripts, snapshotPath) {
     '/workspace',
     '--env',
     'HOME=/tmp',
+    // Значения оператора идут после HOME: docker берёт последнее вхождение, и
+    // проект вправе задать свой домашний каталог внутри контейнера.
+    ...(config.validationEnvironment ?? []).flatMap((entry) => ['--env', entry]),
     config.validationContainer.image,
     ...scriptList,
   ];
@@ -346,6 +349,7 @@ export function validationAttestationKey(inputs) {
         imageDigest: inputs.imageDigest,
         scripts: inputs.scripts,
         writableVolumes: inputs.writableVolumes ?? [],
+        environment: inputs.environment ?? [],
       }),
     )
     .digest('hex');
@@ -406,26 +410,40 @@ function configuredValidationEnvironment(config) {
   );
 }
 
+/**
+ * Домашний каталог host-проверок.
+ *
+ * Профиль оператора командам не отдают: там лежат credentials агента и `gh`.
+ * Пустое место HOME тоже не годится — go, cargo, npm, pip и JVM ищут в нём кэш
+ * и останавливаются до первой команды проекта. Поэтому Ralph выдаёт свой
+ * каталог внутри `.git`: он переживает прогоны вместе с кэшами и не попадает ни
+ * в рабочее дерево, ни в его хеш.
+ */
+export const hostHomeDirectory = path.join(projectRoot, '.git', 'ralph-loop', 'host-home');
+
 export function hostValidationEnvironment(config, source = process.env) {
   return {
     ...credentialFreeEnvironment(source),
+    HOME: hostHomeDirectory,
+    USERPROFILE: hostHomeDirectory,
+    // Значения оператора идут последними: проект вправе назвать свой HOME.
     ...configuredValidationEnvironment(config),
   };
 }
 
-export function hostWorkingTreeHash(dependencies = {}) {
+/**
+ * Хеш каждого отслеживаемого и нового файла рабочего дерева.
+ *
+ * Хранится карта, а не один хеш: по ней остановка называет изменённые файлы, а
+ * задание «верните прежний diff» без их списка невыполнимо.
+ */
+export function hostWorkingTreeEntries(dependencies = {}) {
   const execute = dependencies.run ?? run;
-  const hash = createHash('sha256');
-  const files = execute('git', [
-    'ls-files',
-    '-z',
-    '--cached',
-    '--others',
-    '--exclude-standard',
-  ])
+  const files = execute('git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard'])
     .stdout.split('\0')
     .filter(Boolean)
     .sort((left, right) => left.localeCompare(right));
+  const entries = new Map();
 
   for (const relativePath of files) {
     const normalizedPath = path.normalize(relativePath);
@@ -439,9 +457,9 @@ export function hostWorkingTreeHash(dependencies = {}) {
     }
     const filePath = path.join(projectRoot, normalizedPath);
     const stats = lstatSync(filePath, { throwIfNoEntry: false });
-    hash.update(`${relativePath.replaceAll('\\', '/')}\0`);
+    const key = relativePath.replaceAll('\\', '/');
     if (!stats) {
-      hash.update('deleted\0');
+      entries.set(key, 'deleted');
       continue;
     }
     if (stats.isSymbolicLink()) {
@@ -450,10 +468,34 @@ export function hostWorkingTreeHash(dependencies = {}) {
     if (!stats.isFile()) {
       fail(`Host validation ожидает файл: ${relativePath}`);
     }
-    hash.update(readFileSync(filePath));
+    entries.set(key, createHash('sha256').update(readFileSync(filePath)).digest('hex'));
+  }
+  return entries;
+}
+
+export function hostWorkingTreeHash(dependencies = {}) {
+  const hash = createHash('sha256');
+  for (const [relativePath, fileHash] of hostWorkingTreeEntries(dependencies)) {
+    hash.update(`${relativePath}\0${fileHash}\0`);
   }
   return hash.digest('hex');
 }
+
+function hostTreeHashOfEntries(entries) {
+  const hash = createHash('sha256');
+  for (const [relativePath, fileHash] of entries) {
+    hash.update(`${relativePath}\0${fileHash}\0`);
+  }
+  return hash.digest('hex');
+}
+
+function changedTreePaths(before, after) {
+  return [...new Set([...before.keys(), ...after.keys()])]
+    .filter((relativePath) => before.get(relativePath) !== after.get(relativePath))
+    .sort((left, right) => left.localeCompare(right));
+}
+
+const namedMutatedPathLimit = 10;
 
 function hostShellCommand(script, platform = process.platform) {
   if (platform === 'win32') {
@@ -468,55 +510,72 @@ function hostShellCommand(script, platform = process.platform) {
 export function runHostConfiguredScripts(config, scripts, label, options = {}) {
   const execute = options.run ?? run;
   const includePreflight = options.includePreflight ?? true;
-  const hostScripts = includePreflight ? [...config.preflightScripts, ...scripts] : [...scripts];
-  if (hostScripts.length === 0) return { ran: false, attested: false, scripts: [] };
+  // Preflight готовит окружение и по своему контракту вправе менять дерево:
+  // миграции и генерация кода для того и существуют. Снимок берётся после него,
+  // иначе подготовка останавливала бы прогон собственным результатом, а
+  // следующий запуск повторял бы её с тем же исходом.
+  const preparation = includePreflight ? [...config.preflightScripts] : [];
+  const guarded = [...scripts];
+  if (preparation.length + guarded.length === 0) return { ran: false, attested: false, scripts: [] };
 
   assertTrustedControlFilesUnchanged(config);
-  const treeHash = hostWorkingTreeHash({ run: execute });
   const environment = hostValidationEnvironment(config, options.environmentSource ?? process.env);
+  mkdirSync(hostHomeDirectory, { recursive: true });
   const startedAt = Date.now();
-  console.log(`\n=== ${label}: host ${hostScripts.join(' && ')} ===\n`);
+  console.log(`\n=== ${label}: host ${[...preparation, ...guarded].join(' && ')} ===\n`);
 
-  let activeScript = hostScripts[0];
+  let activeScript = preparation[0] ?? guarded[0];
+  let baseline = null;
   let failure = null;
-  try {
-    for (const script of hostScripts) {
-      activeScript = script;
-      const remainingMs = config.runtime.validationRunTimeoutMs - (Date.now() - startedAt);
-      if (remainingMs < 1) {
-        const error = new Error(
-          `${label}: общий лимит ${config.runtime.validationRunTimeoutMs} ms исчерпан.`,
-        );
-        error.code = 'RALPH_COMMAND_TIMEOUT';
-        throw error;
-      }
-      const command = hostShellCommand(script, options.platform);
-      execute(command.command, command.args, {
-        echoOutput: true,
-        timeoutMs: remainingMs,
-        env: environment,
-      });
+  const runScript = (script) => {
+    activeScript = script;
+    const remainingMs = config.runtime.validationRunTimeoutMs - (Date.now() - startedAt);
+    if (remainingMs < 1) {
+      const error = new Error(
+        `${label}: общий лимит ${config.runtime.validationRunTimeoutMs} ms исчерпан.`,
+      );
+      error.code = 'RALPH_COMMAND_TIMEOUT';
+      throw error;
     }
+    const command = hostShellCommand(script, options.platform);
+    execute(command.command, command.args, {
+      echoOutput: true,
+      timeoutMs: remainingMs,
+      env: environment,
+    });
+  };
+
+  try {
+    for (const script of preparation) runScript(script);
+    baseline = hostWorkingTreeEntries({ run: execute });
+    for (const script of guarded) runScript(script);
   } catch (error) {
     failure = error;
   }
 
-  try {
-    const observedTreeHash = hostWorkingTreeHash({ run: execute });
-    if (observedTreeHash !== treeHash) {
-      const treeError = new Error(
-        `${label}: команды проверки изменили отслеживаемые или новые файлы проекта.` +
-          (failure ? ` Исходная ошибка: ${failure.message}` : ''),
-        failure ? { cause: failure } : undefined,
-      );
-      treeError.code = 'RALPH_VALIDATION_MUTATED';
-      treeError.expectedTreeHash = treeHash;
-      treeError.observedTreeHash = observedTreeHash;
-      failure = treeError;
+  if (baseline !== null) {
+    try {
+      const observed = hostWorkingTreeEntries({ run: execute });
+      const mutatedPaths = changedTreePaths(baseline, observed);
+      if (mutatedPaths.length > 0) {
+        const named = mutatedPaths.slice(0, namedMutatedPathLimit);
+        const rest = mutatedPaths.length - named.length;
+        const treeError = new Error(
+          `${label}: команды проверки изменили отслеживаемые или новые файлы проекта: ` +
+            `${named.join(', ')}${rest > 0 ? ` и ещё ${rest}` : ''}.` +
+            (failure ? ` Исходная ошибка: ${failure.message}` : ''),
+          failure ? { cause: failure } : undefined,
+        );
+        treeError.code = 'RALPH_VALIDATION_MUTATED';
+        treeError.expectedTreeHash = hostTreeHashOfEntries(baseline);
+        treeError.observedTreeHash = hostTreeHashOfEntries(observed);
+        treeError.mutatedPaths = mutatedPaths;
+        failure = treeError;
+      }
+    } catch (error) {
+      if (failure && error !== failure) error.cause = failure;
+      failure = error;
     }
-  } catch (error) {
-    if (failure && error !== failure) error.cause = failure;
-    failure = error;
   }
 
   if (failure) {
@@ -526,7 +585,12 @@ export function runHostConfiguredScripts(config, scripts, label, options = {}) {
     failure.script = activeScript;
     throw failure;
   }
-  return { ran: true, attested: false, scripts: hostScripts, mode: 'host' };
+  return {
+    ran: true,
+    attested: false,
+    scripts: [...preparation, ...guarded],
+    mode: 'host',
+  };
 }
 
 /**
@@ -568,6 +632,7 @@ export function runConfiguredScripts(config, scripts, label, options = {}) {
           imageDigest,
           scripts: isolatedScripts,
           writableVolumes: config.validationContainer.writableVolumes ?? [],
+          environment: config.validationEnvironment ?? [],
         })
       : null;
     if (attestationKey && hasValidationAttestation(attestationKey, attestationsPath)) {
