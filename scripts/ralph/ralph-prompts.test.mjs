@@ -63,6 +63,7 @@ test('issue review prompt requires one exhaustive in-scope audit', () => {
   );
 
   assert.match(prompt, /Do not stop after the first problem/);
+  assert.match(prompt, /Do not delegate it to subagents/);
   assert.match(prompt, /Return every distinct, actionable finding/);
   assert.match(prompt, /Discover documentation paths/i);
   // Роль запущена с `--tools Read,Glob,Grep`, поэтому поиск описан через Glob:
@@ -93,6 +94,7 @@ test('issue review prompt carries the change set the reviewer cannot obtain itse
   assert.match(prompt, /M\tsrc\/app\/login\/page\.ts/);
   assert.match(prompt, /```diff/);
   assert.match(prompt, /complete set of changes made for this issue/);
+  assert.match(prompt, /Do not rebuild it with Git commands/);
   assert.match(prompt, /already ran npm run lint, npm run build, npm test/);
   assert.match(prompt, /Do not rerun them/);
   // Замечания прошлого ревью обязаны быть подписаны: внутри тела issue они
@@ -244,6 +246,8 @@ test('the milestone reviewer is shown the branch diff without the control plane'
   assert.match(prompt, /abc1234 feat: end the browser session/);
   assert.match(prompt, /```diff/);
   assert.match(prompt, /control plane excluded/);
+  assert.match(prompt, /Do not delegate it to subagents/);
+  assert.match(prompt, /Do not rebuild it with Git commands/);
 });
 
 test('Ralph infrastructure is never treated as product work', () => {

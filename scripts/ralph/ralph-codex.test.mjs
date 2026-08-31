@@ -10,6 +10,7 @@ import {
   createSandboxedCodexEnvironment,
   developmentCodexArguments,
   readCodexEvent,
+  reviewCodexArguments,
   runCodexWithTurnLimit,
   verifyCodexAuthentication,
 } from './ralph-codex-session.mjs';
@@ -242,6 +243,24 @@ test('development Codex has unrestricted repository write access', () => {
   const args = developmentCodexArguments({ developmentModel: 'gpt-5.6-terra' });
   assert.deepEqual(args.slice(0, 4), ['exec', '--json', '--sandbox', 'danger-full-access']);
   assert.ok(!args.includes('workspace-write'));
+});
+
+test('Codex review sessions stay within one agent', () => {
+  const args = reviewCodexArguments({
+    model: 'review-model',
+    effort: 'high',
+    schemaPath: 'review.schema.json',
+    outputPath: 'last-review.json',
+  });
+
+  assert.deepEqual(args.slice(0, 6), [
+    'exec',
+    '--sandbox',
+    'read-only',
+    '--disable',
+    'multi_agent',
+    '--json',
+  ]);
 });
 
 test('Codex turn.completed раскладывает usage на непересекающиеся категории', () => {
