@@ -70,6 +70,14 @@ function reviewDocumentationDiscovery(config) {
 const reviewVerdictContract =
   'Use verdict "fail" when at least one actionable finding exists; otherwise use "pass" with an empty findings array.';
 
+function automatedReviewGuidance(changes) {
+  const inventoryGuidance = changes
+    ? ' The orchestrator already supplied the change inventory. Do not rebuild it with Git commands.'
+    : '';
+
+  return `Complete this automated review yourself. Do not delegate it to subagents or start another review workflow.${inventoryGuidance}`;
+}
+
 /**
  * Блок изменений: то, что оркестратор уже знает, и то, что ревьюер иначе
  * добывает сам. Claude-ревьюер запускается без оболочки и `git` вызвать не
@@ -163,6 +171,8 @@ export function buildIndependentReviewPrompt(config, issue, commit, context = {}
 Issue body:
 ${issueBody}${reviewPreviousFindings(context.previousFindings)}${context.changes ? reviewChangeInventory(issueChangeHeading(context.changes), context.changes) : ''}${reviewAlreadyAudited(context.previousReview)}${reviewValidationEvidence(config)}
 
+${automatedReviewGuidance(context.changes)}
+
 Complete the entire audit before deciding the verdict. Do not stop after the first problem. Return every distinct, actionable finding you can substantiate in this single response, without duplicates and without inventing findings to fill a quota.
 
 ${auditInstruction}
@@ -232,6 +242,8 @@ ${milestoneDescription}${context.changes ? reviewChangeInventory(branchChangeHea
 The branch and pull request may be cumulative and contain work from other milestones. Scope the review exclusively to the requirements in the milestone title and description, plus integrations strictly required for those requirements. ${evidenceSentence} Do not report defects in unrelated features, infrastructure, or files merely because they are present or changed in the pull request.${milestonePreviousReviewSection(context.previousReview)}
 
 Ralph's control plane is maintained manually outside the product loop. Do not open .agents/** or scripts/ralph/**, and never report findings for those paths, for AGENTS.md, or for nested **/AGENTS.md files: they must never become milestone issues and must never be modified by an AFK implementation session. Do read AGENTS.md and the nested ones — they carry the conventions the product code is judged against.
+
+${automatedReviewGuidance(context.changes)}
 
 ${reviewShellGuidance(config)}
 

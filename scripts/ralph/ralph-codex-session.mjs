@@ -102,6 +102,10 @@ export function reviewCodexArguments(role) {
     'exec',
     '--sandbox',
     'read-only',
+    // Ralph уже запускает отдельную review-сессию с готовым diff и контрактом.
+    // Субагенты умножают чтение и вместе расходуют один лимит шагов.
+    '--disable',
+    'multi_agent',
     '--json',
     '--model',
     role.model,
