@@ -23,6 +23,9 @@ function significantOutputLines(text) {
     if (line === '') continue;
     if (/^[\s\-─━=_*.·•#|+]+$/.test(line)) continue;
     if (/^at\s/.test(line)) continue;
+    // Служебный шум пакетного менеджера отказ не объясняет, а строки, которые
+    // объясняют, вытесняет.
+    // kit-hygiene: allow — фильтр шума узнаёт инструмент по его же префиксу.
     if (/^npm (?:notice|warn|info|WARN)\b/.test(line)) continue;
     if (seen.has(line)) continue;
     seen.add(line);
@@ -31,6 +34,10 @@ function significantOutputLines(text) {
   return lines;
 }
 
+// Формы строки «тест упал» у популярных раннеров. Набор ставят в проект на
+// любом языке, поэтому список покрывает не один стек; раннер, которого здесь
+// нет, оставляет сводку пустой, и агент идёт чинить по полному логу.
+// kit-hygiene: allow — разбор вывода чужих инструментов обязан называть их.
 const failedTestPatterns = [
   // Playwright: "  1) [chromium] › e2e/profile.spec.ts:42:5 › shows avatar ────"
   /^\s*\d+\)\s+(.+)$/,
@@ -38,6 +45,10 @@ const failedTestPatterns = [
   /^\s*●\s+(.+)$/,
   // node:test: "✖ my test (1.2ms)"
   /^\s*[✖✗×]\s+(.+)$/,
+  // pytest: "FAILED tests/test_profile.py::test_rejects - AssertionError"
+  /^\s*FAILED\s+(.+)$/,
+  // go test: "--- FAIL: TestProfileRejects (0.00s)"
+  /^\s*---\s*FAIL:\s+(.+?)(?:\s+\([\d.]+s\))?$/,
 ];
 
 export function uniqueFailedTests(text, limit = 10) {

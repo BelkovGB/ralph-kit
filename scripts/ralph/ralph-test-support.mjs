@@ -70,7 +70,7 @@ export function fakeClaudeScript(source) {
 
   if (process.platform === 'win32') {
     // commandSpec направляет claude через cmd.exe /c claude.cmd, как и codex:
-    // npm-установка Claude Code кладёт именно .cmd.
+    // установка Claude Code пакетным менеджером кладёт именно .cmd.
     writeFileSync(
       path.join(directory, 'claude.cmd'),
       '@echo off\r\nnode "%~dp0fake-claude.mjs" %*\r\n',
