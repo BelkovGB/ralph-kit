@@ -12,6 +12,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 import { readJsonFile, retryTransientOperation, writeJsonAtomic } from './ralph-runtime.mjs';
@@ -21,7 +22,7 @@ import { agentInstructionFiles, trustedFileHash } from './ralph-config.mjs';
 import { stripAnsi } from './ralph-failure-summary.mjs';
 
 /**
- * Изолированный прогон команд проверки в контейнере и attestation результата.
+ * Прогон команд проверки на хосте или в изолированном контейнере.
  *
  * Проверка неизменности control plane живёт здесь же, потому что вызывается
  * перед каждым прогоном.
@@ -91,6 +92,10 @@ export function validationContainerRunArgs(config, scripts, snapshotPath) {
     '512',
     '--user',
     '65532:65532',
+    ...(config.validationContainer.writableVolumes ?? []).flatMap((target) => [
+      '--mount',
+      `type=volume,target=${target}`,
+    ]),
     '--tmpfs',
     '/workspace:rw,exec,nosuid,nodev,size=4g,uid=65532,gid=65532',
     '--tmpfs',
@@ -320,8 +325,8 @@ export function ensureValidationImage(config, snapshotPath, dependencies = {}) {
 // -----------------------------------------------------------------------------
 // Validation attestation
 //
-// PASS принадлежит не «issue» и не «run», а точной тройке
-// (байты проверяемого source, упорядоченный список scripts, образ). Поэтому
+// PASS принадлежит не «issue» и не «run», а точному набору входов
+// (байты source и зависимостей, scripts, образ, runtime-настройки). Поэтому
 // запись переиспользуется только при полном совпадении всех входов и не зависит
 // от runId. Любое изменение кода, конфигурации, Dockerfile или образа меняет
 // хотя бы один вход. VALIDATION_CONTRACT_VERSION поднимается вручную, когда
@@ -340,6 +345,7 @@ export function validationAttestationKey(inputs) {
         dependencyHash: inputs.dependencyHash,
         imageDigest: inputs.imageDigest,
         scripts: inputs.scripts,
+        writableVolumes: inputs.writableVolumes ?? [],
       }),
     )
     .digest('hex');
@@ -391,6 +397,133 @@ export function failedValidationScript(error) {
   return markers.at(-1)?.[1] ?? null;
 }
 
+function configuredValidationEnvironment(config) {
+  return Object.fromEntries(
+    (config.validationEnvironment ?? []).map((entry) => {
+      const separator = entry.indexOf('=');
+      return [entry.slice(0, separator), entry.slice(separator + 1)];
+    }),
+  );
+}
+
+export function hostValidationEnvironment(config, source = process.env) {
+  return {
+    ...credentialFreeEnvironment(source),
+    ...configuredValidationEnvironment(config),
+  };
+}
+
+export function hostWorkingTreeHash(dependencies = {}) {
+  const execute = dependencies.run ?? run;
+  const hash = createHash('sha256');
+  const files = execute('git', [
+    'ls-files',
+    '-z',
+    '--cached',
+    '--others',
+    '--exclude-standard',
+  ])
+    .stdout.split('\0')
+    .filter(Boolean)
+    .sort((left, right) => left.localeCompare(right));
+
+  for (const relativePath of files) {
+    const normalizedPath = path.normalize(relativePath);
+    if (
+      normalizedPath === '.' ||
+      path.isAbsolute(normalizedPath) ||
+      normalizedPath.startsWith(`..${path.sep}`) ||
+      normalizedPath === '..'
+    ) {
+      fail(`Небезопасный путь в git ls-files: ${relativePath}`);
+    }
+    const filePath = path.join(projectRoot, normalizedPath);
+    const stats = lstatSync(filePath, { throwIfNoEntry: false });
+    hash.update(`${relativePath.replaceAll('\\', '/')}\0`);
+    if (!stats) {
+      hash.update('deleted\0');
+      continue;
+    }
+    if (stats.isSymbolicLink()) {
+      fail(`Host validation не допускает symbolic link: ${relativePath}`);
+    }
+    if (!stats.isFile()) {
+      fail(`Host validation ожидает файл: ${relativePath}`);
+    }
+    hash.update(readFileSync(filePath));
+  }
+  return hash.digest('hex');
+}
+
+function hostShellCommand(script, platform = process.platform) {
+  if (platform === 'win32') {
+    return {
+      command: 'cmd',
+      args: ['/d', '/s', '/c', script],
+    };
+  }
+  return { command: 'sh', args: ['-eu', '-c', script] };
+}
+
+export function runHostConfiguredScripts(config, scripts, label, options = {}) {
+  const execute = options.run ?? run;
+  const includePreflight = options.includePreflight ?? true;
+  const hostScripts = includePreflight ? [...config.preflightScripts, ...scripts] : [...scripts];
+  if (hostScripts.length === 0) return { ran: false, attested: false, scripts: [] };
+
+  assertTrustedControlFilesUnchanged(config);
+  const treeHash = hostWorkingTreeHash({ run: execute });
+  const environment = hostValidationEnvironment(config, options.environmentSource ?? process.env);
+  const startedAt = Date.now();
+  console.log(`\n=== ${label}: host ${hostScripts.join(' && ')} ===\n`);
+
+  let activeScript = hostScripts[0];
+  let failure = null;
+  try {
+    for (const script of hostScripts) {
+      activeScript = script;
+      const remainingMs = config.runtime.validationRunTimeoutMs - (Date.now() - startedAt);
+      if (remainingMs < 1) {
+        const error = new Error(
+          `${label}: общий лимит ${config.runtime.validationRunTimeoutMs} ms исчерпан.`,
+        );
+        error.code = 'RALPH_COMMAND_TIMEOUT';
+        throw error;
+      }
+      const command = hostShellCommand(script, options.platform);
+      execute(command.command, command.args, {
+        echoOutput: true,
+        timeoutMs: remainingMs,
+        env: environment,
+      });
+    }
+  } catch (error) {
+    failure = error;
+  }
+
+  try {
+    if (hostWorkingTreeHash({ run: execute }) !== treeHash) {
+      const treeError = new Error(
+        `${label}: команды проверки изменили отслеживаемые или новые файлы проекта.` +
+          (failure ? ` Исходная ошибка: ${failure.message}` : ''),
+        failure ? { cause: failure } : undefined,
+      );
+      failure = treeError;
+    }
+  } catch (error) {
+    if (failure && error !== failure) error.cause = failure;
+    failure = error;
+  }
+
+  if (failure) {
+    failure.code =
+      failure.code === 'RALPH_COMMAND_TIMEOUT' ? failure.code : 'RALPH_VALIDATION_FAILED';
+    failure.script = activeScript;
+    throw failure;
+  }
+  return { ran: true, attested: false, scripts: hostScripts, mode: 'host' };
+}
+
 /**
  * Возвращает исход прогона: выполнялся ли контейнер или набор был признан
  * проверенным по attestation. Без этого признака длительность стадии
@@ -398,6 +531,9 @@ export function failedValidationScript(error) {
  * усреднение по issues даёт число, которого не бывает ни в одном прогоне.
  */
 export function runConfiguredScripts(config, scripts, label, options = {}) {
+  if (config.validationMode === 'host') {
+    return runHostConfiguredScripts(config, scripts, label, options);
+  }
   const includePreflight = options.includePreflight ?? true;
   const execute = options.run ?? run;
   if (scripts.length === 0) return { ran: false, attested: false, scripts: [] };
@@ -426,6 +562,7 @@ export function runConfiguredScripts(config, scripts, label, options = {}) {
           dependencyHash: validationInputHash(dependencySnapshotPath).digest('hex'),
           imageDigest,
           scripts: isolatedScripts,
+          writableVolumes: config.validationContainer.writableVolumes ?? [],
         })
       : null;
     if (attestationKey && hasValidationAttestation(attestationKey, attestationsPath)) {
@@ -473,7 +610,7 @@ export function runPreflight(config) {
 }
 
 /**
- * Полный набор `validationScripts` в изолированном контейнере.
+ * Полный набор `validationScripts` в выбранном режиме.
  *
  * Набор не сокращается по области изменения: какая команда какой файл
  * покрывает, знает только сам проект, а неверная догадка молча пропускает
@@ -482,9 +619,10 @@ export function runPreflight(config) {
 export function runConfiguredValidation(config) {
   // Проверка стоит здесь, а не в runConfiguredScripts: дрейф вносит только
   // сессия агента, а preflight выполняется по заведомо чистому дереву.
-  assertValidationDependenciesCommitted(config);
-  // Каждый validation-запуск получает новый контейнер и выполняет preflight
-  // первым, чтобы подготовка окружения текущей issue прошла внутри того же
-  // контейнера, что и остальные команды.
+  if (config.validationMode === 'container') {
+    assertValidationDependenciesCommitted(config);
+  }
+  // Preflight выполняется первым в том же окружении, что и остальные команды
+  // текущей проверки.
   return runConfiguredScripts(config, config.validationScripts, 'Validation');
 }

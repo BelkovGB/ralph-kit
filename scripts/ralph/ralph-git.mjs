@@ -25,6 +25,55 @@ export function commitTrailerForIssue(issue) {
 // это десятки лишних шагов на каждое ревью. Diff на 60 000 символов дешевле.
 const reviewDiffCharacterBudget = 60_000;
 
+export function verifyConfiguredGitHubOrigin(config, dependencies = {}) {
+  if (config.githubAccount == null) return null;
+  const execute = dependencies.run ?? run;
+  const origin = execute('git', ['remote', 'get-url', 'origin']).stdout;
+  let parsed;
+  try {
+    parsed = new URL(origin);
+  } catch {
+    parsed = null;
+  }
+  const validPath = /^\/[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+(?:\.git)?\/?$/u;
+  if (
+    parsed === null ||
+    parsed.protocol !== 'https:' ||
+    parsed.hostname !== 'github.com' ||
+    parsed.port !== '' ||
+    parsed.username !== '' ||
+    parsed.password !== '' ||
+    parsed.search !== '' ||
+    parsed.hash !== '' ||
+    !validPath.test(parsed.pathname)
+  ) {
+    fail(
+      'При заданном githubAccount origin должен быть HTTPS-адресом GitHub без credentials: ' +
+        'https://github.com/owner/repository.git. Текущее значение скрыто, потому что может ' +
+        'содержать credentials.',
+    );
+  }
+  const pinned = `${parsed.origin}${parsed.pathname.replace(/\/$/u, '')}`;
+  config.githubRemoteUrl = pinned;
+  return pinned;
+}
+
+function networkRemote(config) {
+  if (config.githubAccount == null) return 'origin';
+  if (typeof config.githubRemoteUrl !== 'string') {
+    fail('HTTPS origin не закреплён перед сетевой командой Git. Запустите проверку репозитория.');
+  }
+  return config.githubRemoteUrl;
+}
+
+function fetchRemoteBranchArguments(config, branch) {
+  if (config.githubAccount == null) return ['origin', branch];
+  return [
+    networkRemote(config),
+    `+refs/heads/${branch}:refs/remotes/origin/${branch}`,
+  ];
+}
+
 /**
  * Файлы, чей построчный diff не показывают ревьюеру.
  *
@@ -288,6 +337,7 @@ export function verifyRepository(config, requireClean) {
   if (repositoryRoot.toLowerCase() !== path.resolve(projectRoot).toLowerCase()) {
     fail(`Скрипт ожидает Git-репозиторий ${projectRoot}, но нашёл ${repositoryRoot}.`);
   }
+  verifyConfiguredGitHubOrigin(config);
 
   run('git', ['check-ref-format', '--branch', config.branch]);
   let currentBranch = run('git', ['branch', '--show-current']).stdout;
@@ -323,17 +373,25 @@ export function verifyRepository(config, requireClean) {
       run('git', ['switch', config.branch], { inherit: true });
     } else {
       const remoteBranchExists =
-        runNetwork('git', ['ls-remote', '--exit-code', '--heads', 'origin', config.branch], {
+        runNetwork('git', [
+          'ls-remote',
+          '--exit-code',
+          '--heads',
+          networkRemote(config),
+          config.branch,
+        ], {
           allowedExitCodes: [2],
         }).status === 0;
 
       if (remoteBranchExists) {
-        runNetwork('git', ['fetch', 'origin', config.branch], { echoOutput: true });
+        runNetwork('git', ['fetch', ...fetchRemoteBranchArguments(config, config.branch)], {
+          echoOutput: true,
+        });
         run('git', ['switch', '--track', '-c', config.branch, `origin/${config.branch}`], {
           inherit: true,
         });
       } else {
-        runNetwork('git', ['fetch', 'origin', config.baseBranch], {
+        runNetwork('git', ['fetch', ...fetchRemoteBranchArguments(config, config.baseBranch)], {
           echoOutput: true,
         });
         run('git', ['show-ref', '--verify', '--quiet', `refs/remotes/origin/${config.baseBranch}`]);
@@ -373,7 +431,9 @@ export function syncPhaseBranchWithBase(config, dependencies = {}) {
   const executeNetwork = dependencies.runNetwork ?? runNetwork;
   const contains = dependencies.isAncestorCommit ?? isAncestorCommit;
 
-  executeNetwork('git', ['fetch', 'origin', config.baseBranch], { echoOutput: true });
+  executeNetwork('git', ['fetch', ...fetchRemoteBranchArguments(config, config.baseBranch)], {
+    echoOutput: true,
+  });
   const baseRef = `origin/${config.baseBranch}`;
   execute('git', ['show-ref', '--verify', '--quiet', `refs/remotes/${baseRef}`]);
 
@@ -413,7 +473,9 @@ export function syncPhaseBranchWithBase(config, dependencies = {}) {
 }
 
 export function verifyBaseHistory(config) {
-  runNetwork('git', ['fetch', 'origin', config.baseBranch], { echoOutput: true });
+  runNetwork('git', ['fetch', ...fetchRemoteBranchArguments(config, config.baseBranch)], {
+    echoOutput: true,
+  });
   const baseRef = `origin/${config.baseBranch}`;
   run('git', ['show-ref', '--verify', '--quiet', `refs/remotes/${baseRef}`]);
   const mergeBase = run('git', ['merge-base', 'HEAD', baseRef], {
@@ -510,7 +572,7 @@ export function verifyPushedHead(config, expectedHead) {
   const remote = runNetwork('git', [
     'ls-remote',
     '--heads',
-    'origin',
+    networkRemote(config),
     `refs/heads/${config.branch}`,
   ]).stdout;
   const remoteHead = remote.split(/\s+/)[0] ?? '';
@@ -528,15 +590,27 @@ export function verifyPushedHead(config, expectedHead) {
   return expectedHead;
 }
 
-export function pushBranchAndVerify(config) {
-  const localHead = run('git', ['rev-parse', 'HEAD']).stdout;
+export function pushBranchAndVerify(config, dependencies = {}) {
+  const execute = dependencies.run ?? run;
+  const executeNetwork = dependencies.runNetwork ?? runNetwork;
+  const verify = dependencies.verifyPushedHead ?? verifyPushedHead;
+  const localHead = execute('git', ['rev-parse', 'HEAD']).stdout;
+  const pushArguments =
+    config.githubAccount == null
+      ? ['push', '--set-upstream', 'origin', config.branch]
+      : [
+          'push',
+          '--no-verify',
+          networkRemote(config),
+          `HEAD:refs/heads/${config.branch}`,
+        ];
   try {
-    runNetwork('git', ['push', '--set-upstream', 'origin', config.branch], {
+    executeNetwork('git', pushArguments, {
       echoOutput: true,
     });
   } catch (pushError) {
     try {
-      verifyPushedHead(config, localHead);
+      verify(config, localHead);
       console.log(
         `Push вернул ошибку, но remote уже содержит ${localHead}; продолжаем идемпотентно.`,
       );
@@ -544,5 +618,5 @@ export function pushBranchAndVerify(config) {
       throw pushError;
     }
   }
-  return verifyPushedHead(config, localHead);
+  return verify(config, localHead);
 }

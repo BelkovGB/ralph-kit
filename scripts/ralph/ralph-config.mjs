@@ -4,7 +4,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { fail } from './ralph-scope.mjs';
-import { applyRuntimeSettings, defaultRuntimeSettings } from './ralph-process-runner.mjs';
+import {
+  applyGitHubAccount,
+  applyRuntimeSettings,
+  defaultRuntimeSettings,
+} from './ralph-process-runner.mjs';
 import { agentClis, reasoningEffortsFor } from './ralph-agent-backends.mjs';
 
 /**
@@ -348,6 +352,7 @@ const configFields = new Set([
   'developmentEffort',
   'developmentModel',
   'draftPullRequest',
+  'githubAccount',
   'maxIterations',
   'maxReviewFixAttempts',
   'maxTestFixAttempts',
@@ -366,6 +371,8 @@ const configFields = new Set([
   'trustedIssueAuthors',
   'validationContainer',
   'validationDependencyPaths',
+  'validationEnvironment',
+  'validationMode',
   'validationScripts',
 ]);
 
@@ -405,6 +412,8 @@ function applyLoopDefaults(config) {
   // остаться на прежней.
   config.syncBaseBranch ??= true;
   config.agentCli ??= 'codex';
+  if (config.githubAccount === '') config.githubAccount = null;
+  else config.githubAccount ??= null;
   config.maxIterations ??= 20;
   config.maxTurns ??= 50;
   config.maxTestFixAttempts ??= 5;
@@ -510,16 +519,21 @@ function readApprovedIssueSnapshots(config) {
 }
 
 function applyValidationAndReviewDefaults(config) {
-  // Умолчание стоит на каждом поле отдельно, а не на всём объекте: на объекте
-  // оно означало бы, что удаление одного ключа `image` останавливает прогон,
-  // хотя имя образа выводится из имени каталога.
-  config.validationContainer ??= {};
-  if (
-    typeof config.validationContainer === 'object' &&
-    !Array.isArray(config.validationContainer)
-  ) {
-    config.validationContainer.image ??= defaultValidationImage();
-    config.validationContainer.dockerfile ??= 'scripts/ralph/Dockerfile.validation';
+  config.validationMode ??= 'container';
+  config.validationEnvironment ??= [];
+  if (config.validationMode === 'container') {
+    // Умолчание стоит на каждом поле отдельно, а не на всём объекте: на объекте
+    // оно означало бы, что удаление одного ключа `image` останавливает прогон,
+    // хотя имя образа выводится из имени каталога.
+    config.validationContainer ??= {};
+    if (
+      typeof config.validationContainer === 'object' &&
+      !Array.isArray(config.validationContainer)
+    ) {
+      config.validationContainer.image ??= defaultValidationImage();
+      config.validationContainer.dockerfile ??= 'scripts/ralph/Dockerfile.validation';
+      config.validationContainer.writableVolumes ??= [];
+    }
   }
   // Проект обязан назвать свои команды сам: набор проверок зависит от стека, и
   // угаданное умолчание молча проверяло бы не то.
@@ -566,6 +580,13 @@ function validateLoopFields(config) {
   }
   if (!agentClis.includes(config.agentCli)) {
     fail(`Поле "agentCli" должно быть одним из: ${agentClis.join(', ')}.`);
+  }
+  if (
+    config.githubAccount !== null &&
+    (typeof config.githubAccount !== 'string' ||
+      !/^(?!-)[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,37}[a-zA-Z0-9])?$/u.test(config.githubAccount))
+  ) {
+    fail('Поле "githubAccount" должно содержать GitHub login длиной до 39 знаков.');
   }
   if (typeof config.autoApproveConfiguredIssues !== 'boolean') {
     fail('Поле "autoApproveConfiguredIssues" должно быть true или false.');
@@ -622,6 +643,11 @@ function validateApprovedIssueSnapshots(config) {
 }
 
 function prepareValidationContainer(config) {
+  if (!['host', 'container'].includes(config.validationMode)) {
+    fail('Поле "validationMode" должно быть одним из: host, container.');
+  }
+  if (config.validationMode === 'host') return;
+
   if (
     typeof config.validationContainer !== 'object' ||
     config.validationContainer === null ||
@@ -642,6 +668,24 @@ function prepareValidationContainer(config) {
       fail(`Поле "validationContainer.${field}" должно содержать безопасное значение.`);
     }
   }
+  if (
+    !Array.isArray(config.validationContainer.writableVolumes) ||
+    config.validationContainer.writableVolumes.some(
+      (target) =>
+        typeof target !== 'string' ||
+        !/^\/(?:[a-zA-Z0-9._-]+\/)*[a-zA-Z0-9._-]+$/.test(target) ||
+        ['/source', '/workspace', '/tmp'].some(
+          (reserved) => target === reserved || target.startsWith(`${reserved}/`),
+        ),
+    ) ||
+    new Set(config.validationContainer.writableVolumes).size !==
+      config.validationContainer.writableVolumes.length
+  ) {
+    fail(
+      'Поле "validationContainer.writableVolumes" должно содержать уникальные ' +
+        'абсолютные POSIX-пути вне /source, /workspace и /tmp.',
+    );
+  }
   config.validationContainer.dockerfilePath = resolveProjectFile(
     config.validationContainer.dockerfile,
     'validationContainer.dockerfile',
@@ -652,13 +696,13 @@ function prepareValidationContainer(config) {
 }
 
 const maxValidationCommandLength = 500;
+const hostCommandControlOperators = /[;&|`]/u;
 
 function validateValidationCommands(config) {
-  // Команда выполняется оболочкой как есть, поэтому набор символов здесь не
-  // ограничивается: от подстановки произвольной команды защищает не эта
-  // проверка, а то, что конфиг лежит в control plane и автономный агент не
-  // может его изменить. Осознанный размен: контракт переносится на любой стек,
-  // а разрешение на команду даёт только оператор.
+  // Команда выполняется оболочкой как есть. От подстановки произвольной команды
+  // защищает control plane: автономный агент не может изменить конфиг. В
+  // host-режиме цепочки запрещены отдельно, потому что Windows PowerShell и
+  // cmd возвращают код последней native-команды, скрывая более ранний отказ.
   //
   // Перевод строки запрещён: имя упавшей команды печатается маркером в поток
   // контейнера и разбирается построчно, и многострочная команда назвала бы в
@@ -680,6 +724,17 @@ function validateValidationCommands(config) {
     );
   }
   if (
+    config.validationMode === 'host' &&
+    [...config.preflightScripts, ...config.validationScripts].some((command) =>
+      hostCommandControlOperators.test(command),
+    )
+  ) {
+    fail(
+      'Host-проверка принимает одну команду на элемент и не допускает управляющие ' +
+        'операторы ; & | `. Разнесите цепочку по отдельным строкам.',
+    );
+  }
+  if (
     !Array.isArray(config.validationDependencyPaths) ||
     config.validationDependencyPaths.some((file) => {
       if (typeof file !== 'string' || file.trim() === '') return true;
@@ -694,6 +749,26 @@ function validateValidationCommands(config) {
     fail(
       'Поле "validationDependencyPaths" должно быть массивом относительных путей внутри проекта.',
     );
+  }
+  if (
+    !Array.isArray(config.validationEnvironment) ||
+    config.validationEnvironment.some(
+      (entry) =>
+        typeof entry !== 'string' ||
+        entry.length > maxValidationCommandLength ||
+        !/^[A-Za-z_][A-Za-z0-9_]*=[^\r\n]*$/.test(entry),
+    )
+  ) {
+    fail(
+      'Поле "validationEnvironment" должно содержать строки NAME=value без переносов ' +
+        `длиной не больше ${maxValidationCommandLength} символов.`,
+    );
+  }
+  const validationEnvironmentNames = config.validationEnvironment.map((entry) =>
+    entry.slice(0, entry.indexOf('=')),
+  );
+  if (new Set(validationEnvironmentNames).size !== validationEnvironmentNames.length) {
+    fail('Поле "validationEnvironment" не должно повторять имена переменных.');
   }
   if (!['P0', 'P1', 'P2', 'P3'].includes(config.reviewSeverityFloor)) {
     fail('Поле "reviewSeverityFloor" должно быть одним из: P0, P1, P2, P3.');
@@ -847,7 +922,9 @@ function collectTrustedControlFileHashes(config) {
     configPath,
     config.rulesPath,
     config.approvedIssueSnapshotsPath,
-    config.validationContainer.dockerfilePath,
+    ...(config.validationMode === 'container'
+      ? [config.validationContainer.dockerfilePath]
+      : []),
     // Модули перечислены поимённо, а не сканированием каталога: сканирование
     // приняло бы в доверенный набор любой подложенный файл. Тест требует, чтобы
     // каждый .mjs из scripts/ralph был в этом списке.
@@ -931,6 +1008,7 @@ export function loadConfig() {
   const config = prepareConfig(parseJson(readFileSync(configPath, 'utf8'), configPath));
 
   applyRuntimeSettings(config.runtime);
+  applyGitHubAccount(config.githubAccount);
   return config;
 }
 

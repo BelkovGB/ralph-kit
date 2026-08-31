@@ -38,7 +38,9 @@ import {
   isAncestorCommit,
   issueChangeInventory,
   linkedCommitForIssue,
+  pushBranchAndVerify,
   syncPhaseBranchWithBase,
+  verifyConfiguredGitHubOrigin,
   workingTreeEntries,
   workingTreePaths,
 } from './ralph-git.mjs';
@@ -723,6 +725,121 @@ test('the committed configuration sets an explicit effort valid for its agentCli
   }
 });
 
+test('GitHub account is configurable and exposed in the GUI', () => {
+  const config = loadConfig();
+  const githubAccountField = fieldGroups
+    .flatMap((group) => group.fields)
+    .find((field) => field.path === 'githubAccount');
+
+  assert.equal(config.githubAccount, null);
+  assert.equal(githubAccountField?.type, 'text');
+  assert.equal(githubAccountField?.emptyAsNull, true);
+  withPatchedRalphConfig({ githubAccount: 'owner-bot' }, (configuredAccount) => {
+    assert.equal(configuredAccount.githubAccount, 'owner-bot');
+  });
+  assert.throws(
+    () =>
+      withPatchedRalphConfig({ githubAccount: 'login with spaces' }, () => {
+        throw new Error('loadConfig should have failed');
+      }),
+    /githubAccount.*GitHub login/u,
+  );
+  withPatchedRalphConfig({ githubAccount: undefined }, (withoutAccount) => {
+    assert.equal(withoutAccount.githubAccount, null);
+  });
+  withPatchedRalphConfig({ githubAccount: '' }, (emptyAccount) => {
+    assert.equal(emptyAccount.githubAccount, null);
+  });
+});
+
+test('configured GitHub account requires an HTTPS GitHub origin', () => {
+  const config = { githubAccount: 'codex-ai-Goo' };
+  const executeWith = (origin) => () => ({ stdout: origin });
+
+  const pinned = verifyConfiguredGitHubOrigin(config, {
+    run: executeWith('https://github.com/BelkovGB/letofest.git'),
+  });
+  assert.equal(pinned, 'https://github.com/BelkovGB/letofest.git');
+  assert.equal(config.githubRemoteUrl, pinned);
+  for (const origin of [
+    'git@github.com:BelkovGB/letofest.git',
+    'https://example.test/BelkovGB/letofest.git',
+    'https://token@github.com/BelkovGB/letofest.git',
+  ]) {
+    assert.throws(() => verifyConfiguredGitHubOrigin(config, { run: executeWith(origin) }), (error) => {
+      assert.match(error.message, /origin должен быть HTTPS-адресом GitHub/u);
+      assert.equal(error.message.includes(origin), false);
+      assert.equal(error.message.includes('token@'), false);
+      return true;
+    });
+  }
+  assert.equal(
+    verifyConfiguredGitHubOrigin(
+      { githubAccount: null },
+      { run: () => assert.fail('origin не нужен без выбранного аккаунта') },
+    ),
+    null,
+  );
+});
+
+test('authenticated push disables repository hooks', () => {
+  const calls = [];
+  const verified = [];
+  const head = 'a'.repeat(40);
+  const result = pushBranchAndVerify(
+    {
+      branch: 'ralph/phase-1',
+      githubAccount: 'codex-ai-Goo',
+      githubRemoteUrl: 'https://github.com/owner/repository.git',
+    },
+    {
+      run: () => ({ stdout: head }),
+      runNetwork: (command, args, options) => {
+        calls.push({ command, args, options });
+        return { status: 0, stdout: '' };
+      },
+      verifyPushedHead: (_config, expectedHead) => {
+        verified.push(expectedHead);
+        return expectedHead;
+      },
+    },
+  );
+
+  assert.deepEqual(calls[0].args, [
+    'push',
+    '--no-verify',
+    'https://github.com/owner/repository.git',
+    'HEAD:refs/heads/ralph/phase-1',
+  ]);
+  assert.equal(calls[0].options.echoOutput, true);
+  assert.deepEqual(verified, [head]);
+  assert.equal(result, head);
+});
+
+test('push keeps repository hooks without a configured GitHub account', () => {
+  const calls = [];
+  const head = 'b'.repeat(40);
+
+  pushBranchAndVerify(
+    { branch: 'ralph/phase-1', githubAccount: null },
+    {
+      run: () => ({ stdout: head }),
+      runNetwork: (_command, args) => {
+        calls.push(args);
+        return { status: 0, stdout: '' };
+      },
+      verifyPushedHead: () => head,
+    },
+  );
+
+  assert.deepEqual(calls[0], [
+    'push',
+    '--set-upstream',
+    'origin',
+    'ralph/phase-1',
+  ]);
+});
+
 test('reasoning effort falls back to medium/medium/high when the config omits it', () => {
   const original = JSON.parse(readFileSync(ralphConfigPath, 'utf8'));
   const { effort: _review, ...review } = original.review;
@@ -909,15 +1026,110 @@ test('the console marks the fields the config cannot do without', () => {
 
 test('the validation image is derived per field when the config omits it', () => {
   const original = JSON.parse(readFileSync(ralphConfigPath, 'utf8'));
-  const { image: _image, ...withoutImage } = original.validationContainer;
+  const validationContainer = {
+    dockerfile: 'scripts/ralph/Dockerfile.validation',
+    writableVolumes: [],
+  };
 
   // Умолчание на всём объекте означало бы, что удаление одного ключа
   // останавливает прогон. Имя образа выводится из имени каталога репозитория,
   // поэтому проверяется форма имени, а не конкретная строка.
-  withPatchedRalphConfig({ validationContainer: withoutImage }, (config) => {
-    assert.equal(config.validationContainer.image.endsWith('-ralph-validation:latest'), true);
-    assert.equal(config.validationContainer.dockerfile, original.validationContainer.dockerfile);
-  });
+  withPatchedRalphConfig(
+    { ...original, validationMode: 'container', validationContainer },
+    (config) => {
+      assert.equal(config.validationContainer.image.endsWith('-ralph-validation:latest'), true);
+      assert.equal(config.validationContainer.dockerfile, validationContainer.dockerfile);
+    },
+  );
+});
+
+test('validation writable volumes accept unique absolute POSIX paths only', () => {
+  withPatchedRalphConfig(
+    {
+      validationMode: 'container',
+      validationContainer: {
+        dockerfile: 'scripts/ralph/Dockerfile.validation',
+        writableVolumes: ['/opt/pnpm-store'],
+      },
+    },
+    (config) => {
+      assert.deepEqual(config.validationContainer.writableVolumes, ['/opt/pnpm-store']);
+    },
+  );
+  for (const writableVolumes of [
+    ['relative/path'],
+    ['/opt/pnpm-store', '/opt/pnpm-store'],
+    ['/opt/pnpm store'],
+    ['/source/cache'],
+  ]) {
+    assert.throws(
+      () =>
+        withPatchedRalphConfig(
+          {
+            validationMode: 'container',
+            validationContainer: {
+              dockerfile: 'scripts/ralph/Dockerfile.validation',
+              writableVolumes,
+            },
+          },
+          () => {
+            throw new Error('loadConfig should have failed');
+          },
+        ),
+      /writableVolumes.*POSIX/u,
+    );
+  }
+});
+
+test('host validation does not require Docker settings', () => {
+  withPatchedRalphConfig(
+    {
+      validationMode: 'host',
+      validationContainer: undefined,
+      validationDependencyPaths: undefined,
+      validationEnvironment: ['DATABASE_URL=postgres://validation'],
+    },
+    (config) => {
+      assert.equal(config.validationMode, 'host');
+      assert.equal(config.validationContainer, undefined);
+      assert.deepEqual(config.validationDependencyPaths, []);
+    },
+  );
+});
+
+test('validation environment accepts unique NAME=value entries only', () => {
+  assert.throws(
+    () =>
+      withPatchedRalphConfig({ validationEnvironment: ['DATABASE_URL'] }, () => {
+        throw new Error('loadConfig should have failed');
+      }),
+    /NAME=value/u,
+  );
+  assert.throws(
+    () =>
+      withPatchedRalphConfig(
+        { validationEnvironment: ['CI=true', 'CI=false'] },
+        () => {
+          throw new Error('loadConfig should have failed');
+        },
+      ),
+    /не должно повторять/u,
+  );
+});
+
+test('host validation rejects shell command chains', () => {
+  for (const command of ['pnpm lint; pnpm test', 'pnpm lint && pnpm test', 'pnpm lint | tee log']) {
+    assert.throws(
+      () =>
+        withPatchedRalphConfig(
+          { validationMode: 'host', validationScripts: [command] },
+          () => {
+            throw new Error('loadConfig should have failed');
+          },
+        ),
+      /одну команду на элемент/u,
+    );
+  }
 });
 
 test('the instruction boundary takes .agents/skills and skips dependency directories', () => {

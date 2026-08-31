@@ -25,11 +25,33 @@ import {
   writeJsonAtomic,
 } from './ralph-runtime.mjs';
 import {
+  applyGitHubAccount,
   commandSpec,
+  githubAccountEnvironment,
+  githubGitEnvironment,
+  removeTemporaryDirectory,
   resolveWindowsExecutable,
   windowsSafeCommandEnvironment,
 } from './ralph-process-runner.mjs';
 import { runReviewWithRetries } from './ralph-agent-session.mjs';
+
+test('temporary cleanup retries Windows locks and never crashes the run', () => {
+  let removalOptions;
+  const warnings = [];
+  const removed = removeTemporaryDirectory('C:\\Temp\\ralph-session', {
+    rmSync: (_directory, options) => {
+      removalOptions = options;
+      throw Object.assign(new Error('Permission denied'), { code: 'EPERM' });
+    },
+    warn: (message) => warnings.push(message),
+  });
+
+  assert.equal(removed, false);
+  assert.equal(removalOptions.maxRetries, 5);
+  assert.equal(removalOptions.retryDelay, 100);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /не удалил временный каталог/u);
+});
 
 function withTemporaryDirectory(run) {
   const directory = mkdtempSync(path.join(os.tmpdir(), 'ralph-runtime-test-'));
@@ -39,6 +61,76 @@ function withTemporaryDirectory(run) {
     rmSync(directory, { recursive: true, force: true });
   }
 }
+
+test('configured GitHub account supplies a token only to gh environment', (t) => {
+  applyGitHubAccount('codex-ai-Goo');
+  t.after(() => applyGitHubAccount(null));
+  const calls = [];
+  const source = {
+    PATH: 'tools',
+    GITHUB_TOKEN: 'wrong-account-token',
+    GH_ENTERPRISE_TOKEN: 'enterprise-token',
+  };
+
+  const environment = githubAccountEnvironment(source, {
+    readToken: (account) => {
+      calls.push(account);
+      return 'selected-account-token';
+    },
+  });
+  const cached = githubAccountEnvironment(source, {
+    readToken: () => assert.fail('токен выбранного аккаунта должен кэшироваться'),
+  });
+
+  assert.deepEqual(calls, ['codex-ai-Goo']);
+  assert.equal(environment.GH_TOKEN, 'selected-account-token');
+  assert.equal(environment.GH_HOST, 'github.com');
+  assert.equal(environment.GITHUB_TOKEN, undefined);
+  assert.equal(environment.GH_ENTERPRISE_TOKEN, undefined);
+  assert.equal(environment.PATH, source.PATH);
+  assert.equal(cached.GH_TOKEN, 'selected-account-token');
+  assert.equal(source.GITHUB_TOKEN, 'wrong-account-token');
+});
+
+test('missing GitHub account keeps the caller environment unchanged', (t) => {
+  applyGitHubAccount(null);
+  t.after(() => applyGitHubAccount(null));
+  const source = { GH_TOKEN: 'active-account-token' };
+
+  assert.equal(githubAccountEnvironment(source), source);
+});
+
+test('configured GitHub account authenticates git without putting token in argv', (t) => {
+  applyGitHubAccount('codex-ai-Goo');
+  t.after(() => applyGitHubAccount(null));
+  const source = {
+    GIT_CONFIG_COUNT: '1',
+    GIT_CONFIG_KEY_0: 'core.autocrlf',
+    GIT_CONFIG_VALUE_0: 'false',
+    GIT_TRACE_CURL: '1',
+    Git_Trace_Redact: '0',
+  };
+
+  const environment = githubGitEnvironment(source, {
+    readToken: () => 'selected-account-token',
+  });
+  const encoded = environment.GIT_CONFIG_VALUE_1.replace('AUTHORIZATION: basic ', '');
+
+  assert.equal(environment.GIT_CONFIG_COUNT, '3');
+  assert.equal(environment.GIT_CONFIG_KEY_0, source.GIT_CONFIG_KEY_0);
+  assert.equal(environment.GIT_CONFIG_KEY_1, 'http.https://github.com/.extraheader');
+  assert.equal(environment.GIT_CONFIG_KEY_2, 'core.hooksPath');
+  assert.deepEqual(readdirSync(environment.GIT_CONFIG_VALUE_2), []);
+  assert.equal(environment.GIT_TRACE_CURL, undefined);
+  assert.equal(environment.Git_Trace_Redact, undefined);
+  assert.equal(
+    Buffer.from(encoded, 'base64').toString('utf8'),
+    'x-access-token:selected-account-token',
+  );
+  assert.equal(source.GIT_CONFIG_COUNT, '1');
+  assert.equal(source.GIT_TRACE_CURL, '1');
+  assert.equal(source.Git_Trace_Redact, '0');
+});
 
 test('retryTransientOperation повторяет временные ошибки и возвращает результат', () => {
   const attempts = [];

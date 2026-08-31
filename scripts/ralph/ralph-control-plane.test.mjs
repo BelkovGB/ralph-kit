@@ -294,19 +294,18 @@ test('Ralph configuration pins approved AFK inputs before starting an agent sess
     config.approvedIssueSnapshotsPath,
     /[\\/]scripts[\\/]ralph[\\/]approved-issues\.json$/,
   );
-  assert.match(
-    config.validationContainer.dockerfilePath,
-    /[\\/]scripts[\\/]ralph[\\/]Dockerfile\.validation$/,
-  );
-  assert.equal(existsSync(config.validationContainer.dockerfilePath), true);
-  for (const relativePath of [
+  const expectedControlFiles = [
     '.agents/ralph.config.json',
     '.agents/ralph-rules.md',
     '.agents/RALPH.md',
     'scripts/ralph/ralph-runtime.mjs',
     'scripts/ralph/ralph-scope.mjs',
     'scripts/ralph/ralph-validation-entrypoint.sh',
-  ]) {
+  ];
+  if (config.validationMode === 'container') {
+    expectedControlFiles.push('scripts/ralph/Dockerfile.validation');
+  }
+  for (const relativePath of expectedControlFiles) {
     assert.equal(config.trustedControlFileHashes.has(path.join(process.cwd(), relativePath)), true);
   }
 

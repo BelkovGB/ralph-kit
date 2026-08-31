@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
@@ -10,6 +10,7 @@ import {
   commandSpec,
   credentialFreeEnvironment,
   outputTail,
+  removeTemporaryDirectory,
   runtimeSettings,
   windowsSafeCommandEnvironment,
 } from './ralph-process-runner.mjs';
@@ -50,7 +51,7 @@ export function createSandboxRoot(source, prefix) {
 
   return {
     root,
-    cleanup: () => rmSync(root, { recursive: true, force: true }),
+    cleanup: () => removeTemporaryDirectory(root),
     env: {
       ...credentialFreeEnvironment(source),
       // cwd сессии — корень репозитория, куда сама же сессия пишет с полным
@@ -156,11 +157,10 @@ export async function runAgentSession(backend, args, options) {
       windowsHide: true,
     });
   } catch (error) {
-    rmSync(childEnvironment.root, { recursive: true, force: true });
+    removeTemporaryDirectory(childEnvironment.root);
     throw error;
   }
-  const cleanupChildEnvironment = () =>
-    rmSync(childEnvironment.root, { recursive: true, force: true });
+  const cleanupChildEnvironment = () => removeTemporaryDirectory(childEnvironment.root);
   child.once('error', cleanupChildEnvironment);
   child.once('close', cleanupChildEnvironment);
   child.stdout.setEncoding('utf8');
