@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -442,18 +442,74 @@ test('host validation hashes files without copying the workspace', () => {
   );
 });
 
-test('host validation home stays outside the project workspace', () => {
-  const projectRoot = fileURLToPath(new URL('../..', import.meta.url));
-  const relativeToProject = path.relative(projectRoot, hostHomeDirectory);
-  const relativeToTemp = path.relative(tmpdir(), hostHomeDirectory);
-  const isInside = (relativePath) =>
-    relativePath !== '' &&
-    relativePath !== '..' &&
-    !relativePath.startsWith(`..${path.sep}`) &&
-    !path.isAbsolute(relativePath);
+function isInsideDirectory(parent, candidate) {
+  const relative = path.relative(parent, candidate);
+  return (
+    relative !== '' &&
+    relative !== '..' &&
+    !relative.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(relative)
+  );
+}
 
-  assert.equal(isInside(relativeToProject), false);
-  assert.equal(isInside(relativeToTemp), true);
+test('host validation home stays outside the project workspace and outside shared temp', () => {
+  // Путь выводится из пути проекта, то есть известен заранее. В общем temp
+  // (на POSIX это 1777) сосед по машине создал бы его первым и положил туда
+  // свой .gitconfig или .npmrc, а Ralph отдал бы этот каталог командам
+  // проверок как HOME — чужой код выполнился бы с правами оператора.
+  const projectRoot = fileURLToPath(new URL('../..', import.meta.url));
+
+  assert.equal(isInsideDirectory(projectRoot, hostHomeDirectory), false);
+  assert.equal(isInsideDirectory(tmpdir(), hostHomeDirectory), false);
+  assert.equal(isInsideDirectory(homedir(), hostHomeDirectory), true);
+  // Сам профиль оператора командам всё равно не достаётся: HOME указывает на
+  // подкаталог, а не на домашний каталог.
+  assert.notEqual(path.resolve(hostHomeDirectory), path.resolve(homedir()));
+});
+
+test('путь оператора внутри рабочей папки отвергается', () => {
+  // Абсолютный путь проверку проходил, а созданные в нём файлы попадали в
+  // отпечаток дерева: прогон останавливался как на подделке, и цикл сам из
+  // этого состояния не выходил.
+  const projectRoot = fileURLToPath(new URL('../..', import.meta.url));
+
+  assert.throws(
+    () =>
+      hostValidationEnvironment(
+        hostValidationConfig({
+          validationEnvironment: [`XDG_CACHE_HOME=${path.join(projectRoot, '.cache')}`],
+        }),
+        { PATH: 'safe-path' },
+      ),
+    /XDG_CACHE_HOME.*рабочей папки/u,
+  );
+});
+
+test('отказ подготовки каталогов останавливает прогон, а не уходит агенту как провал проверок', () => {
+  // Каталог на разделе только для чтения — беда окружения. Провал проверок
+  // отправляет агента чинить код, и все попытки уходят на ошибку, которую
+  // правка репозитория не устраняет.
+  const failingMkdir = () => {
+    throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+  };
+  const commands = [];
+
+  assert.throws(
+    () =>
+      runConfiguredScripts(hostValidationConfig(), ['pnpm check'], 'Validation', {
+        run: (command, args) => {
+          commands.push(args.at(-1));
+          return { status: 0, stdout: '', stderr: '' };
+        },
+        mkdir: failingMkdir,
+      }),
+    (error) => {
+      assert.equal(error.code, 'RALPH_VALIDATION_ENVIRONMENT');
+      assert.match(error.message, /EACCES/u);
+      return true;
+    },
+  );
+  assert.deepEqual(commands, [], 'ни одна команда проверок не запускается');
 });
 
 test('a validation set runs in one container instead of one per script', () => {

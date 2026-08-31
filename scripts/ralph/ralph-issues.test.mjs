@@ -2016,8 +2016,9 @@ test('упавшие тесты pytest и go test попадают в сводк
     'FAILED tests/test_profile.py::test_accepts_unicode',
     '=========================== 2 failed, 40 passed ================================',
   ].join(newline);
+  // Имя остаётся селектором: агент подставляет его в команду перезапуска.
   assert.deepEqual(uniqueFailedTests(pytest).tests, [
-    'tests/test_profile.py::test_rejects_long_password - AssertionError',
+    'tests/test_profile.py::test_rejects_long_password',
     'tests/test_profile.py::test_accepts_unicode',
   ]);
 
@@ -2027,4 +2028,34 @@ test('упавшие тесты pytest и go test попадают в сводк
     'FAIL\texample.com/profile\t0.012s',
   ].join(newline);
   assert.deepEqual(uniqueFailedTests(goTest).tests, ['TestProfileRejectsLongPassword']);
+});
+
+test('сводка не принимает итоговую строку unittest за имя теста', () => {
+  // `FAILED (failures=1)` — итог прогона stdlib unittest и Django, а не тест.
+  // Попав в список, он превращался в задание «перезапусти упавшее» на имени,
+  // которого не существует: хуже, чем пустой список до правки.
+  const unittest = [
+    'FAIL: test_rejects_long_password (tests.test_profile.ProfileTests)',
+    '----------------------------------------------------------------------',
+    'Ran 41 tests in 2.140s',
+    'FAILED (failures=1)',
+  ].join(newline);
+
+  assert.deepEqual(uniqueFailedTests(unittest).tests, []);
+});
+
+test('имя теста pytest остаётся селектором, а повторы схлопываются', () => {
+  // Имя из списка агент подставляет в команду перезапуска: с хвостом ошибки
+  // pytest отвечает «no tests ran», а два прогона одного теста с разными
+  // сообщениями раздували список.
+  const pytest = [
+    'FAILED tests/test_profile.py::test_flaky - AssertionError: assert 0.51 < 0.5',
+    'FAILED tests/test_profile.py::test_flaky - AssertionError: assert 0.53 < 0.5',
+    'FAILED tests/test_profile.py::test_accepts_unicode',
+  ].join(newline);
+
+  assert.deepEqual(uniqueFailedTests(pytest).tests, [
+    'tests/test_profile.py::test_flaky',
+    'tests/test_profile.py::test_accepts_unicode',
+  ]);
 });

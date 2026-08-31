@@ -45,8 +45,11 @@ const failedTestPatterns = [
   /^\s*●\s+(.+)$/,
   // node:test: "✖ my test (1.2ms)"
   /^\s*[✖✗×]\s+(.+)$/,
-  // pytest: "FAILED tests/test_profile.py::test_rejects - AssertionError"
-  /^\s*FAILED\s+(.+)$/,
+  // pytest: "FAILED tests/test_profile.py::test_rejects - AssertionError".
+  // Имя обязано начинаться не со скобки: `FAILED (failures=1)` — итог прогона
+  // stdlib unittest, а не тест. Хвост после " - " отбрасывается: в списке нужен
+  // селектор, который агент подставит в команду перезапуска.
+  /^\s*FAILED\s+([^\s(]\S*)(?:\s+-\s.*)?$/,
   // go test: "--- FAIL: TestProfileRejects (0.00s)"
   /^\s*---\s*FAIL:\s+(.+?)(?:\s+\([\d.]+s\))?$/,
 ];

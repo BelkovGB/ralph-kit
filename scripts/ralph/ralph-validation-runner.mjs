@@ -11,7 +11,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -421,8 +421,20 @@ function configuredValidationEnvironment(config) {
  * которые ищут корень проекта вверх по дереву и находили бы его в HOME.
  */
 const hostHomeProjectKey = createHash('sha256').update(projectRoot).digest('hex').slice(0, 16);
+
+/**
+ * Корень профиля — каталог кэша пользователя, а не общий temp. Путь выводится из
+ * пути проекта, то есть известен заранее, а общий temp на POSIX доступен на
+ * запись всем: сосед по машине создал бы каталог первым и положил туда свой
+ * `.gitconfig` или `.npmrc`, и Ralph отдал бы это командам проверок как HOME.
+ */
+const hostHomeRoot =
+  process.platform === 'win32'
+    ? (process.env.LOCALAPPDATA ?? path.join(homedir(), 'AppData', 'Local'))
+    : (process.env.XDG_CACHE_HOME ?? path.join(homedir(), '.cache'));
+
 export const hostHomeDirectory = path.join(
-  tmpdir(),
+  hostHomeRoot,
   'ralph-loop',
   hostHomeProjectKey,
   'host-home',
@@ -438,6 +450,17 @@ function hostDirectory(name, value, fallback) {
   if (value === undefined || value === '') return fallback;
   if (!path.isAbsolute(value)) {
     fail(`Значение ${name} в validationEnvironment должно быть абсолютным путём: ${value}`);
+  }
+  const relativeToProject = path.relative(projectRoot, value);
+  if (
+    relativeToProject !== '' &&
+    !relativeToProject.startsWith('..') &&
+    !path.isAbsolute(relativeToProject)
+  ) {
+    fail(
+      `Значение ${name} в validationEnvironment указывает внутрь рабочей папки: ${value}. ` +
+        'Созданные там файлы попадут в отпечаток дерева, и проверка остановит прогон.',
+    );
   }
   return value;
 }
@@ -593,15 +616,28 @@ export function runHostConfiguredScripts(config, scripts, label, options = {}) {
 
   assertTrustedControlFilesUnchanged(config);
   const environment = hostValidationEnvironment(config, options.environmentSource ?? process.env);
-  for (const variable of [
-    'HOME',
-    'USERPROFILE',
-    'APPDATA',
-    'LOCALAPPDATA',
-    'XDG_CONFIG_HOME',
-    'XDG_CACHE_HOME',
-  ]) {
-    mkdirSync(environment[variable], { recursive: true, mode: 0o700 });
+  // Отказ на подготовке каталогов — беда окружения, а не проверок. Без своего
+  // кода он уходит в цикл как провал проверок, и агент тратит все попытки на
+  // ошибку, которую правка репозитория не устраняет.
+  try {
+    const makeDirectory = options.mkdir ?? mkdirSync;
+    for (const variable of [
+      'HOME',
+      'USERPROFILE',
+      'APPDATA',
+      'LOCALAPPDATA',
+      'XDG_CONFIG_HOME',
+      'XDG_CACHE_HOME',
+    ]) {
+      makeDirectory(environment[variable], { recursive: true, mode: 0o700 });
+    }
+  } catch (error) {
+    const failure = new Error(
+      `${label}: не удалось подготовить каталоги окружения host-проверок. ${error.message}`,
+      { cause: error },
+    );
+    failure.code = 'RALPH_VALIDATION_ENVIRONMENT';
+    throw failure;
   }
   const startedAt = Date.now();
   console.log(`\n=== ${label}: host ${[...preparation, ...guarded].join(' && ')} ===\n`);
