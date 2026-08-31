@@ -40,13 +40,22 @@ export function renderPrompt(config, issue, rules) {
 // прочитают как шаблон, даёт флаг PowerShell, а Claude-ревьюеру он недоступен —
 // его Glob и `--glob` у Grep трактуют скобки как класс символов, поэтому ту же
 // защиту несёт вторая подсказка.
-const shellReviewGuidance =
+const powershellReviewGuidance =
   'Read efficiently on this Windows/PowerShell host: locate code with `rg -n` before opening a file, read bounded ranges rather than whole files, and pass every discovered path to file cmdlets with `-LiteralPath` so a path segment containing square brackets is not treated as a wildcard pattern. Do not dump full logs, lockfiles, or generated files.';
+const posixShellReviewGuidance =
+  'Read efficiently: locate code with `grep -rn` before opening a file, read bounded ranges rather than whole files, and quote every discovered path so a segment containing square brackets is not expanded by the shell. Do not dump full logs, lockfiles, or generated files.';
 const toolReviewGuidance =
   'Read efficiently with the only tools you have — Grep, Glob and Read: locate code with Grep before opening a file, and read bounded ranges with Read rather than whole files. Glob patterns and Grep `--glob` filters treat square brackets as a character class, so a path segment written in brackets never matches literally: reach it with a wildcard segment, then pass the exact path to Read. Do not dump full logs, lockfiles, or generated files.';
 
-function reviewShellGuidance(config) {
-  return config?.agentCli === 'claude' ? toolReviewGuidance : shellReviewGuidance;
+/**
+ * Оболочка ревьюера — это оболочка машины оператора, а не контейнера проверок,
+ * поэтому подсказка выбирается по платформе, а не только по CLI. Роль Claude
+ * оболочки не получает вовсе, и её подсказка от платформы не зависит.
+ */
+export function reviewShellGuidance(config, platform = process.platform) {
+  if (config?.agentCli === 'claude') return toolReviewGuidance;
+
+  return platform === 'win32' ? powershellReviewGuidance : posixShellReviewGuidance;
 }
 // Тот же принцип, что и у подсказки про чтение: способ найти документ обязан
 // быть исполнимым тем набором инструментов, который получила роль.

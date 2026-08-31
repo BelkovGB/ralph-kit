@@ -55,10 +55,6 @@ contracts. Keep it short: an agent reads this file on every task.
   `rg`, and the failed command costs a step plus its error output.
 - Run repo-wide commands from the repository root. A path resolved against the
   wrong working directory costs a step and reports a misleading "not found".
-- A non-interactive `claude` run pays for every tool schema in its cached
-  prefix. Deny the tools the task cannot use and pass
-  `--exclude-dynamic-system-prompt-sections` so per-machine text stays out of
-  that prefix, and a repeat session reads the cache instead of rewriting it.
 
 ## Writing instructions and documentation
 

@@ -13,6 +13,7 @@ import {
   buildIndependentReviewPrompt,
   buildMilestoneReviewPrompt,
   renderPrompt,
+  reviewShellGuidance,
 } from './ralph-prompts.mjs';
 import {
   isRalphInfrastructureIssue,
@@ -447,7 +448,13 @@ test('every generated prompt protects bracketed path segments with the tools it 
   assert.match(rules, /-LiteralPath/, 'rules must require -LiteralPath');
   assert.match(rules, /\[id\]/, 'rules must name the wildcard-prone segment');
   for (const [label, text] of prompts({ agentCli: 'codex' })) {
-    assert.match(text, /-LiteralPath/, `${label} must require -LiteralPath`);
+    // Подсказка про PowerShell уместна только на Windows: на других системах
+    // роль получает нейтральный текст, но сегмент в скобках назван всегда.
+    if (process.platform === 'win32') {
+      assert.match(text, /-LiteralPath/, `${label} must require -LiteralPath`);
+    } else {
+      assert.doesNotMatch(text, /-LiteralPath/, `${label} must not prescribe PowerShell`);
+    }
     assert.match(text, /square brackets/, `${label} must name the wildcard-prone segment`);
   }
 
@@ -645,4 +652,20 @@ test('повторное milestone-ревью того же head обходит�
   assert.doesNotMatch(prompt, /Use the change inventory above/);
   assert.doesNotMatch(prompt, /Audit the new changes in full/);
   assert.match(prompt, /verify the resolution of every finding of the previous review/);
+});
+
+test('shell-подсказка ревью не обещает PowerShell на чужой платформе', () => {
+  // Подсказка выбиралась только по CLI агента, а ревьюер запускается на машине
+  // оператора. На Linux и macOS Codex получал утверждение про Windows-хост и
+  // флаг, которого в его оболочке нет.
+  const codex = { agentCli: 'codex' };
+
+  assert.match(reviewShellGuidance(codex, 'win32'), /-LiteralPath/u);
+  const posix = reviewShellGuidance(codex, 'linux');
+  assert.doesNotMatch(posix, /PowerShell|-LiteralPath/u);
+  assert.match(posix, /square brackets/u);
+
+  // У роли Claude оболочки нет вовсе: её подсказка от платформы не зависит.
+  const claude = { agentCli: 'claude' };
+  assert.equal(reviewShellGuidance(claude, 'linux'), reviewShellGuidance(claude, 'win32'));
 });

@@ -1,4 +1,0 @@
-#!/bin/sh
-# Git pre-commit hook. Replace the lines below with your project's own checks —
-# keep them fast, the full set runs in Ralph's validation container.
-npx lint-staged
