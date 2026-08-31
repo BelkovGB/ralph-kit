@@ -18,32 +18,27 @@ RUN apt-get update \
 #
 # What the run gives the commands, and what follows from it:
 #
-# 1. No network, so the build is the only place with one. It is also the only
-#    step that downloads a whole dependency tree at once, and that is where an
-#    unstable connection breaks: the runner retries the build, but every retry
-#    restarts the failed layer from its beginning. A retry loop inside the
-#    install step keeps what it already downloaded, because the package cache
-#    lives in the same RUN, so each pass gets further:
-#      RUN ok=""; for attempt in 1 2 3 4 5; do \
-#            npm ci --prefer-offline && ok=1 && break \
-#            || echo "npm ci: attempt $attempt failed, retrying"; \
-#          done; test -n "$ok"
+# 1. No network, so the build is the only place with one, and the only step that
+#    downloads a whole dependency tree at once. An unstable connection breaks
+#    there: the runner retries the build, but every retry restarts the failed
+#    layer from its beginning. Wrap the install in a retry loop inside a single
+#    RUN — the package cache lives in that layer, so each pass gets further.
 #
-# 2. A read-only root filesystem. /workspace and /tmp are writable tmpfs paths;
-#    `validationContainer.writableVolumes` can add writable anonymous volumes,
-#    for example /opt/pnpm-store. Dependencies installed here therefore live
+# 2. A read-only root filesystem. /workspace and /tmp are writable tmpfs paths,
+#    and `validationContainer.writableVolumes` adds writable anonymous volumes
+#    for caches a package manager must update. Dependencies installed here live
 #    outside the workspace — /opt is the usual place — and a preflight script
-#    puts them where the commands expect them. Copy dependencies that test
-#    runners modify: a symlink into read-only /opt still fails. Copying is what
-#    `preflightScripts` is for:
-#      "preflightScripts": ["cp -R /opt/deps/node_modules node_modules"]
+#    puts them where the commands expect them. Copy them, do not link them: a
+#    test runner that writes inside its own dependency tree fails on a symlink
+#    into read-only /opt. That is what `preflightScripts` is for.
 #
 # 3. A fresh container per run, so a service with state on disk cannot be baked
-#    into the image: its data directory would be read-only. A database is
-#    initialised by a preflight script into /tmp and started there. Give the
-#    cluster an explicit UTF-8 locale (C.UTF-8): the default C locale does not
-#    case-fold anything outside ASCII, and a project whose tests compare
-#    non-English strings fails on comparisons that pass everywhere else.
+#    into the image: its data directory would be read-only. Such a service is
+#    initialised and started by a preflight script under /tmp.
+#
+# Worked examples for common stacks — a retry loop, a database, a package store —
+# are in docs/tips.md of the kit repository, not here: this file belongs to your
+# project and carries your stack, not someone else's.
 
 COPY scripts/ralph/ralph-validation-entrypoint.sh /usr/local/bin/ralph-validation
 COPY scripts/ralph/ralph-validation-docker-shim.sh /usr/local/bin/docker
