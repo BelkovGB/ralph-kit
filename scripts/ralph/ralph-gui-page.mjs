@@ -11,29 +11,33 @@
  * содержать угловые скобки.
  */
 
-import { KIT_VERSION } from './ralph-version.mjs';
+import { KIT_VERSION } from "./ralph-version.mjs";
 
 // Единственное место, где в разметку попадает значение извне: токен уходит в
 // JS-литерал. Экранируются и угловые скобки, иначе значение вида "</script>"
 // закрыло бы тег. Версия набора — константа модуля с проверенным форматом,
 // экранировать в ней нечего.
 function scriptLiteral(value) {
-  return JSON.stringify(String(value ?? ''))
-    .replace(/</g, '\\u003c')
-    .replace(/>/g, '\\u003e')
-    .replace(/&/g, '\\u0026');
+  return JSON.stringify(String(value ?? ""))
+    .replace(/</g, "\\u003c")
+    .replace(/>/g, "\\u003e")
+    .replace(/&/g, "\\u0026");
 }
 
 // Тот же экран для константы модуля: JSON уходит в скрипт целым значением.
 function jsonLiteral(value) {
   return JSON.stringify(value)
-    .replace(/</g, '\\u003c')
-    .replace(/>/g, '\\u003e')
-    .replace(/&/g, '\\u0026');
+    .replace(/</g, "\\u003c")
+    .replace(/>/g, "\\u003e")
+    .replace(/&/g, "\\u0026");
 }
 
 /**
  * Вкладка «Команды»: вся командная поверхность набора текстом.
+ *
+ * Заголовок и поле «Делает» называют результат, а не работу: человек выбирает
+ * команду по тому, что у него будет на выходе — файл, беклог, отчёт, — а не по
+ * тому, какие шаги она пройдёт внутри.
  *
  * Третье поле важнее двух первых. Человек ошибается не в том, что команда
  * делает, а в том, чего она не делает: ждёт от `--check` начала работы, а от
@@ -41,123 +45,154 @@ function jsonLiteral(value) {
  */
 export const commandGuide = [
   {
-    title: 'В терминале',
-    note: 'Команды запускаются из корня репозитория.',
+    title: "Команды Ralph-loop",
+    note: "Команды запускаются в терминале из корня репозитория.",
     items: [
       {
-        command: 'node scripts/ralph/ralph-loop.mjs --check',
+        title: "Запустить проверку",
+        command: "node scripts/ralph/ralph-loop.mjs --check",
         does:
-          'Проверяет, что стоят git, gh и CLI агента, а конфиг, milestone и ветка сходятся. ' +
-          'Печатает версию набора, фазу, репозиторий, milestone и число открытых issues, ветку, ' +
-          'чистоту дерева, остаток итераций, лимиты, модели и заголовок следующей issue.',
-        when: 'Перед первым прогоном и после каждой правки .agents/ralph.config.json.',
+          "Проводит полную проверку. Покажет что настроено, а чего не хватает.",
+        when: "Перед первым прогоном и после каждой правки .agents/ralph.config.json.",
         omits:
-          'Ничего не меняет: не переключает ветку, не коммитит, не создаёт issues и pull request. ' +
-          'Вход в CLI агента не проверяет — это делает --run. ' +
-          'Если текущая ветка не совпадает с веткой фазы, команда останавливается с ошибкой.',
+          "Не меняет файлы, не создаёт подключений, не начинает выполнять задачу.",
       },
       {
-        command: 'node scripts/ralph/ralph-loop.mjs',
-        does: 'То же, что --check: без аргумента это режим по умолчанию.',
-        when: 'Отдельного повода нет: --check делает то же и явно называет режим.',
-        omits: 'Прогон не начинает. Ralph работает только от явного --run.',
-      },
-      {
-        command: 'node scripts/ralph/ralph-loop.mjs --run',
+        title: "Запуск Ralph-loop",
+        command: "node scripts/ralph/ralph-loop.mjs --run",
         does:
-          'Ведёт прогон: берёт открытые issues milestone по возрастанию номера, отдаёт агенту, гоняет ' +
-          'проверки в контейнере, коммитит, отправляет ветку, получает ревью и в конце фазы открывает pull request.',
-        when: 'Когда беклог на GitHub создан, а --check прошёл без ошибок.',
+          "Ralph берёт issues в milestones GitHub по возрастанию номера, " +
+          "отдаёт агенту, гоняет проверки в контейнере, коммитит, отправляет " +
+          "ветку и получает ревью.",
+        when: "Когда беклог на GitHub создан, а --check прошёл без ошибок.",
         omits:
-          'На одной фазе не останавливается: закрыв milestone, переходит к следующей фазе плана — ' +
-          'своя ветка, свой pull request — и встаёт, когда фазы кончились или очередная не прошла. ' +
-          'Pull request не сливает — merge остаётся за вами. Берёт только issues тех milestone, ' +
-          'которые перечислены в конфиге.',
+          "Не делает merge ветки. На одной фазе прогон не " +
+          "останавливается, если в настройках указано несколько — закрыв milestone, берёт следующую фазу плана со своей веткой и своим " +
+          "pull request и встаёт, когда фазы кончились или очередная не прошла. В работу идут " +
+          "issues только тех milestone, которые перечислены в конфиге.",
       },
       {
-        command: 'node scripts/ralph/ralph-gui.mjs',
-        does: 'Поднимает пульт на localhost и открывает его в браузере: состояние прогона, расход токенов по задачам, редактор настроек.',
-        when: 'Когда правите настройки и смотрите, на что ушли токены.',
+        title: "Запуск интерфейса в браузере",
+        command: "node scripts/ralph/ralph-gui.mjs",
+        does:
+          "Открывается вкладка с пультом на localhost: состояние прогона, расход токенов по " +
+          "задачам и редактор настроек.",
+        when: "Когда правите настройки или смотрите, на что ушли токены.",
         omits:
-          'Прогон не запускает и не останавливает, аргументов не принимает. ' +
-          'Меняет один файл — .agents/ralph.config.json.',
+          "Прогон отсюда не запускается и не останавливается, аргументов команда не принимает. " +
+          "Из файлов меняется один — .agents/ralph.config.json.",
       },
     ],
   },
   {
-    title: 'В чате с агентом',
-    note: 'Скиллы — команды со слэшем в сессии CLI агента. Ralph их не вызывает: зовёте вы.',
+    title: "Работа со скиллами в чате",
+    note: "Перед работой Ralph-loop создайте в GitHub беклог: скиллы prd, plan-phase и issues по порядку.",
     items: [
       {
-        command: '/prd описание фичи',
-        does: 'Спрашивает недостающее и пишет PRD — документ требований docs/prd-слаг.md.',
-        when: 'Перед новой фичей, пока требований нет.',
-        omits: 'Код не пишет, на фазы не делит, issues не создаёт.',
+        title: "Подготовка требований",
+        command: "/prd описание фичи",
+        does:
+          "По диалогу из чата создает файл docs/prd-слаг.md описывает: пользовательские сценарии, допущения и критерии " +
+          "готовности фичи, которую вы описали в команде. Чего не хватает, агент спросит по " +
+          "одному вопросу с готовыми вариантами ответа; остальное решит сам и запишет в допущения.",
+        when: "В начале новой фичи, пока требований нет ни в документах, ни в голове.",
+        omits:
+          "Кода, фаз и задач на GitHub на выходе нет. Решение, которое меняет объём фичи, агент " +
+          "сам не принимает: останавливается и спрашивает.",
       },
       {
-        command: '/plan-phase docs/prd-слаг.md',
-        does: 'Делит PRD на фазы и сохраняет план docs/plan-слаг.md. Каждую фазу можно сдать отдельно.',
-        when: 'Сразу после PRD.',
-        omits: 'Беклог на GitHub не создаёт и код не пишет.',
+        title: "План из фаз, каждую сдают отдельно",
+        command: "/plan-phase docs/prd-слаг.md",
+        does:
+          "На выходе — файл docs/plan-слаг.md: фазы реализации, у каждой цель, задачи, " +
+          "затронутые слои и номера критериев PRD, которые она закрывает. Фазу сдают целиком, " +
+          "не дожидаясь остальных.",
+        when: "Сразу после PRD, до того как заводить задачи.",
+        omits: "Задач на GitHub и кода на выходе нет, PRD остаётся прежним.",
       },
       {
-        command: '/issues docs/plan-слаг.md',
-        does: 'Создаёт беклог на GitHub в порядке плана: milestone на фазу, issue на задачу.',
-        when: 'После того как план закоммичен и запушен: issue ссылается на файл плана по SHA коммита.',
-        omits: 'Код не пишет и прогон не запускает — задачи заберёт следующий --run.',
+        title: "Беклог на GitHub: milestones и issues",
+        command: "/issues docs/plan-слаг.md",
+        does:
+          "На GitHub появляется беклог по плану: milestone на фазу, issue на задачу, в порядке " +
+          "плана — Ralph берёт их по возрастанию номера. В теле каждой issue стоят ссылки на план " +
+          "и PRD по SHA коммита: они переживут удаление файлов после сдачи фичи.",
+        when: "Когда план закоммичен и запушен: до пуша ссылки в issue отдадут 404.",
+        omits:
+          "Кода на выходе нет и прогон не стартует — задачи заберёт следующий --run. От просьбы " +
+          "«заведи задачи» скилл не срабатывает: файл плана называют в самой команде.",
       },
       {
-        command: '/review-all',
-        does: 'Ревьюит изменения ветки тремя перспективами — безопасность, корректность, покрытие тестами — и сводит подтверждённые находки в один отчёт с вердиктом «прошло» или «не прошло».',
-        when: 'Когда изменения готовы: перед тем как слить pull request, открытый Ralph.',
-        omits: 'Найденное не чинит, issue не заводит и прогон не останавливает.',
+        title: "Отчёт ревью с вердиктом",
+        command: "/review-all",
+        does:
+          "На выходе — один отчёт с вердиктом «прошло» или «не прошло». Три ревьюера смотрят " +
+          "изменения ветки с разных сторон — безопасность, корректность, покрытие тестами, — а в " +
+          "отчёт попадают только подтверждённые находки.",
+        when: "Когда работа готова: перед тем как слить pull request, открытый Ralph.",
+        omits:
+          "Найденное не чинится, issues не заводятся, прогон не останавливается.",
       },
     ],
   },
 ];
 
-const styles = `
-:root {
-  color-scheme: light;
-  --bg: #fcfcfc;
-  --surface: #ffffff;
-  --subtle: #f6f7f8;
-  --hover: #f2f3f5;
-  --text: #15171c;
-  --muted: #6b727c;
-  --border: #e6e8eb;
-  --border-strong: #d6d9de;
-  --accent: #2f6fd0;
-  --ok: #1e7a45;
-  --bad: #b32d24;
-  --warn: #9a5b12;
-  --bar-1: #98a0a9;
-  --bar-2: #c2c8ce;
-  --bar-3: #e1e4e8;
+/**
+ * Разбор команды на части для раскраски, как её красит терминал.
+ *
+ * Разбор идёт по пробелам и различает четыре вида: чем команду запускают
+ * (`node`, имя скилла), путь к файлу, ключ и остальной аргумент. Ключ важнее
+ * прочего: четыре команды набора начинаются одним и тем же путём, и различает
+ * их именно он.
+ *
+ * Склейка частей через пробел возвращает исходную строку: команду копируют в
+ * терминал посимвольно, и раскраска не вправе её менять.
+ */
+export function commandTokens(command) {
+  return String(command ?? "")
+    .split(" ")
+    .filter((part) => part !== "")
+    .map((text, index) => {
+      if (index === 0) return { text, kind: "exec" };
+      if (text.startsWith("-")) return { text, kind: "flag" };
+      // Путь узнаётся по разделителю каталогов или по расширению файла:
+      // плейсхолдер вида «docs/prd-слаг.md» тоже путь, хоть и не существует.
+      if (text.includes("/") || /\.\w+$/u.test(text))
+        return { text, kind: "path" };
+      return { text, kind: "arg" };
+    });
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    color-scheme: dark;
-    --bg: #17191c;
-    --surface: #1d2024;
-    --subtle: #212529;
-    --hover: #262a2f;
-    --text: #e7e9ec;
-    --muted: #99a0a9;
-    --border: #2c3036;
-    --border-strong: #3a3f46;
-    --accent: #6ea3ef;
-    --ok: #5cb47c;
-    --bad: #e0796e;
-    --warn: #d0a05a;
-    --bar-1: #7d858e;
-    --bar-2: #565d65;
-    --bar-3: #383d44;
-  }
+/* Тема одна, ночная: пульт открывают рядом с терминалом, и светлая вкладка
+   между тёмными окнами бьёт по глазам. Вторая палитра под системную настройку
+   жила бы мёртвым грузом и расходилась с живой при каждой правке. */
+const styles = `
+:root {
+  color-scheme: dark;
+  --bg: #131518;
+  --side: #0e1013;
+  --surface: #191c21;
+  --subtle: #1f2329;
+  --hover: #252a31;
+  --text: #e8eaec;
+  --muted: #9aa3ad;
+  --border: #2a2e36;
+  --border-strong: #3a404a;
+  --accent: #82abf5;
+  --accent-ink: #10131a;
+  --ok: #6cbd8a;
+  --bad: #e8867c;
+  --warn: #d3a35f;
+  --bar-1: #8a93a0;
+  --bar-2: #5b636e;
+  --bar-3: #3b424c;
+  --side-w: 236px;
+  --rail-w: 56px;
 }
 
 * { box-sizing: border-box; }
+
+html { scrollbar-color: var(--border-strong) transparent; }
 
 body {
   margin: 0;
@@ -167,29 +202,62 @@ body {
   font-size: 14px;
   line-height: 1.45;
   font-variant-numeric: tabular-nums;
+  caret-color: var(--accent);
 }
+
+::selection { background: rgba(130, 171, 245, 0.3); }
 
 a { color: var(--accent); }
 
-.shell {
-  max-width: 1100px;
-  margin: 0 auto;
-  padding: 0 24px 48px;
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
 }
 
-/* Шапка */
-.top {
+/* Каркас: слева панель разделов, справа содержимое. */
+.app { display: flex; min-height: 100vh; }
+
+/* Панель темнее содержимого: второй нейтральный слой отделяет навигацию от
+   рабочей области без рамок и теней. */
+.side {
+  position: sticky;
+  top: 0;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 24px;
-  padding: 18px 0 0;
+  flex-direction: column;
+  width: var(--side-w);
+  height: 100vh;
+  flex: none;
+  padding: 14px 10px;
+  background: var(--side);
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+  /* Анимируется именно ширина: содержимое должно занять освободившееся место,
+     transform его не сдвинет. Один элемент, один клик — рефлоу не мешает. */
+  transition: width 0.2s ease, padding 0.2s ease;
 }
 
 .brand {
-  font-size: 15px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 6px 14px;
+}
+
+.brand-mark {
+  display: grid;
+  place-content: center;
+  width: 28px;
+  height: 28px;
+  flex: none;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.brand-text {
+  font-size: 14px;
   font-weight: 600;
   letter-spacing: 0.01em;
+  white-space: nowrap;
 }
 
 .brand-version {
@@ -199,76 +267,102 @@ a { color: var(--accent); }
   color: var(--muted);
 }
 
-.tabs { display: flex; gap: 4px; }
-
-.tab {
-  appearance: none;
-  background: none;
-  border: 0;
-  border-bottom: 2px solid transparent;
-  color: var(--muted);
-  cursor: pointer;
-  font: inherit;
-  padding: 6px 10px;
-}
-
-.tab:hover { color: var(--text); }
-
-.tab[aria-selected='true'] {
-  color: var(--text);
-  border-bottom-color: var(--accent);
-}
-
-/* Вкладки внутри настроек. Они намеренно тише главных: ни акцентной черты, ни
-   жирного начертания — два одинаковых по силе ряда не дают понять, что чему
-   подчинено. Прозрачная рамка стоит и у невыбранных, чтобы выбор не сдвигал
-   соседей на пиксель. */
-.subtabs {
+.side-nav {
   display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin: 20px 0 16px;
+  flex-direction: column;
+  gap: 2px;
 }
 
-.subtab {
+.tab,
+.side-toggle {
   appearance: none;
-  background: none;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  color: var(--muted);
-  cursor: pointer;
-  font: inherit;
-  font-size: 13px;
-  padding: 4px 10px;
-}
-
-.subtab:hover { color: var(--text); background: var(--hover); }
-
-.subtab[aria-selected='true'] {
-  background: var(--subtle);
-  border-color: var(--border);
-  color: var(--text);
-}
-
-.subtab.is-warn { color: var(--warn); }
-
-.settings-warn {
-  margin: -6px 0 14px;
-  color: var(--warn);
-  font-size: 12px;
-}
-
-/* Полоса состояния: высота фиксирована, чтобы опрос не дёргал вёрстку */
-.status {
   display: flex;
   align-items: center;
   gap: 10px;
-  min-height: 42px;
-  margin-top: 12px;
-  padding: 0 12px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  width: 100%;
+  padding: 8px 10px;
+  background: none;
+  border: 0;
+  border-radius: 8px;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+}
+
+.tab:hover, .side-toggle:hover { background: var(--hover); color: var(--text); }
+
+.tab[aria-current='page'] { background: var(--subtle); color: var(--text); }
+.tab[aria-current='page'] .tab-icon { color: var(--accent); }
+
+.tab-icon {
+  display: grid;
+  place-content: center;
+  width: 20px;
+  height: 20px;
+  flex: none;
+}
+
+.tab-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.side-toggle { margin-top: auto; }
+
+/* Свёрнутая панель: остаются иконки, подписи прячутся только визуально —
+   имя кнопки должно дожить до скринридера. */
+.is-rail .side { width: var(--rail-w); padding: 14px 8px; }
+.is-rail .brand { justify-content: center; padding-left: 0; padding-right: 0; }
+.is-rail .tab, .is-rail .side-toggle { justify-content: center; padding: 8px; }
+
+.is-rail .tab-label,
+.is-rail .brand-text {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.is-rail .side-toggle .tab-icon svg { transform: rotate(180deg); }
+
+/* Содержимое */
+.main { flex: 1; min-width: 0; padding: 0 28px 48px; }
+
+.head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 24px;
+  max-width: 1160px;
+  margin: 0 auto 24px;
+  padding: 28px 0 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.head-text { min-width: 0; }
+
+.head-title {
+  margin: 0;
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+}
+
+/* Строка под заголовком отвечает на вопрос «что я здесь вижу»: раздел, который
+   называет себя одним словом, этого не объясняет. */
+.head-note {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* Полоса состояния живёт в шапке: точка и одна строка без своей рамки. */
+.status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--muted);
 }
 
 .dot {
@@ -287,16 +381,56 @@ a { color: var(--accent); }
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-size: 13px;
 }
 
-.panel { margin-top: 24px; }
+.panel { max-width: 1160px; margin: 0 auto; }
+
+/* Вкладки внутри настроек. Они намеренно тише боковой навигации: ни акцентной
+   иконки, ни жирного начертания — два одинаковых по силе ряда не дают понять,
+   что чему подчинено. Прозрачная рамка стоит и у невыбранных, чтобы выбор не
+   сдвигал соседей на пиксель. */
+.subtabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0 0 16px;
+}
+
+.subtab {
+  appearance: none;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  padding: 4px 10px;
+}
+
+.subtab:hover { color: var(--text); background: var(--hover); }
+
+.subtab[aria-current='true'] {
+  background: var(--subtle);
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.subtab.is-warn { color: var(--warn); }
+
+.settings-warn {
+  margin: -6px 0 14px;
+  color: var(--warn);
+  font-size: 12px;
+}
 
 /* Сводка расхода */
 .summary {
-  padding: 14px 16px;
+  padding: 16px 18px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 12px;
 }
 
 .summary-line {
@@ -306,7 +440,7 @@ a { color: var(--accent); }
   flex-wrap: wrap;
 }
 
-.summary-total { font-size: 20px; font-weight: 600; }
+.summary-total { font-size: 21px; font-weight: 600; }
 .summary-counts { color: var(--muted); }
 
 .note {
@@ -326,7 +460,7 @@ a { color: var(--accent); }
   margin-top: 16px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 12px;
   /* На узком экране таблица прокручивается внутри себя, а не растягивает страницу. */
   overflow-x: auto;
 }
@@ -334,7 +468,9 @@ a { color: var(--accent); }
 table { width: 100%; border-collapse: collapse; }
 /* Колонки не переносятся, чтобы числа не расползались на две строки. */
 .tasks th, .tasks td { white-space: nowrap; }
-.tasks td:nth-child(2), .tasks td.detail-cell { white-space: normal; }
+/* Milestone и исход — фразы, а не числа: пусть переносятся, иначе длинный
+   исход выталкивает таблицу за обёртку и вешает горизонтальную прокрутку. */
+.tasks td:nth-child(2), .tasks td:nth-child(4), .tasks td.detail-cell { white-space: normal; }
 
 th {
   padding: 9px 12px;
@@ -443,21 +579,56 @@ tr:last-child td { border-bottom: 0; }
 .agent-right { color: var(--muted); white-space: nowrap; }
 
 .empty {
-  margin-top: 16px;
   padding: 24px 16px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 12px;
   color: var(--muted);
   text-align: center;
 }
 
+/* Скелет на время загрузки: серые плашки по форме будущих блоков вместо
+   мигающей пустой карточки с текстом. Текст остаётся для скринридера. */
+.skeleton {
+  padding: 16px 18px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.skeleton + .skeleton { margin-top: 16px; }
+
+.skel {
+  height: 13px;
+  margin: 10px 0;
+  border-radius: 6px;
+  background: var(--subtle);
+  animation: skel 1.1s ease-in-out infinite alternate;
+}
+
+.skel.is-title { height: 20px; margin-top: 2px; }
+
+@keyframes skel {
+  from { opacity: 0.55; }
+  to { opacity: 1; }
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 /* Настройки */
 .banner {
+  margin-bottom: 16px;
   padding: 10px 12px;
   background: var(--subtle);
   border: 1px solid var(--border-strong);
-  border-radius: 6px;
+  border-radius: 8px;
 }
 
 .banner-title { font-weight: 600; }
@@ -475,11 +646,6 @@ tr:last-child td { border-bottom: 0; }
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px 24px;
-}
-
-@media (max-width: 720px) {
-  .grid { grid-template-columns: minmax(0, 1fr); }
-  .shell { padding: 0 16px 48px; }
 }
 
 /* Над заголовком блока воздуха больше, чем под ним: иначе заголовок читается
@@ -520,10 +686,10 @@ select,
 textarea {
   width: 100%;
   padding: 6px 8px;
-  background: var(--surface);
+  background: var(--subtle);
   color: var(--text);
   border: 1px solid var(--border-strong);
-  border-radius: 6px;
+  border-radius: 8px;
   font: inherit;
   font-variant-numeric: tabular-nums;
 }
@@ -544,10 +710,10 @@ button:focus-visible {
 
 input:disabled,
 select:disabled,
-textarea:disabled { color: var(--muted); background: var(--subtle); }
+textarea:disabled { color: var(--muted); background: var(--surface); }
 
 .check { display: flex; align-items: center; gap: 8px; }
-.check input { width: auto; }
+.check input { width: auto; accent-color: var(--accent); }
 
 .phases { width: 100%; border-collapse: collapse; }
 .phases th { padding: 4px 8px 4px 0; }
@@ -556,10 +722,10 @@ textarea:disabled { color: var(--muted); background: var(--subtle); }
 
 .btn {
   padding: 6px 12px;
-  background: var(--surface);
+  background: var(--subtle);
   color: var(--text);
   border: 1px solid var(--border-strong);
-  border-radius: 6px;
+  border-radius: 8px;
   cursor: pointer;
   font: inherit;
 }
@@ -567,10 +733,11 @@ textarea:disabled { color: var(--muted); background: var(--subtle); }
 .btn:hover:not(:disabled) { background: var(--hover); }
 .btn:disabled { color: var(--muted); cursor: default; }
 
+/* Тёмный текст на акценте: белый на этом голубом не дотягивает до контраста. */
 .btn-primary {
   background: var(--accent);
   border-color: var(--accent);
-  color: #ffffff;
+  color: var(--accent-ink);
 }
 
 .btn-primary:hover:not(:disabled) { background: var(--accent); opacity: 0.9; }
@@ -580,64 +747,198 @@ textarea:disabled { color: var(--muted); background: var(--subtle); }
 
 /* Вкладка «Команды» */
 
-/* Свой класс, а не .section-title: тот оформляет подписи разделов формы —
-   мелкие прописные, — и заголовок группы команд выглядел бы слабее команд
-   под ним. */
-.commands-title {
-  margin: 28px 0 6px;
-  font-size: 15px;
-  font-weight: 600;
+/* Вкладки групп заодно и заголовки: это два имени того, где команду набирают,
+   и мелкая кнопка рядом с командами читалась бы слабее их самих. */
+.commands-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 24px;
+  margin: 0 0 16px;
+  border-bottom: 1px solid var(--border);
 }
 
-.commands-title:first-child { margin-top: 4px; }
+.commands-tab {
+  appearance: none;
+  padding: 4px 0 10px;
+  background: none;
+  border: 0;
+  /* Черта под выбранной вкладкой ложится поверх линии ряда. */
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.commands-tab:hover { color: var(--text); }
+
+.commands-tab[aria-current='true'] {
+  border-bottom-color: var(--accent);
+  color: var(--text);
+}
 
 .commands-note {
-  margin: 0 0 16px;
+  margin: 0 0 20px;
   color: var(--muted);
   font-size: 13px;
 }
 
-.command { margin-bottom: 20px; }
+/* Команда и её объяснение стоят рядом, а не друг под другом: столбец команд
+   слева сканируется глазом, а объяснение справа держит читаемую длину строки.
+   На всю ширину пульта строка вышла бы под 140 знаков — вдвое длиннее того,
+   что глаз проходит без усилия. */
+/* Команда, её заголовок и три поля — одна колонка шириной в меру текста:
+   объяснение на всю ширину пульта доходило до 140 знаков в строке. */
+.command { max-width: 70ch; margin-bottom: 28px; }
 .command:last-child { margin-bottom: 4px; }
 
+/* Заголовок называет команду словами: четыре команды терминала начинаются
+   одним путём, и без него список читается как одна повторяющаяся строка. */
+.command-title {
+  margin: 0 0 6px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+/* Сама команда набрана как строка терминала: тёмная полоса с приглашением и
+   кнопкой копирования у правого края. Полоса темнее и карточек полей, и фона
+   страницы — на неё смотрят первой, её и набирают. */
 .command-row {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
+  padding: 9px 10px 9px 12px;
+  background: var(--side);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+/* Приглашение только рисуется: в текст команды оно не входит. */
+.command-prompt {
+  flex: none;
+  padding: 4px 0;
+  color: var(--ok);
+  font-family: ui-monospace, 'SF Mono', Consolas, 'Liberation Mono', monospace;
+  font-size: 13px;
+  line-height: 1.4;
+  user-select: none;
+}
+
+/* Знак раскрытия у правого края карточки. */
+.command-mark {
+  display: grid;
+  place-content: center;
+  width: 16px;
+  height: 16px;
+  flex: none;
+  color: var(--muted);
 }
 
 /* Моноширинный только у самой команды: это код, который человек набирает
-   символ в символ. Объяснение под ним — обычный текст страницы. */
+   символ в символ. Фона и рамки у неё нет — рамку носят карточки полей, а
+   коробка внутри коробки читается как чужая вставка. */
 .command-name {
-  padding: 5px 8px;
-  background: var(--subtle);
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 4px 0;
+  color: var(--muted);
   font-family: ui-monospace, 'SF Mono', Consolas, 'Liberation Mono', monospace;
   font-size: 13px;
+  line-height: 1.4;
   overflow-wrap: anywhere;
 }
 
+/* Раскраска команды повторяет терминал: тем, чем её запускают, — приглушённо,
+   путь к файлу — основным цветом, ключ — акцентом. Ключ различает четыре
+   команды с одинаковым путём, поэтому он ярче всего. */
+.cmd-exec { color: var(--muted); }
+.cmd-path { color: var(--text); }
+.cmd-flag { color: var(--accent); }
+.cmd-arg { color: var(--muted); font-style: italic; }
+
+/* Скилл вызывают именем, и оно же его команда: путь рядом с ним — аргумент. */
+.command.is-skill .cmd-exec { color: var(--accent); }
+.command.is-skill .cmd-path { color: var(--muted); }
+
+/* Кнопка-иконка: подпись «Копировать» повторялась у каждой команды и спорила
+   с самой командой за внимание. Цель нажатия остаётся 30×30 при рисунке 16. */
 .command-copy {
+  display: grid;
+  place-content: center;
+  width: 30px;
+  height: 30px;
   flex: none;
-  padding: 4px 8px;
+  padding: 0;
   background: none;
   border: 0;
   border-radius: 6px;
   color: var(--muted);
   cursor: pointer;
-  font: inherit;
-  font-size: 13px;
 }
 
 .command-copy:hover { color: var(--text); background: var(--hover); }
+.command-copy.is-ok { color: var(--ok); }
 
-.command-status { flex: none; font-size: 13px; }
+/* Исход клика стоит под командой и в покое пуст: его отступ иначе добавлял бы
+   полосу пустоты каждой команде списка. */
+.command-status { display: block; margin-top: 4px; font-size: 12px; }
+.command-status:empty { display: none; }
 .command-status.is-ok { color: var(--ok); }
 .command-status.is-bad { color: var(--bad); }
 
-.command-line { margin: 6px 0 0; }
-.command-lead { color: var(--muted); }
+.command-body { margin-top: 10px; }
+
+/* Каждое поле — своя карточка: три ответа подряд читались как один абзац, а
+   в отдельных карточках видно, где кончается один и начинается другой. */
+.command-line {
+  margin-bottom: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.command-line:last-child { margin-bottom: 0; }
+
+/* Метка — кнопка во всю ширину карточки: попасть по ней проще, чем по слову,
+   а знак справа говорит, что сделает клик. */
+.command-lead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 12px 14px;
+  background: none;
+  border: 0;
+  border-radius: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  text-align: left;
+}
+
+.command-lead:hover { color: var(--text); }
+.command-lead:hover .command-mark { color: var(--text); }
+
+/* У раскрытого поля метка — заголовок ответа под ней, поэтому она ярче. */
+.command-lead[aria-expanded='true'] { color: var(--text); padding-bottom: 6px; }
+
+.command-text {
+  margin: 0;
+  padding: 0 14px 13px;
+  color: var(--muted);
+}
+
+/* Совсем узкий экран: метка не отнимает у текста половину строки, а встаёт
+   над ним. */
+@media (max-width: 720px) {
+  .command-line { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+}
 
 .unknown-row {
   display: flex;
@@ -667,24 +968,104 @@ textarea:disabled { color: var(--muted); background: var(--subtle); }
 .save-message { font-size: 13px; }
 .save-message.is-ok { color: var(--ok); }
 .save-message.is-bad { color: var(--bad); }
+
+/* На узком экране панель сама складывается в рейку: место дороже подписей. */
+@media (max-width: 720px) {
+  .app .side { width: var(--rail-w); padding: 14px 8px; }
+  .app .brand { justify-content: center; padding-left: 0; padding-right: 0; }
+  .app .tab, .app .side-toggle { justify-content: center; padding: 8px; }
+  .app .tab-label,
+  .app .brand-text {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .app .side-toggle { display: none; }
+  .main { padding: 0 14px 48px; }
+  .grid { grid-template-columns: minmax(0, 1fr); }
+}
 `;
 
+/* Иконки — встроенные SVG в одной графике: штрих 1.75, скруглённые концы.
+   Символы из набора Lucide (ISC), пакет для четырёх картинок не нужен. */
+function icon(paths) {
+  return (
+    '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" ' +
+    'stroke="currentColor" stroke-width="1.75" stroke-linecap="round" ' +
+    'stroke-linejoin="round" aria-hidden="true">' +
+    paths +
+    "</svg>"
+  );
+}
+
+const icons = {
+  // Петля из двух стрелок: сам цикл Ralph.
+  brand: icon(
+    '<path d="m17 2 4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="m7 22-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/>',
+  ),
+  // Столбики: расход по задачам.
+  usage: icon(
+    '<path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/>',
+  ),
+  // Ползунки: настройки.
+  settings: icon(
+    '<line x1="21" x2="14" y1="4" y2="4"/><line x1="10" x2="3" y1="4" y2="4"/><line x1="21" x2="12" y1="12" y2="12"/><line x1="8" x2="3" y1="12" y2="12"/><line x1="21" x2="16" y1="20" y2="20"/><line x1="12" x2="3" y1="20" y2="20"/><line x1="14" x2="14" y1="2" y2="6"/><line x1="8" x2="8" y1="10" y2="14"/><line x1="16" x2="16" y1="18" y2="22"/>',
+  ),
+  // Приглашение терминала: команды.
+  commands: icon(
+    '<polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/>',
+  ),
+  // Шевроны внутрь: свернуть панель. В рейке разворачиваются наружу стилем.
+  collapse: icon('<path d="m11 17-5-5 5-5"/><path d="m18 17-5-5 5-5"/>'),
+  // Два листа: копировать команду в буфер.
+  copy: icon(
+    '<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>',
+  ),
+  // Галочка: команда легла в буфер.
+  check: icon('<path d="M20 6 9 17l-5-5"/>'),
+  // Плюс у свёрнутого поля и крест у раскрытого: знак говорит, что сделает
+  // клик, а не в какую сторону поедет текст.
+  plus: icon('<path d="M5 12h14"/><path d="M12 5v14"/>'),
+  close: icon('<path d="M18 6 6 18"/><path d="m6 6 12 12"/>'),
+};
+
 const markup = `
-<div class="shell">
-  <header class="top">
-    <div class="brand">Ralph<span class="brand-version">${KIT_VERSION}</span></div>
-    <nav class="tabs" role="tablist" aria-label="Разделы">
-      <button class="tab" type="button" role="tab" id="tab-usage" data-tab="usage" aria-selected="true">Расход</button>
-      <button class="tab" type="button" role="tab" id="tab-settings" data-tab="settings" aria-selected="false">Настройки</button>
-      <button class="tab" type="button" role="tab" id="tab-commands" data-tab="commands" aria-selected="false">Команды</button>
+<div class="app" id="app">
+  <aside class="side">
+    <div class="brand">
+      <span class="brand-mark">${icons.brand}</span>
+      <span class="brand-text">Ralph<span class="brand-version">${KIT_VERSION}</span></span>
+    </div>
+    <nav class="side-nav" aria-label="Разделы">
+      <button class="tab" type="button" id="tab-usage" data-tab="usage" aria-current="page"><span class="tab-icon">${icons.usage}</span><span class="tab-label">Расход</span></button>
+      <button class="tab" type="button" id="tab-settings" data-tab="settings"><span class="tab-icon">${icons.settings}</span><span class="tab-label">Настройки</span></button>
+      <button class="tab" type="button" id="tab-commands" data-tab="commands"><span class="tab-icon">${icons.commands}</span><span class="tab-label">Команды</span></button>
     </nav>
-  </header>
-  <div class="status">
-    <span class="dot" id="status-dot"></span>
-    <span class="status-text" id="status-text">Состояние загружается</span>
+    <button class="side-toggle" type="button" id="side-toggle" aria-expanded="true"><span class="tab-icon">${icons.collapse}</span><span class="tab-label">Свернуть</span></button>
+  </aside>
+  <div class="main">
+    <header class="head">
+      <div class="head-text">
+        <h1 class="head-title" id="head-title">Расход</h1>
+        <p class="head-note" id="head-note">Токены и время по задачам из журнала прогона.</p>
+      </div>
+      <div class="status">
+        <span class="dot" id="status-dot"></span>
+        <span class="status-text" id="status-text">Состояние загружается</span>
+      </div>
+    </header>
+    <main class="panel" id="panel" aria-labelledby="tab-usage"></main>
   </div>
-  <main class="panel" id="panel" role="tabpanel" aria-labelledby="tab-usage"></main>
 </div>
+<!-- Иконки для кнопок, которые рисует скрипт. Он клонирует их из шаблона, а не
+     собирает разметкой: innerHTML на странице не используется нигде. -->
+<template id="icon-copy">${icons.copy}</template>
+<template id="icon-check">${icons.check}</template>
+<template id="icon-plus">${icons.plus}</template>
+<template id="icon-close">${icons.close}</template>
 `;
 
 // Клиентский скрипт. Внутри нет шаблонных литералов и обратных кавычек:
@@ -696,7 +1077,17 @@ const script = `
   var token = window.__RALPH_TOKEN__ || '';
   // Перечень команд статичен и приезжает вместе со страницей: вкладка
   // «Команды» не ходит на сервер вовсе.
-  var commandGuide = ${jsonLiteral(commandGuide)};
+  var commandGuide = ${jsonLiteral(
+    commandGuide.map((group) => ({
+      ...group,
+      // Команда приезжает уже разобранной на части: раскраску считает модуль,
+      // страница только рисует span на каждую часть.
+      items: group.items.map((item) => ({
+        ...item,
+        tokens: commandTokens(item.command),
+      })),
+    })),
+  )};
   var tab = 'usage';
   var stateData = null;
   var tasksData = null;
@@ -718,10 +1109,22 @@ const script = `
   var settingsTab = readSettingsTab();
   // Пути полей, от значения которых зависят чужие списки вариантов.
   var dependencyPaths = Object.create(null);
+  // Выбранная группа справочника команд: терминал или чат с агентом.
+  var commandsGroup = 0;
 
   var panel = document.getElementById('panel');
   var statusDot = document.getElementById('status-dot');
   var statusText = document.getElementById('status-text');
+  var headTitle = document.getElementById('head-title');
+  var headNote = document.getElementById('head-note');
+  /* Заголовок над содержимым называет раздел: в свёрнутой панели подписей у
+     кнопок не видно. Строка под ним говорит, что человек здесь видит и откуда
+     эти данные — из журнала, из файла настроек или из самого набора. */
+  var tabTitles = {
+    usage: ['Расход', 'Токены и время по задачам из журнала прогона.'],
+    settings: ['Настройки', 'Файл .agents/ralph.config.json: поля с подсказками и проверкой ввода.'],
+    commands: ['Команды', 'Что делает каждая команда, когда её звать и чего она не делает.']
+  };
 
   /* --- запросы --- */
 
@@ -978,6 +1381,20 @@ const script = `
     while (node.firstChild) node.removeChild(node.firstChild);
   }
 
+  /* Скелет на время загрузки: плашки по форме будущего блока вместо текста в
+     пустой карточке. Глазам — заготовка раздела, скринридеру — скрытая
+     подпись. Ширины в процентах, чтобы скелет дышал вместе с колонкой. */
+  function renderSkeleton(widths) {
+    var box = el('div', 'skeleton');
+    box.appendChild(el('span', 'sr-only', 'Данные загружаются'));
+    widths.forEach(function (width, index) {
+      var bar = el('div', index === 0 ? 'skel is-title' : 'skel');
+      bar.style.maxWidth = width;
+      box.appendChild(bar);
+    });
+    return box;
+  }
+
   /* --- полоса состояния --- */
 
   function statusLine(data) {
@@ -1190,7 +1607,9 @@ const script = `
       return frag;
     }
     if (!tasksData) {
-      frag.appendChild(el('div', 'empty', 'Данные загружаются'));
+      // Два скелета повторяют раздел: карточка сводки и таблица под ней.
+      frag.appendChild(renderSkeleton(['34%', '62%', '46%']));
+      frag.appendChild(renderSkeleton(['22%', '100%', '100%', '100%']));
       return frag;
     }
 
@@ -2006,14 +2425,14 @@ const script = `
 
   function renderSubtabs(groups, active) {
     var nav = el('nav', 'subtabs');
-    nav.setAttribute('role', 'tablist');
     nav.setAttribute('aria-label', 'Разделы настроек');
     groups.forEach(function (group, index) {
       var button = el('button', badFields(group).length ? 'subtab is-warn' : 'subtab', group.title);
       button.type = 'button';
       button.id = 'subtab-' + index;
-      button.setAttribute('role', 'tab');
-      button.setAttribute('aria-selected', index === active ? 'true' : 'false');
+      /* Та же история, что у боковой навигации: роли вкладок без стрелочной
+         навигации врали бы скринридеру, текущую отмечает aria-current. */
+      if (index === active) button.setAttribute('aria-current', 'true');
       button.addEventListener('click', function () {
         selectSettingsTab(group.id);
       });
@@ -2030,7 +2449,8 @@ const script = `
       return frag;
     }
     if (!configData || !draft) {
-      frag.appendChild(el('div', 'empty', 'Данные загружаются'));
+      // Скелет повторяет форму: заголовок ряда вкладок и поля под ним.
+      frag.appendChild(renderSkeleton(['28%', '52%', '38%', '52%', '33%']));
       return frag;
     }
 
@@ -2073,7 +2493,6 @@ const script = `
       }
       // Заголовок группы не дублируется: её называет выбранная вкладка.
       var box = el('div');
-      box.setAttribute('role', 'tabpanel');
       box.setAttribute('aria-labelledby', 'subtab-' + active);
       // Поля с одинаковым именем секции, стоящие подряд, образуют озаглавленный
       // блок. Вкладка без секций рисуется одной сеткой.
@@ -2116,46 +2535,65 @@ const script = `
 
   /* --- вкладка «Команды» --- */
 
-  function resetCopy(status) {
-    if (status.resetTimer) window.clearTimeout(status.resetTimer);
-    status.textContent = '';
-    status.className = 'command-status';
+  /* Иконка приезжает со страницей шаблоном и клонируется: собирать SVG
+     разметкой значило бы писать innerHTML, а его на странице нет нигде. */
+  function iconNode(id) {
+    var source = document.getElementById(id);
+    if (!source || !source.content) return null;
+    return source.content.cloneNode(true);
   }
 
-  /* Исход клика пишется в отдельный узел role="status", а не в текст кнопки:
-     имя кнопки читается один раз, и подмена её текста до скринридера не
-     доходила. Успех гаснет через полторы секунды, отказ — только на следующем
-     клике: «Скопируйте вручную» — задание человеку, и пропустить его дороже,
-     чем увидеть лишний раз. */
-  function markCopy(status, kind, text) {
-    if (status.resetTimer) window.clearTimeout(status.resetTimer);
-    status.textContent = text;
-    status.className = 'command-status is-' + kind;
+  function setIcon(button, id) {
+    clear(button);
+    var node = iconNode(id);
+    if (node) button.appendChild(node);
+  }
+
+  function resetCopy(ui) {
+    if (ui.status.resetTimer) window.clearTimeout(ui.status.resetTimer);
+    ui.status.textContent = '';
+    ui.status.className = 'command-status';
+    ui.button.className = 'command-copy';
+    setIcon(ui.button, 'icon-copy');
+  }
+
+  /* Исход клика пишется в отдельный узел role="status", а не в имя кнопки: имя
+     читается один раз, и подмена его до скринридера не доходила. Кнопка тем
+     временем меняет рисунок на галочку — глазу этого достаточно. Успех гаснет
+     через полторы секунды, отказ — только на следующем клике: «Скопируйте
+     вручную» — задание человеку, и пропустить его дороже, чем увидеть лишний
+     раз. */
+  function markCopy(ui, kind, text) {
+    if (ui.status.resetTimer) window.clearTimeout(ui.status.resetTimer);
+    ui.status.textContent = text;
+    ui.status.className = 'command-status is-' + kind;
     if (kind !== 'ok') return;
-    status.resetTimer = window.setTimeout(function () {
-      resetCopy(status);
+    ui.button.className = 'command-copy is-ok';
+    setIcon(ui.button, 'icon-check');
+    ui.status.resetTimer = window.setTimeout(function () {
+      resetCopy(ui);
     }, 1600);
   }
 
   /* Буфер отказал — человек копирует сам: текст команды выделен, остаётся
      нажать Ctrl+C. */
-  function manualCopy(status, name) {
+  function manualCopy(ui) {
     try {
       var range = document.createRange();
-      range.selectNodeContents(name);
+      range.selectNodeContents(ui.name);
       var selection = window.getSelection();
       selection.removeAllRanges();
       selection.addRange(range);
     } catch (error) {
       // Выделение — подсказка, а не результат: без него сообщение всё равно верно.
     }
-    markCopy(status, 'bad', 'Скопируйте вручную: Ctrl+C');
+    markCopy(ui, 'bad', 'Скопируйте вручную: Ctrl+C');
   }
 
   /* Запасной путь нужен не ради старых браузеров: navigator.clipboard живёт
      только в защищённом контексте, а пульт открывается по http://127.0.0.1
      и в части браузеров этот API там отсутствует. */
-  function copyFallback(text, status, name) {
+  function copyFallback(text, ui) {
     var focused = document.activeElement;
     var area = document.createElement('textarea');
     area.value = text;
@@ -2175,65 +2613,148 @@ const script = `
     // Фокус возвращается туда, откуда пришёл клик: иначе нажавший Enter на
     // кнопке окажется на body, и следующий Tab начнёт обход страницы заново.
     if (focused && focused.focus) focused.focus();
-    if (copied) markCopy(status, 'ok', 'Скопировано');
-    else manualCopy(status, name);
+    if (copied) markCopy(ui, 'ok', 'Скопировано');
+    else manualCopy(ui);
   }
 
-  function copyCommand(text, status, name) {
-    resetCopy(status);
+  function copyCommand(text, ui) {
+    resetCopy(ui);
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(text).then(
         function () {
-          markCopy(status, 'ok', 'Скопировано');
+          markCopy(ui, 'ok', 'Скопировано');
         },
         function () {
           // Обработчик отклонённого промиса выполняется уже вне жеста
           // пользователя, а там Safari отклоняет и execCommand: запасной путь
           // отсюда вернул бы false, поэтому сразу просим скопировать руками.
-          manualCopy(status, name);
+          manualCopy(ui);
         }
       );
       return;
     }
-    copyFallback(text, status, name);
+    copyFallback(text, ui);
   }
 
-  function commandLine(lead, text) {
-    var line = el('p', 'command-line');
-    line.appendChild(el('span', 'command-lead', lead + '. '));
-    line.appendChild(document.createTextNode(text));
+  /* Метка и текст — две ячейки одной сетки: метки выстраиваются в столбик, и
+     нужное поле находится взглядом, а не чтением абзаца целиком.
+
+     Метка при этом кнопка: поле сворачивается отдельно от соседних, иначе три
+     ответа подряд у каждой команды сливаются в стену текста. «Делает» открыто
+     всегда — свёрнутый список из одних меток не говорит, о чём команда.
+     Роль region панели не дают: таких панелей на странице два десятка, и
+     скринридер получил бы столько же одинаковых ориентиров. */
+  function commandLine(lead, text, open, key) {
+    var line = el('div', 'command-line');
+    var button = el('button', 'command-lead');
+    button.type = 'button';
+    button.appendChild(el('span', '', lead));
+    var mark = el('span', 'command-mark');
+    button.appendChild(mark);
+
+    var body = el('p', 'command-text', text);
+    body.id = key;
+
+    function apply(next) {
+      button.setAttribute('aria-expanded', next ? 'true' : 'false');
+      body.hidden = !next;
+      // Знак говорит про следующий клик: плюс раскроет поле, крест закроет.
+      setIcon(mark, next ? 'icon-close' : 'icon-plus');
+    }
+
+    button.setAttribute('aria-controls', key);
+    apply(open);
+    button.addEventListener('click', function () {
+      apply(button.getAttribute('aria-expanded') !== 'true');
+    });
+
+    line.appendChild(button);
+    line.appendChild(body);
     return line;
   }
 
   function renderCommands() {
     var frag = document.createDocumentFragment();
     var index = 0;
-    commandGuide.forEach(function (group) {
-      frag.appendChild(el('h2', 'commands-title', group.title));
+
+    /* Команды терминала и команды чата набирают в разных местах: вперемешку
+       они читаются как один длинный список, поэтому группа выбирается вкладкой
+       и на экране всегда одна. */
+    var tabs = el('nav', 'commands-tabs');
+    tabs.setAttribute('aria-label', 'Где набирают команды');
+    commandGuide.forEach(function (group, position) {
+      var button = el('button', 'commands-tab', group.title);
+      button.type = 'button';
+      if (position === commandsGroup) button.setAttribute('aria-current', 'true');
+      button.addEventListener('click', function () {
+        if (commandsGroup === position) return;
+        commandsGroup = position;
+        renderPanel();
+      });
+      tabs.appendChild(button);
+    });
+    frag.appendChild(tabs);
+
+    var groups = commandGuide[commandsGroup] ? [commandGuide[commandsGroup]] : commandGuide;
+    groups.forEach(function (group) {
       if (group.note) frag.appendChild(el('p', 'commands-note', group.note));
       group.items.forEach(function (item) {
         index += 1;
-        var box = el('div', 'command');
+        // Скилл зовут по имени, поэтому красится оно, а не путь за ним.
+        var box = el('div', item.command.charAt(0) === '/' ? 'command is-skill' : 'command');
+
+        // Заголовок есть не у всех: скилл называет себя сам, а четыре команды
+        // терминала начинаются одним путём и различаются только им.
+        if (item.title) box.appendChild(el('h3', 'command-title', item.title));
+
+        // Над карточками полей: сама команда, кнопка копирования и исход клика.
+        var side = el('div', 'command-side');
         var row = el('div', 'command-row');
-        var name = el('code', 'command-name', item.command);
+        /* Приглашение стоит вне узла команды: текст этого узла выделяют, когда
+           буфер отказал, и доллар попал бы в терминал вместе с командой. В чате
+           агента приглашения нет — там команду вводят строкой сообщения. */
+        if (item.command.charAt(0) !== '/') {
+          var prompt = el('span', 'command-prompt', '$');
+          prompt.setAttribute('aria-hidden', 'true');
+          row.appendChild(prompt);
+        }
+        // Части команды красятся по отдельности, как в терминале. Текст узла
+        // при этом равен самой команде: его читает скринридер и выделяет
+        // человек, когда буфер отказал.
+        var name = el('code', 'command-name');
         name.id = 'command-' + index;
+        (item.tokens || []).forEach(function (token, position) {
+          if (position > 0) name.appendChild(document.createTextNode(' '));
+          name.appendChild(el('span', 'cmd-' + token.kind, token.text));
+        });
         row.appendChild(name);
-        var copy = el('button', 'command-copy', 'Копировать');
+
+        var copy = el('button', 'command-copy');
         copy.type = 'button';
-        // Имя кнопки — её собственный текст, команда идёт описанием: aria-label
-        // перекрыл бы текст кнопки целиком.
+        // Текста у кнопки нет, поэтому действие называет подпись, а саму
+        // команду кнопка получает описанием.
+        copy.setAttribute('aria-label', 'Копировать');
         copy.setAttribute('aria-describedby', name.id);
+        copy.title = 'Копировать';
+        setIcon(copy, 'icon-copy');
         var status = el('span', 'command-status');
         status.setAttribute('role', 'status');
+        var ui = { button: copy, status: status, name: name };
         copy.addEventListener('click', function () {
-          copyCommand(item.command, status, name);
+          copyCommand(item.command, ui);
         });
         row.appendChild(copy);
-        row.appendChild(status);
-        box.appendChild(row);
-        box.appendChild(commandLine('Делает', item.does));
-        box.appendChild(commandLine('Когда звать', item.when));
-        box.appendChild(commandLine('Не делает', item.omits));
+        side.appendChild(row);
+        side.appendChild(status);
+        box.appendChild(side);
+
+        // Объяснение: что команда делает, когда её звать и чего не делает.
+        // Открыто первое поле, два других человек раскрывает сам.
+        var body = el('div', 'command-body');
+        body.appendChild(commandLine('Делает', item.does, true, 'command-does-' + index));
+        body.appendChild(commandLine('Когда звать', item.when, false, 'command-when-' + index));
+        body.appendChild(commandLine('Не делает', item.omits, false, 'command-omits-' + index));
+        box.appendChild(body);
         frag.appendChild(box);
       });
     });
@@ -2254,8 +2775,15 @@ const script = `
 
   function selectTab(next) {
     tab = next;
+    if (tabTitles[tab]) {
+      if (headTitle) headTitle.textContent = tabTitles[tab][0];
+      if (headNote) headNote.textContent = tabTitles[tab][1];
+    }
+    /* Разделы — не вкладки ARIA: роль tab обещает переключение стрелками,
+       которого здесь нет. Текущий раздел отмечает aria-current. */
     Array.prototype.forEach.call(document.querySelectorAll('.tab'), function (button) {
-      button.setAttribute('aria-selected', button.getAttribute('data-tab') === tab ? 'true' : 'false');
+      if (button.getAttribute('data-tab') === tab) button.setAttribute('aria-current', 'page');
+      else button.removeAttribute('aria-current');
     });
     // Неудачный запрос повторяется при возврате на вкладку: иначе одна ошибка
     // держится до перезагрузки страницы.
@@ -2269,6 +2797,49 @@ const script = `
       selectTab(button.getAttribute('data-tab'));
     });
   });
+
+  /* --- боковая панель --- */
+
+  /* Свёрнутая панель переживает перезагрузку: состояние в localStorage.
+     В приватном окне доступ к хранилищу бросает исключение — обе стороны
+     в try, отказ хранилища оставляет панель развёрнутой. */
+  var railKey = 'ralph-gui-rail';
+  var app = document.getElementById('app');
+  var sideToggle = document.getElementById('side-toggle');
+
+  function readRail() {
+    try {
+      return window.localStorage.getItem(railKey) === '1';
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function writeRail(on) {
+    try {
+      window.localStorage.setItem(railKey, on ? '1' : '0');
+    } catch (error) {}
+  }
+
+  function applyRail(on) {
+    if (app) app.className = on ? 'app is-rail' : 'app';
+    if (!sideToggle) return;
+    sideToggle.setAttribute('aria-expanded', on ? 'false' : 'true');
+    // Подпись меняется вместе с действием: в рейке она скрыта визуально,
+    // но именно её читает скринридер.
+    var label = sideToggle.querySelector('.tab-label');
+    if (label) label.textContent = on ? 'Развернуть' : 'Свернуть';
+  }
+
+  var rail = readRail();
+  applyRail(rail);
+  if (sideToggle) {
+    sideToggle.addEventListener('click', function () {
+      rail = !rail;
+      writeRail(rail);
+      applyRail(rail);
+    });
+  }
 
   renderStatus();
   renderPanel();
@@ -2284,7 +2855,7 @@ const script = `
 `;
 
 export function renderPage(options = {}) {
-  const token = options.token ?? '';
+  const token = options.token ?? "";
   return `<!doctype html>
 <html lang="ru">
 <head>
