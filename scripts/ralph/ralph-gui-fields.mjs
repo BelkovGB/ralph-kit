@@ -50,6 +50,7 @@
  */
 
 import { agentClis, reasoningEffortsFor } from './ralph-agent-backends.mjs';
+import { codexModels } from './ralph-codex-session.mjs';
 
 // Наборы reasoning effort различаются у двух CLI. Здесь они не копируются, а
 // берутся у того же источника, что и проверка конфигурации в
@@ -312,7 +313,7 @@ export const fieldGroups = [
         section: 'Разработка',
         label: 'Модель разработки',
         type: 'select',
-        options: { codex: ['gpt-5.6-terra'], claude: claudeModels },
+        options: { codex: codexModels, claude: claudeModels },
         optionsDependOn: 'agentCli',
         allowCustom: true,
         hint: 'Эта модель пишет код по issue. Список зависит от поля «Агент» и ничего не запрещает: новое имя вводят пунктом «Другая…».',
@@ -326,7 +327,7 @@ export const fieldGroups = [
         type: 'select',
         options: effortOptions,
         optionsDependOn: 'agentCli',
-        hint: 'Effort — глубина рассуждения модели. Выше значение — дороже и дольше сессия. Набор значений задаёт CLI: у Codex minimal, low, medium, high; у Claude low, medium, high, xhigh, max. Список перерисовывается при смене поля «Агент».',
+        hint: 'Effort — глубина рассуждения модели. Выше значение — дороже и дольше сессия. Набор значений задаёт CLI. Список перерисовывается при смене поля «Агент».',
         unit: null,
         default: 'medium',
       },
@@ -363,7 +364,7 @@ export const fieldGroups = [
         section: 'Ревью каждой issue',
         label: 'Модель ревью issue',
         type: 'select',
-        options: { codex: ['gpt-5.6-terra'], claude: claudeModels },
+        options: { codex: codexModels, claude: claudeModels },
         optionsDependOn: 'agentCli',
         allowCustom: true,
         hint: 'Читает изменения одной issue и ничего не правит: сессия работает только на чтение. Список зависит от поля «Агент», своё имя вводят пунктом «Другая…».',
@@ -434,7 +435,7 @@ export const fieldGroups = [
         section: 'Ревью milestone',
         label: 'Модель ревью milestone',
         type: 'select',
-        options: { codex: ['gpt-5.6-sol'], claude: claudeModels },
+        options: { codex: codexModels, claude: claudeModels },
         optionsDependOn: 'agentCli',
         allowCustom: true,
         hint:

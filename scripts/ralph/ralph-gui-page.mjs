@@ -1552,13 +1552,11 @@ const script = `
     return box;
   }
 
-  /* Цену присылает не всякая сессия: сессия, убитая лимитом шагов, и весь
-     backend Codex её не отдают. Поэтому подпись называет источник и говорит,
-     за сколько сессий число посчитано. */
+  /* Цену показываем только когда CLI её прислал. */
   function costLine(role) {
     var sessions = Number(role.sessions) || 0;
     var reported = Number(role.costReportedBy) || 0;
-    if (!reported) return 'CLI цену не прислал';
+    if (!reported) return null;
     var text = 'CLI насчитал ' + money(role.costUsd);
     if (reported < sessions) {
       text += ' за ' + num(reported) + ' ' + plural(reported, 'сессию', 'сессии', 'сессий') +
@@ -1595,7 +1593,8 @@ const script = `
 
     var kinds = tokenKindList(role.tokens);
     if (kinds.length) box.appendChild(el('div', 'legend', kinds.join(' · ')));
-    box.appendChild(el('div', 'legend', costLine(role)));
+    var cost = costLine(role);
+    if (cost) box.appendChild(el('div', 'legend', cost));
     return box;
   }
 
