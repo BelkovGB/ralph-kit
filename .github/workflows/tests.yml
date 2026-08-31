@@ -10,13 +10,25 @@ on:
 
 jobs:
   node-test:
-    # Linux намеренно: разработка идёт на Windows, и прогон на другой системе
-    # ловит предположения об оболочке, которых на Windows не видно.
-    runs-on: ubuntu-latest
+    # Обе системы: набор разрабатывают и запускают на Windows, а прогон на Linux
+    # ловит предположения об оболочке и о регистре путей, которых на Windows не
+    # видно. Часть тестов пропускается вне своей системы — их закрывает соседняя
+    # строка матрицы.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
+      # Шаблон без совпадений node --test считает успехом: переименованный
+      # каталог тестов давал бы зелёную проверку без единого теста.
+      - name: тестовые файлы на месте
+        shell: bash
+        run: test -n "$(ls scripts/ralph/*.test.mjs)"
       - name: node --test
+        shell: bash
         run: node --test --test-concurrency=1 "scripts/ralph/*.test.mjs"
