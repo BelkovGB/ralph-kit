@@ -1967,6 +1967,7 @@ const script = `
       // оставил бы зависимые селекты пустыми.
       optionsDependOn: source.optionsDependOn || null,
       allowCustom: source.allowCustom === true,
+      emptyAsNull: source.emptyAsNull === true,
       required: source.required === true,
       hasDefault: Object.prototype.hasOwnProperty.call(source, 'default'),
       fallback: source.default,
@@ -2199,7 +2200,7 @@ const script = `
           // null проходит слияние на сервере, пустая строка ломала проверку.
           setPath(draft, field.path, text.value === '' ? null : Number(text.value));
         } else {
-          setPath(draft, field.path, text.value);
+          setPath(draft, field.path, field.emptyAsNull && text.value === '' ? null : text.value);
         }
         markChanged();
       });

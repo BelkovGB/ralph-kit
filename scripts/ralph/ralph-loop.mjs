@@ -238,13 +238,14 @@ function verifyTools(config) {
   run('git', ['--version']);
   run('gh', ['--version']);
   run(agentBinary(config), ['--version']);
-  // Docker нужен только контейнеру проверок, а тот запускается лишь когда есть
-  // что запускать. Безусловная проверка требовала бы работающий демон и от
-  // `--check`, который без набора scripts не выполняет ни одной проверки.
-  if (config.preflightScripts.length + config.validationScripts.length > 0) {
+  // Docker нужен только контейнерному режиму и только при непустом наборе.
+  if (
+    config.validationMode === 'container' &&
+    config.preflightScripts.length + config.validationScripts.length > 0
+  ) {
     run('docker', ['version']);
   }
-  runNetwork('gh', ['auth', 'status']);
+  runNetwork('gh', ['auth', 'status', '--active', '--hostname', 'github.com']);
 }
 
 // -----------------------------------------------------------------------------
@@ -962,7 +963,7 @@ function createPullRequest(config, repository) {
     '',
     'Нельзя обновить PR: проектные проверки изменили чистое рабочее дерево.',
   );
-  runNetwork('git', ['fetch', 'origin', config.baseBranch], { echoOutput: true });
+  verifyBaseHistory(config);
   const commitCount = Number(
     run('git', ['rev-list', '--count', `origin/${config.baseBranch}..HEAD`]).stdout,
   );

@@ -29,13 +29,13 @@ RUN apt-get update \
 #            || echo "npm ci: attempt $attempt failed, retrying"; \
 #          done; test -n "$ok"
 #
-# 2. A read-only root filesystem, so the only writable places are /workspace and
-#    /tmp, both tmpfs. Dependencies installed here therefore live outside the
-#    workspace — /opt is the usual place — and a preflight script puts them where
-#    the commands expect them. Copy them, do not link them: test runners and
-#    bundlers write inside their own dependency tree (vitest creates
-#    node_modules/.vite-temp), and a symlink into /opt makes that a read-only
-#    path. Copying is what `preflightScripts` is for:
+# 2. A read-only root filesystem. /workspace and /tmp are writable tmpfs paths;
+#    `validationContainer.writableVolumes` can add writable anonymous volumes,
+#    for example /opt/pnpm-store. Dependencies installed here therefore live
+#    outside the workspace — /opt is the usual place — and a preflight script
+#    puts them where the commands expect them. Copy dependencies that test
+#    runners modify: a symlink into read-only /opt still fails. Copying is what
+#    `preflightScripts` is for:
 #      "preflightScripts": ["cp -R /opt/deps/node_modules node_modules"]
 #
 # 3. A fresh container per run, so a service with state on disk cannot be baked

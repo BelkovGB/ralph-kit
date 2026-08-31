@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -39,6 +40,9 @@ export const defaultRuntimeSettings = Object.freeze({
 });
 
 let settings = { ...defaultRuntimeSettings };
+let configuredGitHubAccount = null;
+let configuredGitHubToken = null;
+let disabledGitHooksDirectory = null;
 
 export function applyRuntimeSettings(runtime) {
   settings = { ...runtime };
@@ -46,6 +50,33 @@ export function applyRuntimeSettings(runtime) {
 
 export function runtimeSettings() {
   return settings;
+}
+
+export function removeTemporaryDirectory(directory, dependencies = {}) {
+  const remove = dependencies.rmSync ?? rmSync;
+  const warn = dependencies.warn ?? console.warn;
+  try {
+    remove(directory, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 100,
+    });
+    return true;
+  } catch (error) {
+    if (error?.code === 'ENOENT') return true;
+    warn(`Ralph не удалил временный каталог ${directory}: ${error?.message ?? String(error)}.`);
+    return false;
+  }
+}
+
+/**
+ * Выбирает сохранённый в GitHub CLI аккаунт только для команд `gh` Ralph.
+ * Глобальный active account в пользовательском `hosts.yml` не меняется.
+ */
+export function applyGitHubAccount(account) {
+  configuredGitHubAccount = account ?? null;
+  configuredGitHubToken = null;
 }
 
 export function executable(name) {
@@ -200,6 +231,97 @@ export function credentialFreeEnvironment(source = process.env) {
   return createEnvironment(credentialFreeEnvironmentVariables, source);
 }
 
+function readConfiguredGitHubToken(account, dependencies = {}) {
+  const execute = dependencies.spawnSync ?? spawnSync;
+  const commandTarget = commandSpec('gh', [
+    'auth',
+    'token',
+    '--hostname',
+    'github.com',
+    '--user',
+    account,
+  ]);
+  const environment = { ...process.env, ...windowsSafeCommandEnvironment };
+  // Иначе переменная окружения подменяет сохранённую авторизацию, ради которой
+  // и задан githubAccount. Сам токен читается только из хранилища GitHub CLI.
+  for (const name of ['GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN']) {
+    delete environment[name];
+  }
+  const result = execute(commandTarget.command, commandTarget.commandArgs, {
+    cwd: projectRoot,
+    encoding: 'utf8',
+    env: environment,
+    stdio: 'pipe',
+    timeout: settings.commandTimeoutMs,
+    windowsHide: true,
+  });
+  const token = result.stdout?.trim() ?? '';
+  if (result.error || result.status !== 0 || token === '') {
+    const error = new Error(
+      `Аккаунт GitHub "${account}" не авторизован в GitHub CLI. ` +
+        `Выполните gh auth login для этого аккаунта или выберите другой githubAccount.`,
+    );
+    error.code = 'RALPH_GITHUB_ACCOUNT';
+    throw error;
+  }
+  return token;
+}
+
+/** Окружение одного `gh`: выбранный токен не достаётся git, агенту и проверкам. */
+export function githubAccountEnvironment(source = process.env, dependencies = {}) {
+  if (configuredGitHubAccount === null) return source;
+  configuredGitHubToken ??= (dependencies.readToken ?? readConfiguredGitHubToken)(
+    configuredGitHubAccount,
+  );
+  const environment = {
+    ...source,
+    GH_HOST: 'github.com',
+    GH_TOKEN: configuredGitHubToken,
+  };
+  for (const name of ['GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN']) {
+    delete environment[name];
+  }
+  return environment;
+}
+
+/**
+ * Передаёт выбранный аккаунт сетевому `git` через одноразовый HTTP-заголовок.
+ * URL и аргументы команды не содержат токен, Git Credential Manager не меняется.
+ */
+export function githubGitEnvironment(source = process.env, dependencies = {}) {
+  if (configuredGitHubAccount === null) return source;
+  configuredGitHubToken ??= (dependencies.readToken ?? readConfiguredGitHubToken)(
+    configuredGitHubAccount,
+  );
+  const environment = { ...source };
+  for (const name of Object.keys(environment)) {
+    const normalized = name.toUpperCase();
+    if (normalized === 'GIT_CURL_VERBOSE' || normalized.startsWith('GIT_TRACE')) {
+      delete environment[name];
+    }
+  }
+  const inheritedCount = Number.parseInt(environment.GIT_CONFIG_COUNT ?? '0', 10);
+  const configIndex = Number.isInteger(inheritedCount) && inheritedCount >= 0 ? inheritedCount : 0;
+  const authorization = Buffer.from(`x-access-token:${configuredGitHubToken}`, 'utf8').toString(
+    'base64',
+  );
+  disabledGitHooksDirectory ??= mkdtempSync(path.join(tmpdir(), 'ralph-disabled-git-hooks-'));
+  environment.GIT_CONFIG_COUNT = String(configIndex + 2);
+  environment[`GIT_CONFIG_KEY_${configIndex}`] = 'http.https://github.com/.extraheader';
+  environment[`GIT_CONFIG_VALUE_${configIndex}`] = `AUTHORIZATION: basic ${authorization}`;
+  environment[`GIT_CONFIG_KEY_${configIndex + 1}`] = 'core.hooksPath';
+  environment[`GIT_CONFIG_VALUE_${configIndex + 1}`] = disabledGitHooksDirectory;
+  return environment;
+}
+
+process.once('exit', () => {
+  if (disabledGitHooksDirectory !== null) {
+    removeTemporaryDirectory(disabledGitHooksDirectory);
+  }
+});
+
+const authenticatedGitCommands = new Set(['fetch', 'ls-remote', 'push']);
+
 export function run(name, args, options = {}) {
   const commandTarget = commandSpec(name, args);
   const useCommandRunner = process.platform === 'win32';
@@ -209,10 +331,16 @@ export function run(name, args, options = {}) {
   // Когда окружение не задано, дочерний процесс наследует окружение вызывающего.
   // Защита от подмены батника обязана попасть в оба случая, поэтому окружение
   // здесь всегда выписывается явно.
+  let commandEnvironment = options.env;
+  if (name === 'gh' && args[0] !== '--version') {
+    commandEnvironment = githubAccountEnvironment(options.env ?? process.env);
+  } else if (name === 'git' && authenticatedGitCommands.has(args[0])) {
+    commandEnvironment = githubGitEnvironment(options.env ?? process.env);
+  }
   const childEnvironment =
     process.platform === 'win32'
-      ? { ...(options.env ?? process.env), ...windowsSafeCommandEnvironment }
-      : options.env;
+      ? { ...(commandEnvironment ?? process.env), ...windowsSafeCommandEnvironment }
+      : commandEnvironment;
   const timeoutMs = options.timeoutMs ?? settings.commandTimeoutMs;
   const startedAt = Date.now();
   console.log(`Команда: ${name} ${args[0] ?? ''}`.trim());

@@ -15,10 +15,13 @@ import {
   ensureValidationImage,
   failedValidationScript,
   hasValidationAttestation,
+  hostValidationEnvironment,
+  hostWorkingTreeHash,
   readValidationAttestations,
   recordValidationAttestation,
   runConfiguredScripts,
   validationAttestationKey,
+  validationContainerRunArgs,
   validationImageForSnapshot,
 } from './ralph-validation-runner.mjs';
 import {
@@ -248,6 +251,8 @@ function withStubbedValidationSnapshots(body) {
 
 function validationConfig(overrides = {}) {
   return {
+    validationMode: 'container',
+    validationEnvironment: [],
     preflightScripts: ['echo preflight'],
     validationScripts: ['npm run lint', 'npm run build', 'npm test'],
     runtime: { validationTimeoutMs: 5_000, validationRunTimeoutMs: 9_000 },
@@ -260,6 +265,165 @@ function validationConfig(overrides = {}) {
     ...overrides,
   };
 }
+
+function hostValidationConfig(overrides = {}) {
+  return {
+    validationMode: 'host',
+    validationEnvironment: ['CI=true', 'DATABASE_URL=postgres://validation'],
+    preflightScripts: ['pnpm db:migrate'],
+    validationScripts: ['pnpm check'],
+    runtime: { validationRunTimeoutMs: 9_000 },
+    trustedControlFileHashes: trustedControlFileHashes(),
+    agentInstructionFiles: trustedAgentInstructionFiles(),
+    ...overrides,
+  };
+}
+
+test('validation container mounts configured writable volumes', () => {
+  const args = validationContainerRunArgs(
+    {
+      validationContainer: {
+        image: 'ralph-validation:test',
+        writableVolumes: ['/opt/pnpm-store'],
+      },
+    },
+    ['pnpm check'],
+    'C:\\Temp\\ralph-validation-snapshot',
+  );
+  const volumeIndex = args.indexOf('type=volume,target=/opt/pnpm-store');
+
+  assert.notEqual(volumeIndex, -1);
+  assert.equal(args[volumeIndex - 1], '--mount');
+  assert.equal(args.at(-1), 'pnpm check');
+});
+
+function unchangedHostTreeRun(calls = []) {
+  return (command, args, options) => {
+    if (command === 'git') {
+      return { status: 0, stdout: 'scripts/ralph/README.md\0', stderr: '' };
+    }
+    calls.push({ command, args, options });
+    return { status: 0, stdout: '', stderr: '' };
+  };
+}
+
+test('host validation runs preflight and checks in the project without Docker', () => {
+  const calls = [];
+  const result = runConfiguredScripts(hostValidationConfig(), ['pnpm check'], 'Validation', {
+    run: unchangedHostTreeRun(calls),
+    environmentSource: {
+      PATH: process.env.PATH,
+      CODEX_HOME: 'must-not-leak',
+    },
+  });
+
+  assert.equal(result.mode, 'host');
+  assert.deepEqual(result.scripts, ['pnpm db:migrate', 'pnpm check']);
+  assert.equal(calls.length, 2);
+  assert.equal(calls.some((call) => call.command === 'docker'), false);
+  if (process.platform === 'win32') assert.equal(calls[0].command, 'cmd');
+  assert.equal(calls[0].options.env.DATABASE_URL, 'postgres://validation');
+  assert.equal(calls[0].options.env.CI, 'true');
+  assert.equal(calls[0].options.env.CODEX_HOME, undefined);
+});
+
+test('host validation rejects a check that changes project files', () => {
+  let hashes = 0;
+  const execute = (command) => {
+    if (command !== 'git') return { status: 0, stdout: '', stderr: '' };
+    hashes += 1;
+    return {
+      status: 0,
+      stdout: `${hashes === 1 ? 'scripts/ralph/README.md' : 'README.md'}\0`,
+      stderr: '',
+    };
+  };
+
+  assert.throws(
+    () =>
+      runConfiguredScripts(hostValidationConfig({ preflightScripts: [] }), ['pnpm check'], 'Validation', {
+        run: execute,
+      }),
+    /изменили отслеживаемые или новые файлы проекта/u,
+  );
+});
+
+test('host validation names the command that failed', () => {
+  let shellCalls = 0;
+  const execute = (command) => {
+    if (command === 'git') {
+      return { status: 0, stdout: 'scripts/ralph/README.md\0', stderr: '' };
+    }
+    shellCalls += 1;
+    if (shellCalls === 2) {
+      throw Object.assign(new Error('failed'), { code: 'RALPH_COMMAND_FAILED' });
+    }
+    return { status: 0, stdout: '', stderr: '' };
+  };
+
+  assert.throws(
+    () => runConfiguredScripts(hostValidationConfig(), ['pnpm check'], 'Validation', { run: execute }),
+    (error) => {
+      assert.equal(error.code, 'RALPH_VALIDATION_FAILED');
+      assert.equal(error.script, 'pnpm check');
+      return true;
+    },
+  );
+});
+
+test('host validation reports both a failed command and its file mutation', () => {
+  let gitCalls = 0;
+  const commandFailure = Object.assign(new Error('native command failed'), {
+    code: 'RALPH_COMMAND_FAILED',
+  });
+  const execute = (command) => {
+    if (command === 'git') {
+      gitCalls += 1;
+      return {
+        status: 0,
+        stdout: `${gitCalls === 1 ? 'scripts/ralph/README.md' : 'README.md'}\0`,
+        stderr: '',
+      };
+    }
+    throw commandFailure;
+  };
+
+  assert.throws(
+    () =>
+      runConfiguredScripts(
+        hostValidationConfig({ preflightScripts: [] }),
+        ['pnpm check'],
+        'Validation',
+        { run: execute },
+      ),
+    (error) => {
+      assert.equal(error.code, 'RALPH_VALIDATION_FAILED');
+      assert.equal(error.script, 'pnpm check');
+      assert.match(error.message, /изменили отслеживаемые или новые файлы/u);
+      assert.match(error.message, /native command failed/u);
+      assert.equal(error.cause, commandFailure);
+      return true;
+    },
+  );
+});
+
+test('host validation hashes files without copying the workspace', () => {
+  const hash = hostWorkingTreeHash({
+    run: () => ({ status: 0, stdout: 'scripts/ralph/README.md\0', stderr: '' }),
+  });
+  assert.match(hash, /^[a-f0-9]{64}$/u);
+  assert.deepEqual(
+    hostValidationEnvironment(hostValidationConfig(), {
+      PATH: 'safe-path',
+      CODEX_HOME: 'secret-path',
+    }),
+    {
+      PATH: 'safe-path',
+      CI: 'true',
+      DATABASE_URL: 'postgres://validation',
+    },
+  );
+});
 
 test('a validation set runs in one container instead of one per script', () => {
   const calls = [];
@@ -601,6 +765,7 @@ test('the attestation key covers every declared input', () => {
     dependencyHash: 'd',
     imageDigest: 'i',
     scripts: ['npm run lint', 'npm run build'],
+    writableVolumes: ['/opt/pnpm-store'],
   };
   const base = validationAttestationKey(inputs);
 
@@ -610,6 +775,7 @@ test('the attestation key covers every declared input', () => {
     { ...inputs, imageDigest: 'i2' },
     { ...inputs, scripts: ['npm run build', 'npm run lint'] },
     { ...inputs, scripts: ['npm run lint'] },
+    { ...inputs, writableVolumes: ['/pnpm-store'] },
   ]) {
     assert.notEqual(validationAttestationKey(changed), base);
   }
@@ -676,4 +842,3 @@ test('снимок повторяет рабочее дерево, а не ин�
     if (snapshot) rmSync(snapshot, { recursive: true, force: true });
   }
 });
-

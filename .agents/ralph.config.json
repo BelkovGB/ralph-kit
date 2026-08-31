@@ -1,6 +1,7 @@
 {
   "active": false,
   "agentCli": "claude",
+  "githubAccount": null,
   "baseBranch": "main",
   "draftPullRequest": true,
   "stopAfterFirstIssue": false,
@@ -34,10 +35,14 @@
   "approvedIssueSnapshotsFile": "scripts/ralph/approved-issues.json",
   "approvedIssueSnapshotsHash": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
   "prompt": "Возьми issue #{issue_number} «{issue_title}» из milestone «{milestone}» и реализуй её. Твой полный контракт — правила Ralph Loop, переданные ниже в этом же prompt, и AGENTS.md. Не читай .agents/RALPH.md: это операторская документация, она не нужна для реализации.",
+  "validationMode": "container",
+  "validationEnvironment": [],
   "validationContainer": {
     "image": "ralph-validation:latest",
-    "dockerfile": "scripts/ralph/Dockerfile.validation"
+    "dockerfile": "scripts/ralph/Dockerfile.validation",
+    "writableVolumes": []
   },
+  "validationDependencyPaths": [],
   "preflightScripts": [],
   "validationScripts": ["npm run lint", "npm run build", "npm test"],
   "review": {
