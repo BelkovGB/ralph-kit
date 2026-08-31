@@ -417,18 +417,32 @@ function configuredValidationEnvironment(config) {
  * Профиль оператора командам не отдают: там лежат credentials агента и `gh`.
  * Пустое место HOME тоже не годится — go, cargo, npm, pip и JVM ищут в нём кэш
  * и останавливаются до первой команды проекта. Поэтому Ralph выдаёт свой
- * каталог внутри `.git`: он переживает прогоны вместе с кэшами и не попадает ни
- * в рабочее дерево, ни в его хеш.
+ * каталог внутри системного temp: он переживает прогоны вместе с кэшами,
+ * но не попадает внутрь workspace. Это важно для Next.js: Turbopack игнорирует
+ * pnpm-workspace, если его корень включает HOME.
  */
-export const hostHomeDirectory = path.join(projectRoot, '.git', 'ralph-loop', 'host-home');
+const hostHomeProjectKey = createHash('sha256').update(projectRoot).digest('hex').slice(0, 16);
+export const hostHomeDirectory = path.join(
+  tmpdir(),
+  'ralph-loop',
+  hostHomeProjectKey,
+  'host-home',
+);
 
 export function hostValidationEnvironment(config, source = process.env) {
+  const configured = configuredValidationEnvironment(config);
+  const home = configured.HOME ?? hostHomeDirectory;
+  const userProfile = configured.USERPROFILE ?? home;
   return {
     ...credentialFreeEnvironment(source),
-    HOME: hostHomeDirectory,
-    USERPROFILE: hostHomeDirectory,
-    // Значения оператора идут последними: проект вправе назвать свой HOME.
-    ...configuredValidationEnvironment(config),
+    HOME: home,
+    USERPROFILE: userProfile,
+    APPDATA: configured.APPDATA ?? path.join(userProfile, 'AppData', 'Roaming'),
+    LOCALAPPDATA: configured.LOCALAPPDATA ?? path.join(userProfile, 'AppData', 'Local'),
+    XDG_CONFIG_HOME: configured.XDG_CONFIG_HOME ?? path.join(home, '.config'),
+    XDG_CACHE_HOME: configured.XDG_CACHE_HOME ?? path.join(home, '.cache'),
+    // Значения оператора идут последними: проект вправе задать свои каталоги.
+    ...configured,
   };
 }
 
@@ -543,7 +557,16 @@ export function runHostConfiguredScripts(config, scripts, label, options = {}) {
 
   assertTrustedControlFilesUnchanged(config);
   const environment = hostValidationEnvironment(config, options.environmentSource ?? process.env);
-  mkdirSync(hostHomeDirectory, { recursive: true });
+  for (const variable of [
+    'HOME',
+    'USERPROFILE',
+    'APPDATA',
+    'LOCALAPPDATA',
+    'XDG_CONFIG_HOME',
+    'XDG_CACHE_HOME',
+  ]) {
+    mkdirSync(environment[variable], { recursive: true, mode: 0o700 });
+  }
   const startedAt = Date.now();
   console.log(`\n=== ${label}: host ${[...preparation, ...guarded].join(' && ')} ===\n`);
 

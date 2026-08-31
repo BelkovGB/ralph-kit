@@ -432,10 +432,28 @@ test('host validation hashes files without copying the workspace', () => {
       // профиль оператора хранит credentials.
       HOME: hostHomeDirectory,
       USERPROFILE: hostHomeDirectory,
+      APPDATA: path.join(hostHomeDirectory, 'AppData', 'Roaming'),
+      LOCALAPPDATA: path.join(hostHomeDirectory, 'AppData', 'Local'),
+      XDG_CONFIG_HOME: path.join(hostHomeDirectory, '.config'),
+      XDG_CACHE_HOME: path.join(hostHomeDirectory, '.cache'),
       CI: 'true',
       DATABASE_URL: 'postgres://validation',
     },
   );
+});
+
+test('host validation home stays outside the project workspace', () => {
+  const projectRoot = fileURLToPath(new URL('../..', import.meta.url));
+  const relativeToProject = path.relative(projectRoot, hostHomeDirectory);
+  const relativeToTemp = path.relative(tmpdir(), hostHomeDirectory);
+  const isInside = (relativePath) =>
+    relativePath !== '' &&
+    relativePath !== '..' &&
+    !relativePath.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(relativePath);
+
+  assert.equal(isInside(relativeToProject), false);
+  assert.equal(isInside(relativeToTemp), true);
 });
 
 test('a validation set runs in one container instead of one per script', () => {
@@ -899,14 +917,20 @@ test('host-проверка получает свой домашний ката�
   });
 
   assert.equal(environment.CODEX_HOME, undefined);
-  assert.equal(environment.HOME.endsWith(path.join('ralph-loop', 'host-home')), true);
+  assert.equal(environment.HOME, hostHomeDirectory);
   assert.equal(environment.USERPROFILE, environment.HOME);
+  assert.equal(environment.APPDATA, path.join(environment.HOME, 'AppData', 'Roaming'));
+  assert.equal(environment.LOCALAPPDATA, path.join(environment.HOME, 'AppData', 'Local'));
+  assert.equal(environment.XDG_CONFIG_HOME, path.join(environment.HOME, '.config'));
+  assert.equal(environment.XDG_CACHE_HOME, path.join(environment.HOME, '.cache'));
 
   const overridden = hostValidationEnvironment(
     hostValidationConfig({ validationEnvironment: ['HOME=/custom/home'] }),
     { PATH: 'safe-path' },
   );
   assert.equal(overridden.HOME, '/custom/home');
+  assert.equal(overridden.USERPROFILE, '/custom/home');
+  assert.equal(overridden.XDG_CONFIG_HOME, path.join('/custom/home', '.config'));
 });
 
 test('host: preflight готовит окружение до снимка дерева, проверки — после', () => {
