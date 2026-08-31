@@ -990,3 +990,23 @@ test('остановка host-проверки называет изменённ
     },
   );
 });
+
+test('пустой и относительный путь домашнего каталога отвергаются, а не создаются в проекте', () => {
+  // `validationEnvironment` принимает `HOME=` и `HOME=.ralph-home`: первое
+  // роняло прогон на ENOENT внутри mkdir, второе создавало домашний каталог в
+  // рабочей папке — то есть ровно там, откуда его выносили, да ещё и меняло
+  // дерево, что останавливает проверку как подделку.
+  const empty = hostValidationEnvironment(
+    hostValidationConfig({ validationEnvironment: ['HOME='] }),
+    { PATH: 'safe-path' },
+  );
+  assert.equal(empty.HOME, hostHomeDirectory);
+
+  assert.throws(
+    () =>
+      hostValidationEnvironment(hostValidationConfig({ validationEnvironment: ['HOME=.ralph-home'] }), {
+        PATH: 'safe-path',
+      }),
+    /HOME.*абсолютн/u,
+  );
+});
