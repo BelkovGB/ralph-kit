@@ -81,7 +81,7 @@ README перечисляет, что переписать. Ниже — то, �
 5. **Модели.** `developmentModel`, `developmentEffort`, `review.model`,
    `milestoneReview.model`. Codex поддерживает модели GPT-5.6 Sol, Terra и Luna,
    а также GPT-5.5, GPT-5.4, GPT-5.4 Mini и GPT-5.3 Codex Spark. Для Codex в
-   конфиге доступны effort low/medium/high/xhigh/max/ultra; Claude —
+   конфиге доступны effort minimal/low/medium/high/xhigh/max/ultra; Claude —
    low/medium/high/xhigh/max. `maxTurns` между
    CLI тоже не переносится числом: Codex считает каждый item, включая
    выполненные команды, Claude — ответы модели.
@@ -140,6 +140,8 @@ pull request вместо draft — `"draftPullRequest": false`. Паралле�
 В режиме `host` Ralph выполняет подготовку и проверки прямо в рабочей папке.
 Перед первым шагом он считает хеш всех отслеживаемых и новых файлов, а после
 последнего сверяет его снова. Изменившая исходники команда останавливает цикл.
+Следующий запуск ждёт точного восстановления diff, который был до проверки, и
+не передаёт созданные проверкой файлы агенту.
 Процесс получает системные пути и переменные из `validationEnvironment`, но не
 получает `HOME`, пользовательские каталоги конфигурации и credentials агента.
 Host-проверки всегда выполняются заново: состояние постоянной базы данных

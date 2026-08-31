@@ -344,7 +344,14 @@ test('host validation rejects a check that changes project files', () => {
       runConfiguredScripts(hostValidationConfig({ preflightScripts: [] }), ['pnpm check'], 'Validation', {
         run: execute,
       }),
-    /изменили отслеживаемые или новые файлы проекта/u,
+    (error) => {
+      assert.equal(error.code, 'RALPH_VALIDATION_MUTATED');
+      assert.match(error.message, /изменили отслеживаемые или новые файлы проекта/u);
+      assert.match(error.expectedTreeHash, /^[a-f0-9]{64}$/u);
+      assert.match(error.observedTreeHash, /^[a-f0-9]{64}$/u);
+      assert.notEqual(error.expectedTreeHash, error.observedTreeHash);
+      return true;
+    },
   );
 });
 
@@ -397,7 +404,7 @@ test('host validation reports both a failed command and its file mutation', () =
         { run: execute },
       ),
     (error) => {
-      assert.equal(error.code, 'RALPH_VALIDATION_FAILED');
+      assert.equal(error.code, 'RALPH_VALIDATION_MUTATED');
       assert.equal(error.script, 'pnpm check');
       assert.match(error.message, /изменили отслеживаемые или новые файлы/u);
       assert.match(error.message, /native command failed/u);

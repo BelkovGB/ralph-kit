@@ -502,12 +502,16 @@ export function runHostConfiguredScripts(config, scripts, label, options = {}) {
   }
 
   try {
-    if (hostWorkingTreeHash({ run: execute }) !== treeHash) {
+    const observedTreeHash = hostWorkingTreeHash({ run: execute });
+    if (observedTreeHash !== treeHash) {
       const treeError = new Error(
         `${label}: команды проверки изменили отслеживаемые или новые файлы проекта.` +
           (failure ? ` Исходная ошибка: ${failure.message}` : ''),
         failure ? { cause: failure } : undefined,
       );
+      treeError.code = 'RALPH_VALIDATION_MUTATED';
+      treeError.expectedTreeHash = treeHash;
+      treeError.observedTreeHash = observedTreeHash;
       failure = treeError;
     }
   } catch (error) {
@@ -516,8 +520,9 @@ export function runHostConfiguredScripts(config, scripts, label, options = {}) {
   }
 
   if (failure) {
-    failure.code =
-      failure.code === 'RALPH_COMMAND_TIMEOUT' ? failure.code : 'RALPH_VALIDATION_FAILED';
+    if (!['RALPH_COMMAND_TIMEOUT', 'RALPH_VALIDATION_MUTATED'].includes(failure.code)) {
+      failure.code = 'RALPH_VALIDATION_FAILED';
+    }
     failure.script = activeScript;
     throw failure;
   }

@@ -31,7 +31,11 @@ import {
   summarizeCommandFailure,
   uniqueFailedTests,
 } from './ralph-failure-summary.mjs';
-import { baseForNextSession, committedRecoveryPhases } from './ralph-loop.mjs';
+import {
+  baseForNextSession,
+  committedRecoveryPhases,
+  recoverHostValidationMutation,
+} from './ralph-loop.mjs';
 import {
   alreadyFixedCommitFromAgent,
   filesChangedBetween,
@@ -1097,6 +1101,35 @@ test('host validation does not require Docker settings', () => {
   );
 });
 
+test('a host validation mutation blocks recovery until the original diff is restored', () => {
+  const storedIssue = {
+    number: 17,
+    phase: 'validation-mutated',
+    validationExpectedTreeHash: 'before',
+  };
+  const updates = [];
+  const stateStore = { updateIssue: (values) => updates.push(values) };
+
+  assert.throws(
+    () =>
+      recoverHostValidationMutation(storedIssue, stateStore, {
+        hostWorkingTreeHash: () => 'after',
+      }),
+    /Удалите созданные проверкой изменения/u,
+  );
+  assert.equal(updates.length, 0);
+
+  assert.equal(
+    recoverHostValidationMutation(storedIssue, stateStore, {
+      hostWorkingTreeHash: () => 'before',
+    }),
+    true,
+  );
+  assert.equal(updates.length, 1);
+  assert.equal(updates[0].phase, 'working-tree');
+  assert.equal(updates[0].validationExpectedTreeHash, null);
+});
+
 test('validation environment accepts unique NAME=value entries only', () => {
   assert.throws(
     () =>
@@ -1193,6 +1226,24 @@ test('an unsupported reasoning effort is rejected before a run starts', () => {
       expected,
     );
   }
+});
+
+test('a version 1.1 Codex config with minimal effort remains valid', () => {
+  const original = JSON.parse(readFileSync(ralphConfigPath, 'utf8'));
+  withPatchedRalphConfig(
+    {
+      ...original,
+      agentCli: 'codex',
+      developmentEffort: 'minimal',
+      review: { ...original.review, effort: 'minimal' },
+      milestoneReview: { ...original.milestoneReview, effort: 'minimal' },
+    },
+    (config) => {
+      assert.equal(config.developmentEffort, 'minimal');
+      assert.equal(config.review.effort, 'minimal');
+      assert.equal(config.milestoneReview.effort, 'minimal');
+    },
+  );
 });
 
 test('the milestone review marker records the effective model and effort', () => {

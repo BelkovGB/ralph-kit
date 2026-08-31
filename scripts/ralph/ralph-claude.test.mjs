@@ -40,7 +40,15 @@ test('agentCli selects the backend and its reasoning-effort vocabulary', () => {
   assert.equal(agentBackend({}).cli, 'codex');
   assert.equal(agentBinary({ agentCli: 'claude' }), 'claude');
 
-  assert.deepEqual(reasoningEffortsFor('codex'), ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+  assert.deepEqual(reasoningEffortsFor('codex'), [
+    'minimal',
+    'low',
+    'medium',
+    'high',
+    'xhigh',
+    'max',
+    'ultra',
+  ]);
   assert.deepEqual(reasoningEffortsFor('claude'), ['low', 'medium', 'high', 'xhigh', 'max']);
   // Словари не совпадают, поэтому одна общая проверка усилий была бы неверной
   // ровно для этих значений.

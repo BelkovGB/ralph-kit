@@ -188,8 +188,8 @@ Ralph выполняет задачи из GitHub, пока вы не за ко�
 | `review.model`          | `claude-opus-5` | `gpt-5.6-terra` |
 | `milestoneReview.model` | `claude-opus-5` | `gpt-5.6-sol`   |
 
-Полный набор effort задаёт CLI: у Codex — `low`, `medium`, `high`, `xhigh`,
-`max`, `ultra`; у Claude — `low`, `medium`, `high`, `xhigh`, `max`.
+Полный набор effort задаёт CLI: у Codex — `minimal`, `low`, `medium`, `high`,
+`xhigh`, `max`, `ultra`; у Claude — `low`, `medium`, `high`, `xhigh`, `max`.
 
 Имена моделей код ни с каким списком не сверяет, он проверяет только безопасные
 символы, поэтому имя из таблицы замените на то, к которому у вас есть доступ.
