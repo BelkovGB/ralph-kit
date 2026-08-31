@@ -9,6 +9,7 @@ import {
   agentReportedWriteAccessFailure,
   createSandboxedCodexEnvironment,
   developmentCodexArguments,
+  readCodexEvent,
   runCodexWithTurnLimit,
   verifyCodexAuthentication,
 } from './ralph-codex-session.mjs';
@@ -241,6 +242,29 @@ test('development Codex has unrestricted repository write access', () => {
   const args = developmentCodexArguments({ developmentModel: 'gpt-5.6-terra' });
   assert.deepEqual(args.slice(0, 4), ['exec', '--json', '--sandbox', 'danger-full-access']);
   assert.ok(!args.includes('workspace-write'));
+});
+
+test('Codex turn.completed раскладывает usage на непересекающиеся категории', () => {
+  const event = readCodexEvent(
+    JSON.stringify({
+      type: 'turn.completed',
+      usage: {
+        input_tokens: 18_620,
+        cached_input_tokens: 9_984,
+        cache_write_input_tokens: 0,
+        output_tokens: 5,
+        reasoning_output_tokens: 0,
+      },
+    }),
+  );
+
+  assert.deepEqual(event.telemetry, {
+    uncachedInputTokens: 8_636,
+    cacheReadTokens: 9_984,
+    cacheCreationTokens: 0,
+    outputTokens: 5,
+    thinkingTokens: 0,
+  });
 });
 
 test('write access blockers are recognized as infrastructure failures', () => {

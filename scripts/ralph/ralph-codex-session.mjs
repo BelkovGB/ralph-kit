@@ -60,7 +60,20 @@ export function createSandboxedCodexEnvironment(source = process.env, options = 
 // Изолированный CODEX_HOME не содержит пользовательский config.toml, поэтому без
 // явного override каждая роль получает текущий default CLI/модели. Передаём
 // эффективное значение сами, чтобы поведение не менялось вместе с default.
-export const reasoningEfforts = ['minimal', 'low', 'medium', 'high'];
+export const codexModels = [
+  'gpt-5.6-sol',
+  'gpt-5.6-terra',
+  'gpt-5.6-luna',
+  'gpt-5.5',
+  'gpt-5.4',
+  'gpt-5.4-mini',
+  'gpt-5.3-codex-spark',
+];
+
+// Codex Desktop сейчас предлагает эти значения для моделей GPT-5.6. Проверка
+// конфигурации использует объединение, потому что CLI проверяет совместимость
+// модели и effort перед запуском, а список моделей обновляется независимо.
+export const reasoningEfforts = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 
 export function reasoningEffortArguments(effort) {
   return ['-c', `model_reasoning_effort="${effort}"`];
@@ -107,7 +120,11 @@ export function agentReportedWriteAccessFailure(message) {
   );
 }
 
-function readCodexEvent(line) {
+function numberOrNull(value) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+export function readCodexEvent(line) {
   let event;
   try {
     event = JSON.parse(line);
@@ -116,6 +133,23 @@ function readCodexEvent(line) {
   }
 
   const item = event.item;
+  if (event.type === 'turn.completed' && event.usage) {
+    const inputTokens = numberOrNull(event.usage.input_tokens);
+    const cacheReadTokens = numberOrNull(event.usage.cached_input_tokens);
+    const cacheCreationTokens = numberOrNull(event.usage.cache_write_input_tokens);
+    const cachedTokens = (cacheReadTokens ?? 0) + (cacheCreationTokens ?? 0);
+    return {
+      telemetry: {
+        // Codex передаёт полный вход. Вычитаем обе части кэша, чтобы пять
+        // категорий в GUI не пересекались и складывались в общий расход.
+        uncachedInputTokens: inputTokens === null ? null : Math.max(inputTokens - cachedTokens, 0),
+        cacheReadTokens,
+        cacheCreationTokens,
+        outputTokens: numberOrNull(event.usage.output_tokens),
+        thinkingTokens: numberOrNull(event.usage.reasoning_output_tokens),
+      },
+    };
+  }
   if (!item) return {};
   if (item.type === 'error') return { errorLog: item.message };
 

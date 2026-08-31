@@ -70,8 +70,10 @@ README перечисляет, что переписать. Ниже — то, �
    pull request Ralph не делает. Имена milestone и веток уникальны, конфиг без
    `phases` отклоняется при загрузке.
 4. **Модели.** `developmentModel`, `developmentEffort`, `review.model`,
-   `milestoneReview.model`. Словарь effort у CLI разный: Codex принимает
-   minimal/low/medium/high, Claude — low/medium/high/xhigh/max. `maxTurns` между
+   `milestoneReview.model`. Codex поддерживает модели GPT-5.6 Sol, Terra и Luna,
+   а также GPT-5.5, GPT-5.4, GPT-5.4 Mini и GPT-5.3 Codex Spark. Для Codex в
+   конфиге доступны effort low/medium/high/xhigh/max/ultra; Claude —
+   low/medium/high/xhigh/max. `maxTurns` между
    CLI тоже не переносится числом: Codex считает каждый item, включая
    выполненные команды, Claude — ответы модели.
 5. **Issues.** Одна issue — одна задача, которую можно завершить целиком: после
