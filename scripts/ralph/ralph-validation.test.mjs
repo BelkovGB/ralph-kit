@@ -15,6 +15,7 @@ import {
   ensureValidationImage,
   failedValidationScript,
   hasValidationAttestation,
+  hostHomeDirectory,
   hostValidationEnvironment,
   hostWorkingTreeHash,
   readValidationAttestations,
@@ -426,6 +427,10 @@ test('host validation hashes files without copying the workspace', () => {
     }),
     {
       PATH: 'safe-path',
+      // Домашний каталог выдаёт Ralph: без него инструменты не находят кэш, а
+      // профиль оператора хранит credentials.
+      HOME: hostHomeDirectory,
+      USERPROFILE: hostHomeDirectory,
       CI: 'true',
       DATABASE_URL: 'postgres://validation',
     },
@@ -848,4 +853,114 @@ test('снимок повторяет рабочее дерево, а не ин�
     writeFileSync(absolute, original);
     if (snapshot) rmSync(snapshot, { recursive: true, force: true });
   }
+});
+
+test('контейнер получает переменные проверок, и они входят в ключ attestation', () => {
+  // Ключ принимают в обоих режимах, поэтому контейнер обязан его применять:
+  // молча пропущенная переменная меняет поведение тестов, и в выводе прогона
+  // причины нет.
+  const args = validationContainerRunArgs(
+    {
+      validationEnvironment: ['CI=true', 'DATABASE_URL=postgres://validation'],
+      validationContainer: { image: 'ralph-validation:test', writableVolumes: [] },
+    },
+    ['pnpm check'],
+    'C:\Temp\ralph-validation-snapshot',
+  );
+  const environmentIndex = args.indexOf('CI=true');
+
+  assert.notEqual(environmentIndex, -1);
+  assert.equal(args[environmentIndex - 1], '--env');
+  assert.equal(args.includes('DATABASE_URL=postgres://validation'), true);
+
+  // Переменная меняет результат команд, поэтому прежний PASS ей не годится.
+  const inputs = {
+    sourceHash: 'a'.repeat(64),
+    dependencyHash: 'b'.repeat(64),
+    imageDigest: 'sha256:c',
+    scripts: ['pnpm check'],
+    writableVolumes: [],
+  };
+  assert.notEqual(
+    validationAttestationKey({ ...inputs, environment: ['CI=true'] }),
+    validationAttestationKey({ ...inputs, environment: [] }),
+  );
+});
+
+test('host-проверка получает свой домашний каталог вместо профиля оператора', () => {
+  // Без HOME цепочки Go, Rust, JVM и npm падают на поиске кэша ещё до команды
+  // проекта, а профиль оператора отдавать нельзя: в нём лежат credentials.
+  const environment = hostValidationEnvironment(hostValidationConfig(), {
+    PATH: 'safe-path',
+    CODEX_HOME: 'secret-path',
+    USERPROFILE: 'C:\Users\operator',
+    HOME: '/home/operator',
+  });
+
+  assert.equal(environment.CODEX_HOME, undefined);
+  assert.equal(environment.HOME.endsWith(path.join('ralph-loop', 'host-home')), true);
+  assert.equal(environment.USERPROFILE, environment.HOME);
+
+  const overridden = hostValidationEnvironment(
+    hostValidationConfig({ validationEnvironment: ['HOME=/custom/home'] }),
+    { PATH: 'safe-path' },
+  );
+  assert.equal(overridden.HOME, '/custom/home');
+});
+
+test('host: preflight готовит окружение до снимка дерева, проверки — после', () => {
+  // Preflight по контракту меняет дерево: генерация кода и миграции для того и
+  // существуют. Снимок до него останавливал бы прогон на собственной
+  // подготовке, и следующий запуск повторял бы её с тем же исходом.
+  const log = [];
+  let listing = 'README.md\0';
+  const execute = (command, args) => {
+    if (command === 'git') {
+      log.push('git');
+      return { status: 0, stdout: listing, stderr: '' };
+    }
+    log.push(args.at(-1));
+    if (args.at(-1) === 'pnpm db:migrate') listing = 'README.md\0CHANGELOG.md\0';
+    return { status: 0, stdout: '', stderr: '' };
+  };
+
+  const result = runConfiguredScripts(hostValidationConfig(), ['pnpm check'], 'Validation', {
+    run: execute,
+  });
+
+  assert.equal(result.ran, true);
+  assert.deepEqual(log, ['pnpm db:migrate', 'git', 'pnpm check', 'git']);
+});
+
+test('остановка host-проверки называет изменённые файлы', () => {
+  // Оператор получает задание вернуть прежний diff. Без списка файлов он не
+  // знает, что именно вернуть, а хеш дерева ему ничего не говорит.
+  let gitCalls = 0;
+  const execute = (command) => {
+    if (command === 'git') {
+      gitCalls += 1;
+      return {
+        status: 0,
+        stdout: gitCalls === 1 ? 'README.md\0' : 'README.md\0CHANGELOG.md\0',
+        stderr: '',
+      };
+    }
+    return { status: 0, stdout: '', stderr: '' };
+  };
+
+  assert.throws(
+    () =>
+      runConfiguredScripts(
+        hostValidationConfig({ preflightScripts: [] }),
+        ['pnpm check'],
+        'Validation',
+        { run: execute },
+      ),
+    (error) => {
+      assert.equal(error.code, 'RALPH_VALIDATION_MUTATED');
+      assert.deepEqual(error.mutatedPaths, ['CHANGELOG.md']);
+      assert.match(error.message, /CHANGELOG\.md/u);
+      return true;
+    },
+  );
 });

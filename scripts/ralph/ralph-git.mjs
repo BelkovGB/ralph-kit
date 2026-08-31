@@ -25,6 +25,19 @@ export function commitTrailerForIssue(issue) {
 // это десятки лишних шагов на каждое ревью. Diff на 60 000 символов дешевле.
 const reviewDiffCharacterBudget = 60_000;
 
+/**
+ * Закреплённый адрес отправки живёт в модуле, а не в конфиге фазы: конфиг фазы
+ * создаётся заново на каждую фазу, а `.git/config` не входит ни в рабочее
+ * дерево, ни в слепок доверенных файлов. Сессия агента работает в корне
+ * репозитория и вправе выполнить `git remote set-url`, поэтому смена адреса
+ * между фазами обязана остановить прогон, а не тихо переехать на новый адрес.
+ */
+let pinnedGitHubRemoteUrl = null;
+
+export function resetPinnedGitHubOrigin() {
+  pinnedGitHubRemoteUrl = null;
+}
+
 export function verifyConfiguredGitHubOrigin(config, dependencies = {}) {
   if (config.githubAccount == null) return null;
   const execute = dependencies.run ?? run;
@@ -54,8 +67,16 @@ export function verifyConfiguredGitHubOrigin(config, dependencies = {}) {
     );
   }
   const pinned = `${parsed.origin}${parsed.pathname.replace(/\/$/u, '')}`;
-  config.githubRemoteUrl = pinned;
-  return pinned;
+  if (pinnedGitHubRemoteUrl !== null && pinnedGitHubRemoteUrl !== pinned) {
+    fail(
+      'Адрес origin изменился во время прогона. Ralph остановлен до сетевой команды: ' +
+        'ветку с токеном выбранного аккаунта отправили бы по новому адресу. ' +
+        'Проверьте .git/config и запустите прогон заново.',
+    );
+  }
+  pinnedGitHubRemoteUrl ??= pinned;
+  config.githubRemoteUrl = pinnedGitHubRemoteUrl;
+  return pinnedGitHubRemoteUrl;
 }
 
 function networkRemote(config) {

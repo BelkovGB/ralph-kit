@@ -43,6 +43,7 @@ import {
   issueChangeInventory,
   linkedCommitForIssue,
   pushBranchAndVerify,
+  resetPinnedGitHubOrigin,
   syncPhaseBranchWithBase,
   verifyConfiguredGitHubOrigin,
   workingTreeEntries,
@@ -69,7 +70,11 @@ import {
   reviewFindingFingerprint,
   reviewFindingMarker,
 } from './ralph-milestone-review.mjs';
-import { reopenIssueWithComment, verifyRepositoryWriteAccess } from './ralph-github-client.mjs';
+import {
+  reopenIssueWithComment,
+  verifyGitHubAuthentication,
+  verifyRepositoryWriteAccess,
+} from './ralph-github-client.mjs';
 import { ralphConfigPath, withPatchedRalphConfig } from './ralph-test-support.mjs';
 
 test('finding fingerprint is stable for Unicode titles and changes with location', () => {
@@ -730,12 +735,13 @@ test('the committed configuration sets an explicit effort valid for its agentCli
 });
 
 test('GitHub account is configurable and exposed in the GUI', () => {
-  const config = loadConfig();
+  // Умолчание проверяется на конфиге без ключа, а не чтением файла проекта:
+  // проект, заполнивший это поле по документации, ронял бы тест набора своей
+  // настройкой.
   const githubAccountField = fieldGroups
     .flatMap((group) => group.fields)
     .find((field) => field.path === 'githubAccount');
 
-  assert.equal(config.githubAccount, null);
   assert.equal(githubAccountField?.type, 'text');
   assert.equal(githubAccountField?.emptyAsNull, true);
   withPatchedRalphConfig({ githubAccount: 'owner-bot' }, (configuredAccount) => {
@@ -757,6 +763,7 @@ test('GitHub account is configurable and exposed in the GUI', () => {
 });
 
 test('configured GitHub account requires an HTTPS GitHub origin', () => {
+  resetPinnedGitHubOrigin();
   const config = { githubAccount: 'codex-ai-Goo' };
   const executeWith = (origin) => () => ({ stdout: origin });
 
@@ -1929,4 +1936,72 @@ test('слияние базы включено по умолчанию, когд
   withPatchedRalphConfig({ syncBaseBranch: undefined }, (config) => {
     assert.equal(config.syncBaseBranch, true);
   });
+});
+
+test('проверка авторизации GitHub смотрит на тот аккаунт, которым Ralph работает', () => {
+  // Без githubAccount хост не называется: `gh auth status --hostname github.com`
+  // отвергает установку на GitHub Enterprise, где до этого прогон работал.
+  const calls = [];
+  const runNetwork = (command, args) => {
+    calls.push([command, ...args]);
+    return { status: 0, stdout: 'owner-bot', stderr: '' };
+  };
+  verifyGitHubAuthentication({ githubAccount: null }, { runNetwork });
+  assert.deepEqual(calls, [['gh', 'auth', 'status']]);
+
+  // С githubAccount проверяется именно он: `--active` подтверждал бы аккаунт,
+  // токеном которого Ralph потом не работает, и отказ приходил бы посреди
+  // прогона.
+  calls.length = 0;
+  const login = verifyGitHubAuthentication({ githubAccount: 'Owner-Bot' }, { runNetwork });
+  assert.equal(login, 'owner-bot');
+  assert.deepEqual(calls, [['gh', 'api', 'user', '--jq', '.login']]);
+
+  assert.throws(
+    () =>
+      verifyGitHubAuthentication(
+        { githubAccount: 'other-bot' },
+        { runNetwork: () => ({ status: 0, stdout: 'owner-bot', stderr: '' }) },
+      ),
+    /other-bot/u,
+  );
+});
+
+test('поле записываемых томов контейнера доступно на пульте', () => {
+  // Ключ поставляется в конфиге и описан в документации: без поля пульт
+  // показывает его в блоке «Не распознано» с кнопкой удаления.
+  const field = fieldGroups
+    .flatMap((group) => group.fields)
+    .find((item) => item.path === 'validationContainer.writableVolumes');
+
+  assert.equal(field?.type, 'list');
+});
+
+test('адрес origin закрепляется на весь прогон, а не на фазу', () => {
+  // `.git/config` не входит ни в рабочее дерево, ни в слепок доверенных файлов,
+  // а сессия работает в корне репозитория. Без закрепления на весь прогон агент
+  // первой фазы подменяет origin, и вторая фаза отправляет ветку в чужой
+  // репозиторий с токеном выбранного аккаунта.
+  resetPinnedGitHubOrigin();
+  const config = { githubAccount: 'owner-bot' };
+  const executeWith = (origin) => () => ({ stdout: origin });
+
+  try {
+    assert.equal(
+      verifyConfiguredGitHubOrigin(config, {
+        run: executeWith('https://github.com/owner/repository.git'),
+      }),
+      'https://github.com/owner/repository.git',
+    );
+    assert.throws(
+      () =>
+        verifyConfiguredGitHubOrigin(config, {
+          run: executeWith('https://github.com/attacker/repository.git'),
+        }),
+      /origin изменился/u,
+    );
+    assert.equal(config.githubRemoteUrl, 'https://github.com/owner/repository.git');
+  } finally {
+    resetPinnedGitHubOrigin();
+  }
 });
