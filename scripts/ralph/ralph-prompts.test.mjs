@@ -192,6 +192,10 @@ test('without a change set the prompt carries no diff section', () => {
   );
 
   assert.doesNotMatch(prompt, /```diff/);
+  // Запрет собирать инвентарь Git появляется только вместе с самим инвентарём:
+  // без него ревьюер лишился бы единственного способа увидеть изменения.
+  assert.doesNotMatch(prompt, /Do not rebuild it with Git commands/);
+  assert.match(prompt, /Do not delegate it to subagents/);
   assert.match(prompt, /Do not stop after the first problem/);
 });
 
