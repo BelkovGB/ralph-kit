@@ -1,0 +1,22 @@
+# Единственная проверка, которую нельзя обойти локально: она видит правку от
+# любой сессии и с любой машины. Каталог .github в проект-потребитель не
+# копируется — это инфраструктура репозитория набора, а не часть поставки.
+name: tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  node-test:
+    # Linux намеренно: разработка идёт на Windows, и прогон на другой системе
+    # ловит предположения об оболочке, которых на Windows не видно.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: node --test
+        run: node --test --test-concurrency=1 "scripts/ralph/*.test.mjs"
