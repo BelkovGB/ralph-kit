@@ -2005,3 +2005,26 @@ test('адрес origin закрепляется на весь прогон, а 
     resetPinnedGitHubOrigin();
   }
 });
+
+test('упавшие тесты pytest и go test попадают в сводку наравне с JS-раннерами', () => {
+  // Сводку читает агент, чтобы починить упавшее. Набор ставят в проект на любом
+  // языке, а разбирались только раннеры JS: для остальных сводка оставалась
+  // пустой, и агент шёл чинить по полному логу.
+  const pytest = [
+    '=================================== FAILURES ===================================',
+    'FAILED tests/test_profile.py::test_rejects_long_password - AssertionError',
+    'FAILED tests/test_profile.py::test_accepts_unicode',
+    '=========================== 2 failed, 40 passed ================================',
+  ].join(newline);
+  assert.deepEqual(uniqueFailedTests(pytest).tests, [
+    'tests/test_profile.py::test_rejects_long_password - AssertionError',
+    'tests/test_profile.py::test_accepts_unicode',
+  ]);
+
+  const goTest = [
+    '--- FAIL: TestProfileRejectsLongPassword (0.00s)',
+    '    profile_test.go:42: got 200, want 400',
+    'FAIL\texample.com/profile\t0.012s',
+  ].join(newline);
+  assert.deepEqual(uniqueFailedTests(goTest).tests, ['TestProfileRejectsLongPassword']);
+});

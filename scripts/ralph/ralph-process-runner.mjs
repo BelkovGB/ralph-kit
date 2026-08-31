@@ -13,7 +13,7 @@ import {
 } from './ralph-runtime.mjs';
 
 /**
- * Запуск внешних команд: Git, GitHub CLI, npm и Codex CLI.
+ * Запуск внешних команд: Git, GitHub CLI и CLI агента.
  *
  * Пути выводятся здесь заново, а не импортируются из оркестратора. Это не
  * дублирование ради удобства: `loadConfig` вызывает `applyRuntimeSettings`, а
@@ -103,10 +103,10 @@ const windowsShimExtensions = new Set(['.BAT', '.CMD']);
  *
  * Порядок важен и не является деталью: он даёт тот же файл, который получает
  * оператор, набрав имя в своей оболочке. Подстановка `${name}.cmd` вместо
- * поиска выбирает npm-шим даже там, где рядом в более раннем каталоге PATH
- * лежит рабочий .exe: на машине со сломанной npm-установкой Claude Code сессия
- * падает с «claude.exe не совместим с версией Windows», хотя `claude --version`
- * в оболочке работает.
+ * поиска выбирает шим даже там, где рядом в более раннем каталоге PATH лежит
+ * рабочий .exe: на машине со сломанной установкой CLI сессия падает с
+ * «claude.exe не совместим с версией Windows», хотя `claude --version` в
+ * оболочке работает.
  */
 export function resolveWindowsExecutable(name, source = process.env) {
   const directories = (source.PATH ?? source.Path ?? '')
@@ -141,7 +141,7 @@ export function commandSpec(name, args) {
   if (resolved === null) {
     const error = new Error(
       `Команда ${name} не найдена в PATH. Ожидались ${name}.exe (нативная установка) ` +
-        `или ${name}.cmd (установка через npm).`,
+        `или ${name}.cmd (установка пакетным менеджером).`,
     );
     error.code = 'RALPH_COMMAND_NOT_FOUND';
     throw error;

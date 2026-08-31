@@ -174,10 +174,9 @@ function validationDependencyPaths(config) {
 /**
  * Образ валидации ставит зависимости по HEAD, а не по рабочему дереву, и это
  * намеренно: сборка образа — единственный шаг с сетью, поэтому брать
- * `package.json` из дерева значило бы выполнить lifecycle-хуки, которые туда
- * только что мог записать агент. Ровно это закрывают тесты «built from
- * committed inputs, not the mutable workspace» и «takes package.json from HEAD
- * and ignores injected lifecycle hooks».
+ * манифест зависимостей из дерева значило бы выполнить хуки установки, которые
+ * туда только что мог записать агент. Это закрывает тест «validation dependency
+ * image is built from committed inputs, not the mutable workspace».
  *
  * Плата — дрейф. Стоит агенту добавить пакет, и контейнер собирает дерево,
  * объявляющее одну зависимость, против зависимостей предыдущего коммита. Молча
