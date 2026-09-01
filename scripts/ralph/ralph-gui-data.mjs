@@ -2,6 +2,7 @@ import { closeSync, openSync, readSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { describeOutcome } from './ralph-run-metrics.mjs';
 import { isProcessAlive, readJsonFile } from './ralph-runtime.mjs';
 
 /**
@@ -31,34 +32,9 @@ const maxStoredIssueRecords = 200;
 // обязана об этом сказать, чтобы итог не выдавал себя за полную стоимость.
 const milestoneReviewKeyPrefix = 'milestone-review:';
 
-// Итоги попытки: слева — что цикл пишет в журнал, справа — что это значит.
-// Значения сверены с `ralph-loop.mjs`: первые семь пишет сам цикл, остальные
-// приходят кодом упавшего исключения.
-//
-// Тот же список слово в слово повторён в `outcomeWords` на странице:
-// страница подписывает ячейку, сервер — подсказку к ней, и расхождение читалось
-// бы как два разных события. Меняете здесь — правьте и там.
-const outcomeDescriptions = {
-  completed: 'Ralph закрыл issue',
-  'review-failed': 'ревью вернуло замечания',
-  'review-parked': 'Ralph отложил issue после отказов ревью',
-  'iteration-limit': 'итерации кончились до начала issue',
-  'milestone-review': 'Ralph отревьюил milestone',
-  'validation-failed': 'проверки не прошли',
-  'agent-failed': 'сессия агента оборвалась, наработки сохранены',
-  RALPH_VALIDATION_FAILED: 'проверки не прошли, попытки кончились',
-  RALPH_MAX_TURNS: 'сессия упёрлась в лимит шагов',
-  RALPH_AGENT_TIMEOUT: 'сессия не уложилась в срок',
-  RALPH_AGENT_AUTH: 'CLI агента не авторизован',
-  RALPH_AGENT_REJECTED: 'CLI отклонил запрос',
-  RALPH_AGENT_WRITE_ACCESS: 'агент не смог писать файлы',
-  RALPH_UNTRUSTED_ISSUE: 'автор issue не доверенный',
-  RALPH_COMMAND_FAILED: 'команда прогона вернула ошибку',
-  RALPH_COMMAND_NOT_FOUND: 'Ralph не нашёл команду прогона',
-  RALPH_COMMAND_TIMEOUT: 'команда прогона не уложилась в срок',
-  RALPH_COMMAND_TERMINATED: 'команду прогона прервали снаружи',
-  aborted: 'прогон прервали',
-};
+// Итоги попытки словами живут у контракта журнала — в ralph-run-metrics.mjs.
+// Страница пульта получает тот же список интерполяцией, поэтому сервер и
+// страница не могут разойтись в формулировках.
 
 const stageNames = ['implementation', 'validation', 'review'];
 
@@ -688,12 +664,8 @@ export function readTaskSpend(dependencies = {}) {
 // Итог попытки словами
 // -----------------------------------------------------------------------------
 
-/** Незнакомый итог возвращается как есть: молчаливая подмена скрыла бы новый код. */
-export function describeOutcome(outcome) {
-  if (typeof outcome !== 'string' || outcome.length === 0) return 'итог неизвестен';
-
-  return outcomeDescriptions[outcome] ?? outcome;
-}
+// Ре-экспорт остаётся: имя опубликовано из этого модуля с самого начала.
+export { describeOutcome };
 
 // -----------------------------------------------------------------------------
 // Тела ответов пульта
