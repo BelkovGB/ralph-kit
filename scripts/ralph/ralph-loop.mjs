@@ -1020,6 +1020,18 @@ export function printCheck(
   } else {
     console.log('Открытых issues нет; режим --run попытается создать PR.');
   }
+  // Журнал внутри scripts/ralph — ловушка обновления: каталог перезаписывают
+  // целиком, и журнал проекта погибает вместе с ним. Проверка по строке
+  // конфига, а не по диску: предупреждение нужно до того, как файл потеряли.
+  const approvedLedger = String(config.approvedIssueSnapshotsFile ?? '').replaceAll('\\', '/');
+  if (approvedLedger.startsWith('scripts/ralph/')) {
+    console.log(
+      `ВНИМАНИЕ: журнал одобренных issues лежит в ${approvedLedger}, а этот каталог ` +
+        'обновление набора перезаписывает целиком. Перенесите файл, например в ' +
+        '.agents/approved-issues.json, поправьте "approvedIssueSnapshotsFile" и ' +
+        'сумму в конфиге; порядок описан в INSTALL.md набора.',
+    );
+  }
   if (budget.remaining === 0) {
     console.log(
       `ВНИМАНИЕ: сохранённый бюджет итераций исчерпан (${budget.used}/${budget.limit}). ` +
