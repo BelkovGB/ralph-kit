@@ -845,10 +845,13 @@ test('пульт читает номер итерации и очередь из
     restoreConsole();
   }
 
-  const progress = readRunProgress({ logPath });
+  try {
+    const progress = readRunProgress({ logPath });
 
-  assert.equal(progress.iteration, 1);
-  assert.equal(progress.maxIterations, 5);
-  assert.equal(progress.issuesRemaining, 2);
-  rmSync(root, { recursive: true, force: true });
+    assert.equal(progress.iteration, 1);
+    assert.equal(progress.maxIterations, 5);
+    assert.equal(progress.issuesRemaining, 2);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

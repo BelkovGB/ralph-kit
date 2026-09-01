@@ -326,6 +326,7 @@ test('initializePersistentLog отделяет журнал прогона и в
       assert.notEqual(console.error, originalError);
       console.log('iteration %d', 2);
       console.error('failure: %s', 'temporary');
+      console.log('вывод инструмента\n2026-09-01T00:00:00.000Z INFO Итерация 99/99;');
     } finally {
       restore?.();
     }
@@ -340,6 +341,11 @@ test('initializePersistentLog отделяет журнал прогона и в
     assert.match(log, /^\S+ INFO Ralph process started .*"mode":"--run"/);
     assert.match(log, /INFO iteration 2/);
     assert.match(log, /ERROR failure: temporary/);
+    // Многострочное сообщение остаётся одной записью: продолжение уходит под
+    // отступ. Иначе строка внутри чужого вывода встаёт в файле там же, где
+    // строка цикла, и читатель журнала не отличит одну от другой.
+    assert.match(log, /INFO вывод инструмента\n {2}2026-09-01T00:00:00\.000Z INFO Итерация 99\/99;/);
+    assert.doesNotMatch(log, /\n2026-09-01T00:00:00\.000Z INFO Итерация/);
 
     const archived = readdirSync(directory).filter((name) => /^run-.*\.log$/.test(name));
     assert.equal(archived.length, 1);

@@ -233,8 +233,11 @@ export async function runAgentSession(backend, args, options) {
       if (turns >= options.maxTurns) {
         if (limitReached) return;
         limitReached = true;
+        // Сообщение — отдельная запись журнала, без ведущего перевода строки:
+        // по нему пульт узнаёт, что сессия оборвана, а строка-продолжение в
+        // журнале уходит под отступ и отметки записи не получает.
         console.error(
-          `\nCircuit breaker: ${options.label} попытался превысить лимит ${options.maxTurns} шагов.`,
+          `Circuit breaker: ${options.label} попытался превысить лимит ${options.maxTurns} шагов.`,
         );
         terminateProcessTree(child);
         resolveTurnLimit({ code: null, signal: 'RALPH_MAX_TURNS' });
