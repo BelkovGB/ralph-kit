@@ -50,6 +50,7 @@ import {
   beginIssueMetrics,
   finishIssueMetrics,
   formatIssueMetrics,
+  incompleteIssueOutcome,
   startStage,
 } from './ralph-run-metrics.mjs';
 
@@ -145,28 +146,9 @@ function assertValidationLeftTree(expected, message) {
   if (workingTreeStatus() !== expected) fail(message);
 }
 
-// Причина незавершённой issue берётся из результата, а не предполагается:
-// иначе остановка после упавшей валидации сообщает об отказе ревью, до которого
-// цикл не дошёл, и отправляет оператора искать замечания, которых нет.
-// Классификация нужна и сообщению оператору, и записи метрик, поэтому живёт в
-// одном месте.
-const incompleteIssueOutcomes = [
-  ['agentFailed', 'agent-failed', 'сессия агента не завершилась'],
-  ['validationFailed', 'validation-failed', 'валидация не прошла'],
-  // Отложенная issue стоит дороже рядового круга исправлений и заканчивается
-  // иначе — она уходит из очереди прогона, поэтому у неё свой исход: общая
-  // запись `review-failed` не различала бы их в журнале. Стоит выше
-  // `reviewFailed` не случайно: последняя строка служит значением по умолчанию.
-  ['parked', 'review-parked', 'ревью отклонило работу подряд до предела; issue отложена'],
-  ['reviewFailed', 'review-failed', 'независимое ревью вернуло замечания'],
-];
-
-export function incompleteIssueOutcome(result) {
-  const [flag, outcome, reason] =
-    incompleteIssueOutcomes.find(([field]) => result?.[field]) ?? incompleteIssueOutcomes.at(-1);
-
-  return { outcome, reason, runOutcome: { [flag]: true } };
-}
+// Таксономия исходов переехала к контракту журнала — ralph-run-metrics.mjs.
+// Ре-экспорт остаётся: имя опубликовано из этого модуля с самого начала.
+export { incompleteIssueOutcome };
 
 /**
  * Фазы, с которых issue продолжается без новой сессии агента: работа уже

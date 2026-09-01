@@ -11,6 +11,7 @@
  * содержать угловые скобки.
  */
 
+import { outcomeDescriptions } from "./ralph-run-metrics.mjs";
 import { KIT_VERSION } from "./ralph-version.mjs";
 
 // Единственное место, где в разметку попадает значение извне: токен уходит в
@@ -1347,34 +1348,13 @@ const script = `
     });
   }
 
-  /* Итог попытки в одну строку: колонка не переносится. Семь верхних значений
-     пишет сам цикл, остальные приходят кодом упавшего исключения. Незнакомое
-     значение показывается как есть — подмена скрыла бы новый код.
+  /* Итог попытки в одну строку: колонка не переносится. Незнакомое значение
+     показывается как есть — подмена скрыла бы новый код.
 
-     Список повторяет outcomeDescriptions из ralph-gui-data.mjs слово в слово:
-     сервер той же парой заполняет reason, и разные формулировки читались бы
-     как два разных события. Меняете здесь — правьте и там. */
-  var outcomeWords = {
-    completed: 'Ralph закрыл issue',
-    'review-failed': 'ревью вернуло замечания',
-    'review-parked': 'Ralph отложил issue после отказов ревью',
-    'iteration-limit': 'итерации кончились до начала issue',
-    'milestone-review': 'Ralph отревьюил milestone',
-    'validation-failed': 'проверки не прошли',
-    'agent-failed': 'сессия агента оборвалась, наработки сохранены',
-    RALPH_VALIDATION_FAILED: 'проверки не прошли, попытки кончились',
-    RALPH_MAX_TURNS: 'сессия упёрлась в лимит шагов',
-    RALPH_AGENT_TIMEOUT: 'сессия не уложилась в срок',
-    RALPH_AGENT_AUTH: 'CLI агента не авторизован',
-    RALPH_AGENT_REJECTED: 'CLI отклонил запрос',
-    RALPH_AGENT_WRITE_ACCESS: 'агент не смог писать файлы',
-    RALPH_UNTRUSTED_ISSUE: 'автор issue не доверенный',
-    RALPH_COMMAND_FAILED: 'команда прогона вернула ошибку',
-    RALPH_COMMAND_NOT_FOUND: 'Ralph не нашёл команду прогона',
-    RALPH_COMMAND_TIMEOUT: 'команда прогона не уложилась в срок',
-    RALPH_COMMAND_TERMINATED: 'команду прогона прервали снаружи',
-    aborted: 'прогон прервали'
-  };
+     Список приходит интерполяцией из контракта журнала (ralph-run-metrics.mjs):
+     сервер той же парой заполняет reason, и разные формулировки читались бы как
+     два разных события. */
+  var outcomeWords = ${jsonLiteral(outcomeDescriptions)};
 
   var successOutcomes = { completed: 1 };
 

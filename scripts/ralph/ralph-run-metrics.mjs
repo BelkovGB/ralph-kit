@@ -286,3 +286,70 @@ export function formatIssueMetrics(record) {
     .filter(Boolean)
     .join('; ');
 }
+
+// -----------------------------------------------------------------------------
+// Таксономия исходов попытки
+// -----------------------------------------------------------------------------
+
+/**
+ * Исходы — часть контракта журнала, поэтому обе таблицы живут здесь: цикл пишет
+ * слаг в запись метрик, пульт подписывает его словами. Раньше список слов был
+ * повторён в трёх местах — сервере пульта, странице и цикле — с пометкой
+ * «меняете здесь — правьте и там»; теперь страница получает его интерполяцией,
+ * а расхождение слагов ловит тест.
+ */
+
+// Причина незавершённой issue берётся из результата, а не предполагается:
+// иначе остановка после упавшей валидации сообщает об отказе ревью, до которого
+// цикл не дошёл, и отправляет оператора искать замечания, которых нет.
+// Классификация нужна и сообщению оператору, и записи метрик, поэтому живёт в
+// одном месте.
+export const incompleteIssueOutcomes = [
+  ['agentFailed', 'agent-failed', 'сессия агента не завершилась'],
+  ['validationFailed', 'validation-failed', 'валидация не прошла'],
+  // Отложенная issue стоит дороже рядового круга исправлений и заканчивается
+  // иначе — она уходит из очереди прогона, поэтому у неё свой исход: общая
+  // запись `review-failed` не различала бы их в журнале. Стоит выше
+  // `reviewFailed` не случайно: последняя строка служит значением по умолчанию.
+  ['parked', 'review-parked', 'ревью отклонило работу подряд до предела; issue отложена'],
+  ['reviewFailed', 'review-failed', 'независимое ревью вернуло замечания'],
+];
+
+export function incompleteIssueOutcome(result) {
+  const [flag, outcome, reason] =
+    incompleteIssueOutcomes.find(([field]) => result?.[field]) ?? incompleteIssueOutcomes.at(-1);
+
+  return { outcome, reason, runOutcome: { [flag]: true } };
+}
+
+// Итоги попытки словами: слева — что цикл пишет в журнал, справа — что это
+// значит. Первые семь пишет сам цикл, остальные приходят кодом упавшего
+// исключения.
+export const outcomeDescriptions = {
+  completed: 'Ralph закрыл issue',
+  'review-failed': 'ревью вернуло замечания',
+  'review-parked': 'Ralph отложил issue после отказов ревью',
+  'iteration-limit': 'итерации кончились до начала issue',
+  'milestone-review': 'Ralph отревьюил milestone',
+  'validation-failed': 'проверки не прошли',
+  'agent-failed': 'сессия агента оборвалась, наработки сохранены',
+  RALPH_VALIDATION_FAILED: 'проверки не прошли, попытки кончились',
+  RALPH_MAX_TURNS: 'сессия упёрлась в лимит шагов',
+  RALPH_AGENT_TIMEOUT: 'сессия не уложилась в срок',
+  RALPH_AGENT_AUTH: 'CLI агента не авторизован',
+  RALPH_AGENT_REJECTED: 'CLI отклонил запрос',
+  RALPH_AGENT_WRITE_ACCESS: 'агент не смог писать файлы',
+  RALPH_UNTRUSTED_ISSUE: 'автор issue не доверенный',
+  RALPH_COMMAND_FAILED: 'команда прогона вернула ошибку',
+  RALPH_COMMAND_NOT_FOUND: 'Ralph не нашёл команду прогона',
+  RALPH_COMMAND_TIMEOUT: 'команда прогона не уложилась в срок',
+  RALPH_COMMAND_TERMINATED: 'команду прогона прервали снаружи',
+  aborted: 'прогон прервали',
+};
+
+/** Незнакомый итог возвращается как есть: молчаливая подмена скрыла бы новый код. */
+export function describeOutcome(outcome) {
+  if (typeof outcome !== 'string' || outcome.length === 0) return 'итог неизвестен';
+
+  return outcomeDescriptions[outcome] ?? outcome;
+}
