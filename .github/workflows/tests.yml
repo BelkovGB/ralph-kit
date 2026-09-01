@@ -32,3 +32,16 @@ jobs:
       - name: node --test
         shell: bash
         run: node --test --test-concurrency=1 "scripts/ralph/*.test.mjs"
+
+  lint:
+    # Линтер не зависит от системы, поэтому одна машина. Версия закреплена
+    # точно: плавающая приносила бы новые правила вместе с чужим выпуском и
+    # красила бы проверку без единой правки в наборе.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: eslint
+        run: npx --yes eslint@10.9.1 .
