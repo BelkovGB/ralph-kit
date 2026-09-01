@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
@@ -175,4 +175,44 @@ test('the page outcome words are the journal contract, verbatim', { skip: !exist
 
   assert.notEqual(match, null);
   assert.deepEqual(JSON.parse(match[1]), outcomeDescriptions);
+});
+
+/**
+ * Охрана вклейки модуля вида. Забытая копия function-объявления в шаблоне
+ * молча победила бы вклеенную: позднее объявление выигрывает, и для функций со
+ * сменёнными сигнатурами аргументы встали бы не в те позиции. Разбор скрипта
+ * этого не ловит — текст остаётся валидным JavaScript.
+ */
+test('each view function is declared in the page exactly once', { skip: !existsSync(guiPagePath) }, async () => {
+  const { renderPage } = await import('./ralph-gui-page.mjs');
+  const page = renderPage({ token: 'test-token' });
+  const names = [
+    'plural', 'num', 'money', 'tokensOf', 'tokens', 'share', 'kindSum',
+    'loadedTokens', 'writtenTokens', 'tokenKindList', 'duration', 'hours',
+    'parseDate', 'clock', 'stamp', 'cut', 'isReviewRow', 'isSuccess',
+    'outcomeClass', 'outcomeWord', 'phaseWord', 'roleWord', 'stageMs', 'outOf',
+    'shownStateStamp', 'progressScope', 'orderedTasks', 'taskBelongsToPhase',
+  ];
+
+  for (const name of names) {
+    const declarations = page.split(`function ${name}(`).length - 1;
+    assert.equal(declarations, 1, `function ${name} объявлена ${declarations} раз`);
+  }
+  assert.equal(page.split('var tokenKinds = ').length - 1, 1);
+});
+
+/**
+ * Исходник модуля вида попадает в страницу дословно, мимо экранирования
+ * scriptLiteral. Комментарий с "</script" оборвал бы тег, "<script" и "<!--"
+ * переключают escape-состояния script data в HTML, а пример со src="https://
+ * уронил бы тест про сеть.
+ */
+test('the view module source is safe to embed into the page', () => {
+  const viewPath = fileURLToPath(new URL('./ralph-gui-view.mjs', import.meta.url));
+  if (!existsSync(viewPath)) return;
+  const source = readFileSync(viewPath, 'utf8');
+
+  for (const forbidden of ['</script', '<script', '<!--']) {
+    assert.equal(source.includes(forbidden), false, `в модуле вида нельзя писать ${forbidden}`);
+  }
 });
