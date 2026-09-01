@@ -120,17 +120,36 @@ function roundMoney(value) {
  * `ralph-gui-data.test.mjs`.
  */
 
-// Хвоста хватает на несколько итераций: вывод инструментов между строками
-// бывает объёмным, а читать журнал целиком пульт не должен — он опрашивает
+// Вывод команд попадает в журнал целиком, и на многословной проверке строки
+// цикла уезжают из окна: тогда числа пропадают до следующей итерации, и это
+// честнее устаревшего числа. Окно широкое ровно настолько, чтобы такое
+// случалось редко; читать журнал целиком пульт не должен — он опрашивает
 // сервер каждые пятнадцать секунд.
-const runLogTailBytes = 64 * 1024;
+const runLogTailBytes = 256 * 1024;
 
-// `Итерация 12/20; осталось issues: 7.` и `Resume 12/20; осталось issues: 7.`
-const iterationLinePattern = /(?:^|\n)(?:Итерация|Resume) (\d+)\/(\d+); осталось issues: (\d+)\./g;
-// `[claude step 12/50] правка файла`
-const stepLinePattern = /(?:^|\n)\[\S+ step (\d+)\/(\d+)\]/g;
-// `Разработка issue #11: использовано шагов 12/50.`
-const stepsUsedLinePattern = /(?:^|\n).*: использовано шагов (\d+)\/(\d+)\./g;
+// Отметка времени и уровень, которые `initializePersistentLog` ставит каждой
+// строке журнала. Разбор их требует: сообщение агента приходит многострочным, и
+// внутренние строки отметки не получают, а `.agents/RALPH.md` велит агенту
+// читать `run.log` при разборе падения — прочитанный хвост возвращается в
+// журнал и без этого требования подменял бы числа пульта.
+const logLinePrefix = String.raw`(?:^|\n)\d{4}-\d{2}-\d{2}T\S+ (?:INFO|ERROR) `;
+
+// `2026-09-01T10:00:00.000Z INFO Итерация 12/20; осталось issues: 7.`
+const iterationLinePattern = new RegExp(
+  `${logLinePrefix}(?:Итерация|Resume) (\\d+)/(\\d+); осталось issues: (\\d+)\\.`,
+  'g',
+);
+// `2026-09-01T10:00:00.000Z INFO [claude step 12/50] правка файла`
+const stepLinePattern = new RegExp(`${logLinePrefix}\\[\\S+ step (\\d+)/(\\d+)\\]`, 'g');
+// `2026-09-01T10:00:00.000Z INFO Разработка issue #11: использовано шагов 12/50.`
+const stepsUsedLinePattern = new RegExp(
+  `${logLinePrefix}[^\\n]*: использовано шагов (\\d+)/(\\d+)\\.`,
+  'g',
+);
+// Сессия, убитая лимитом шагов, итога не печатает: circuit breaker обрывает её
+// раньше. Отметки журнала у этой строки нет — сообщение начинается с перевода
+// строки, и приходится узнавать её по тексту.
+const sessionKilledPattern = /(?:^|\n)Circuit breaker: [^\n]*лимит \d+ шагов\./g;
 
 function emptyProgress() {
   return {
@@ -151,8 +170,10 @@ function readFileTail(filePath, maxBytes) {
     if (length === 0) return '';
     handle = openSync(filePath, 'r');
     const buffer = Buffer.alloc(length);
-    readSync(handle, buffer, 0, length, size - length);
-    const text = buffer.toString('utf8');
+    // Короткое чтение оставило бы хвост буфера нулями, а нули в тексте журнала
+    // читаются как обрыв строки.
+    const read = readSync(handle, buffer, 0, length, size - length);
+    const text = buffer.subarray(0, read).toString('utf8');
     // Хвост начинается посреди строки, а на кириллице — и посреди символа.
     // Первая строка отбрасывается целиком: разобранная наполовину, она дала бы
     // неверное число.
@@ -183,10 +204,22 @@ export function readRunProgress(dependencies = {}) {
   const iteration = lastMatch(iterationLinePattern, text);
   const step = lastMatch(stepLinePattern, text);
   const used = lastMatch(stepsUsedLinePattern, text);
-  // Итог сессии напечатан после последнего шага — сессия закрыта, и её номер
-  // шага уже не растёт. Иначе пульт показывал бы шаг мёртвой сессии как живой.
-  const finished = Boolean(used) && (!step || used.index > step.index);
-  const turns = finished ? used : step;
+  const killed = lastMatch(sessionKilledPattern, text);
+
+  // Состояние описывает та отметка, что стоит в журнале последней. Начало
+  // итерации после конца сессии значит, что новая ещё не началась: шага нет
+  // вовсе, и выдавать шаг прошлой сессии за текущий нельзя.
+  const marks = [
+    step ? { kind: 'step', index: step.index, match: step } : null,
+    used ? { kind: 'end', index: used.index, match: used } : null,
+    killed ? { kind: 'end', index: killed.index, match: null } : null,
+    iteration ? { kind: 'iteration', index: iteration.index, match: null } : null,
+  ].filter(Boolean);
+  const last = marks.sort((left, right) => left.index - right.index).at(-1) ?? null;
+  const finished = last?.kind === 'end';
+  // У оборванной сессии итогового числа нет: последнее известное — её последний
+  // шаг.
+  const turns = last?.kind === 'step' ? step : finished ? (last.match ?? step) : null;
 
   return {
     iteration: iteration ? Number(iteration[1]) : null,
@@ -212,9 +245,11 @@ function plannedPhaseMilestones(config) {
 }
 
 /**
- * @returns {{ running: boolean, run: object | null, staleLock: boolean }}
+ * @returns {{ running: boolean, run: object | null, staleLock: boolean,
+ * plannedPhases: string[] }}
  * `running` — лок есть и его процесс жив. `staleLock` — лок есть, процесса нет:
- * прогон упал, не убрав за собой.
+ * прогон упал, не убрав за собой. `plannedPhases` — milestones фаз из
+ * конфигурации по порядку плана; они известны и когда прогона нет.
  */
 export function readRunState(dependencies = {}) {
   const directory = resolveRuntimeDirectory(dependencies);
@@ -515,8 +550,8 @@ function phaseRollup(tasks, plannedOrder) {
  * списке отдельной строкой с `issue: null` и группируются по milestone: два ревью
  * разных milestone — разные строки и разная цена.
  *
- * @returns {{ totals: object, period: object, tasks: object[] }} задачи по
- * убыванию объёма токенов.
+ * @returns {{ totals: object, period: object, phases: object[], tasks: object[] }}
+ * задачи по убыванию объёма токенов; `phases` — свод по фазам в порядке плана.
  */
 export function readTaskSpend(dependencies = {}) {
   const metricsPath =

@@ -144,3 +144,20 @@ test('the GUI page keeps every section reachable', { skip: !existsSync(guiPagePa
     assert.equal(page.includes(`data-tab="${tab}"`), true, `нет кнопки раздела ${tab}`);
   }
 });
+
+/**
+ * Скрипт страницы лежит внутри шаблонной строки модуля, поэтому обратная
+ * кавычка в комментарии рвёт его молча: модуль импортируется, страница
+ * отдаётся, а в браузере не работает ничего. Разбор ловит это до отправки.
+ */
+test('the page script parses as JavaScript', { skip: !existsSync(guiPagePath) }, async () => {
+  const { renderPage } = await import('./ralph-gui-page.mjs');
+  const page = renderPage({ token: 'test-token' });
+  const scripts = [...page.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((match) => match[1]);
+
+  assert.equal(scripts.length > 0, true);
+  for (const source of scripts) {
+    // eslint-disable-next-line no-new-func -- разбор без исполнения: это и есть проверка.
+    assert.doesNotThrow(() => new Function(source), `скрипт страницы не разбирается`);
+  }
+});
