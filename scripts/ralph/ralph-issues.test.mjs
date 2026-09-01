@@ -1104,6 +1104,37 @@ test('validation writable volumes accept unique absolute POSIX paths only', () =
   }
 });
 
+test('умолчание не убирает артефакты проверок', () => {
+  // Ключа в конфиге нет — Ralph не удаляет ничего: он не знает, что в чужом
+  // проекте мусор, а что дорогой кеш.
+  withPatchedRalphConfig({ validationArtifactPaths: undefined }, (config) => {
+    assert.deepEqual(config.validationArtifactPaths, []);
+  });
+
+  for (const artifactPaths of [
+    ['/tmp/output'],
+    ['../soseD'],
+    ['apps/../../outside'],
+    ['.git/objects'],
+    ['.'],
+    [''],
+    'output',
+  ]) {
+    assert.throws(
+      () =>
+        withPatchedRalphConfig({ validationArtifactPaths: artifactPaths }, () => {
+          throw new Error('loadConfig should have failed');
+        }),
+      /validationArtifactPaths/u,
+      `путь ${JSON.stringify(artifactPaths)} должен быть отклонён`,
+    );
+  }
+
+  withPatchedRalphConfig({ validationArtifactPaths: ['apps/web/output'] }, (config) => {
+    assert.deepEqual(config.validationArtifactPaths, ['apps/web/output']);
+  });
+});
+
 test('host validation does not require Docker settings', () => {
   withPatchedRalphConfig(
     {

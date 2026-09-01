@@ -369,6 +369,7 @@ const configFields = new Set([
   'stopAfterFirstIssue',
   'syncBaseBranch',
   'trustedIssueAuthors',
+  'validationArtifactPaths',
   'validationContainer',
   'validationDependencyPaths',
   'validationEnvironment',
@@ -542,6 +543,9 @@ function applyValidationAndReviewDefaults(config) {
   // Пути, которые попадают в слой зависимостей образа: манифесты и lock-файлы
   // проекта. Без них образ собрать нельзя, а какие они — знает только проект.
   config.validationDependencyPaths ??= [];
+  // Артефакты прошлых проверок, которые Ralph убирает перед прогоном. Пусто по
+  // умолчанию: набор не знает, что в чужом проекте мусор, а что дорогой кеш.
+  config.validationArtifactPaths ??= [];
   config.review ??= {
     enabled: true,
     model: 'gpt-5.6-terra',
@@ -748,6 +752,26 @@ function validateValidationCommands(config) {
   ) {
     fail(
       'Поле "validationDependencyPaths" должно быть массивом относительных путей внутри проекта.',
+    );
+  }
+  if (
+    !Array.isArray(config.validationArtifactPaths) ||
+    config.validationArtifactPaths.some((artifactPath) => {
+      if (typeof artifactPath !== 'string' || artifactPath.trim() === '') return true;
+      const normalized = artifactPath.replaceAll('\\', '/');
+      const segments = normalized.split('/');
+      return (
+        normalized.startsWith('/') ||
+        /^[a-zA-Z]:/.test(normalized) ||
+        segments.includes('..') ||
+        segments[0] === '.git' ||
+        normalized === '.'
+      );
+    })
+  ) {
+    fail(
+      'Поле "validationArtifactPaths" должно быть массивом относительных путей внутри проекта, ' +
+        'вне каталога .git.',
     );
   }
   if (
