@@ -455,6 +455,66 @@ a { color: var(--accent); }
   font-size: 12px;
 }
 
+/* Ход прогона */
+.progress {
+  margin-bottom: 12px;
+  padding: 16px 18px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.progress-line {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.progress-phase { font-size: 17px; font-weight: 600; }
+.progress-milestone { color: var(--muted); }
+
+.counts {
+  margin-top: 10px;
+  display: flex;
+  gap: 18px;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+
+.count-value { font-weight: 600; }
+.count-label { color: var(--muted); }
+
+/* Что идёт прямо сейчас: отделено чертой, потому что живёт минуты, а числа
+   выше — весь прогон. */
+.now {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  align-items: baseline;
+  font-size: 13px;
+}
+
+.now-issue { font-weight: 500; }
+.now-stage { color: var(--accent); }
+.now-meta { color: var(--muted); }
+
+.sortbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 16px 0 -6px;
+}
+
+.sortbar-label {
+  margin-right: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 /* Таблица issues */
 .table-wrap {
   margin-top: 16px;
@@ -468,9 +528,9 @@ a { color: var(--accent); }
 table { width: 100%; border-collapse: collapse; }
 /* Колонки не переносятся, чтобы числа не расползались на две строки. */
 .tasks th, .tasks td { white-space: nowrap; }
-/* Milestone и исход — фразы, а не числа: пусть переносятся, иначе длинный
-   исход выталкивает таблицу за обёртку и вешает горизонтальную прокрутку. */
-.tasks td:nth-child(2), .tasks td:nth-child(4), .tasks td.detail-cell { white-space: normal; }
+/* Исход — фраза, а не число: пусть переносится, иначе длинный исход выталкивает
+   таблицу за обёртку и вешает горизонтальную прокрутку. */
+.tasks td:nth-child(3), .tasks td.detail-cell, .phase-head td { white-space: normal; }
 
 th {
   padding: 9px 12px;
@@ -490,6 +550,18 @@ td {
 tr:last-child td { border-bottom: 0; }
 
 .num { text-align: right; }
+
+/* Заголовок фазы: строка таблицы, а не карточка. Отбивка сверху отделяет фазу
+   от предыдущей, не добавляя ещё одной рамки. */
+.phase-head td {
+  padding-top: 20px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.phase-group:first-of-type .phase-head td { padding-top: 10px; }
+.phase-name { color: var(--text); font-size: 13px; font-weight: 600; }
+.phase-counts { margin-left: 10px; }
 
 .task-row { cursor: pointer; }
 .task-row:hover td { background: var(--hover); }
@@ -1090,6 +1162,7 @@ const script = `
   )};
   var tab = 'usage';
   var stateData = null;
+  var stateStamp = '';
   var tasksData = null;
   var tasksStamp = '';
   var tasksError = '';
@@ -1100,6 +1173,9 @@ const script = `
   var saveMessage = null;
   var saving = false;
   var expanded = Object.create(null);
+  /* Порядок строк внутри фазы: ход работы или объём. По умолчанию — ход:
+     таблица отвечает на вопрос «где прогон», а не «что дороже». */
+  var taskSort = 'plan';
   var lastLocked = null;
   // Селекты с allowCustom, переведённые пунктом «Другая…» в ручной ввод.
   var customOpen = Object.create(null);
@@ -1431,8 +1507,15 @@ const script = `
   function loadState() {
     return api('/api/state').then(function (res) {
       if (!res.ok) return;
+      var previous = stateStamp;
       stateData = res.body;
+      stateStamp = shownStateStamp(res.body);
       renderStatus();
+      /* Ход прогона стоит на вкладке «Расход», и без этой перерисовки шаг и
+         круги замирали бы на моменте открытия страницы. Сравнение идёт по
+         показанным полям, а не по всему ответу: отметки времени в нём меняются
+         каждый опрос и сбрасывали бы прокрутку таблицы на ровном месте. */
+      if (previous !== stateStamp && tab === 'usage') renderPanel();
       var locked = !!stateData.running;
       if (lastLocked !== null && lastLocked !== locked && tab === 'settings' && !isDirty()) {
         loadConfig();
@@ -1598,6 +1681,291 @@ const script = `
     return box;
   }
 
+  /* --- ход прогона --- */
+
+  /* Слепок того, что показывает карточка хода. Отметок времени в нём нет: они
+     меняются на каждый опрос, а на экране их не видно. */
+  function shownStateStamp(data) {
+    var run = (data && data.run) || {};
+    return [
+      data && data.running ? 1 : 0,
+      data && data.staleLock ? 1 : 0,
+      ((data && data.plannedPhases) || []).join('|'),
+      run.milestone,
+      run.phaseIndex,
+      run.phaseCount,
+      run.iterationsUsed,
+      run.maxIterations,
+      run.issueNumber,
+      run.issueTitle,
+      run.issuePhase,
+      run.turn,
+      run.turnLimit,
+      run.turnFinished,
+      run.validationFixAttempts,
+      run.reviewFixAttempts,
+      run.issuesRemaining
+    ].join('\\u0001');
+  }
+
+  /* Значение впереди подписи: счётчик читают числом, а не словом. */
+  function count(value, label) {
+    var box = el('span', 'count');
+    box.appendChild(el('span', 'count-value', value));
+    box.appendChild(document.createTextNode(' '));
+    box.appendChild(el('span', 'count-label', label));
+    return box;
+  }
+
+  /* Лимит показываем, только когда он известен: «круг 2 из null» хуже, чем
+     «круг 2». */
+  function outOf(value, limit) {
+    return typeof limit === 'number' ? num(value) + ' из ' + num(limit) : num(value);
+  }
+
+  /* Что идёт прямо сейчас. Строка живёт минуты и существует только при живом
+     прогоне: у брошенного лока сервер эти числа не отдаёт. */
+  function renderNow() {
+    var run = stateData && stateData.running ? stateData.run : null;
+    if (!run) return null;
+    var box = el('div', 'now');
+    if (run.issueNumber) {
+      box.appendChild(
+        el(
+          'span',
+          'now-issue',
+          '#' + run.issueNumber + (run.issueTitle ? ' ' + cut(String(run.issueTitle), 48) : '')
+        )
+      );
+    }
+    var stage = phaseWord(run.issuePhase);
+    if (stage) box.appendChild(el('span', 'now-stage', stage));
+    var meta = [];
+    if (run.maxIterations) {
+      meta.push('итерация ' + outOf(run.iterationsUsed || 0, run.maxIterations));
+    }
+    /* Шаг закрытой сессии не выдаём за текущий: между сессиями его нет. */
+    if (run.turn && !run.turnFinished) meta.push('шаг ' + outOf(run.turn, run.turnLimit));
+    if (run.validationFixAttempts) {
+      meta.push('круг проверок ' + outOf(run.validationFixAttempts, run.maxTestFixAttempts));
+    }
+    if (run.reviewFixAttempts) {
+      meta.push('круг ревью ' + outOf(run.reviewFixAttempts, run.maxReviewFixAttempts));
+    }
+    /* Времени здесь нет намеренно: оно растёт каждую секунду и заставляло бы
+       перерисовывать таблицу под карточкой. Часы прогона идут в строке
+       состояния наверху, она живёт отдельно от вкладки. */
+    if (meta.length) box.appendChild(el('span', 'now-meta', meta.join(' · ')));
+    return box;
+  }
+
+  /* Счёт задач относится к фазе, пока прогон идёт, и ко всему журналу, когда
+     его нет. Смешивать нельзя: «фаза 2 из 3» рядом с числом за все фазы
+     читалось бы как счёт этой фазы. */
+  function progressScope(totals, phases) {
+    var run = stateData && stateData.running ? stateData.run : null;
+    var planned = (stateData && stateData.plannedPhases) || [];
+    if (run) {
+      var current = phases.filter(function (phase) {
+        return phase.milestone === run.milestone;
+      })[0];
+      return {
+        title:
+          typeof run.phaseIndex === 'number' && run.phaseCount
+            ? 'Фаза ' + (run.phaseIndex + 1) + ' из ' + run.phaseCount
+            : 'Идёт прогон',
+        subtitle: run.milestone || '',
+        counters: current || totals,
+        note: current ? '' : 'Журнал этой фазы пока пуст: числа ниже — за весь журнал.'
+      };
+    }
+    var started = phases.filter(function (phase) {
+      return phase.planned;
+    }).length;
+    return {
+      title: planned.length ? 'Фаз в плане ' + planned.length : 'Прогона нет',
+      subtitle: planned.length ? 'в журнале ' + started : '',
+      counters: totals,
+      note: 'Счёт по всему журналу, а не по одной фазе.'
+    };
+  }
+
+  function renderProgress(totals, phases) {
+    var scope = progressScope(totals, phases);
+    var counters = scope.counters || {};
+    var box = el('div', 'progress');
+    var line = el('div', 'progress-line');
+    line.appendChild(el('span', 'progress-phase', scope.title));
+    if (scope.subtitle) line.appendChild(el('span', 'progress-milestone', scope.subtitle));
+    box.appendChild(line);
+
+    var counts = el('div', 'counts');
+    counts.appendChild(count(num(counters.completed || 0), 'закрыто'));
+    if (counters.parked) counts.appendChild(count(num(counters.parked), 'отложено'));
+    var run = stateData && stateData.running ? stateData.run : null;
+    /* Очередь плавает: ревью заводит баги по ходу фазы, и «осталось» растёт.
+       Поэтому число стоит рядом с закрытыми, а не в виде «14 из 20». */
+    if (run && typeof run.issuesRemaining === 'number') {
+      counts.appendChild(count(num(run.issuesRemaining), 'в очереди'));
+    }
+    /* Баги ревью считаются отдельной парой: это работа, которой в плане фазы не
+       было, и смешивать её с задачами плана значит прятать её цену. */
+    if (counters.bugsCompleted) {
+      counts.appendChild(count(num(counters.bugsCompleted), 'багов ревью закрыто'));
+    }
+    if (counters.bugsParked) {
+      counts.appendChild(count(num(counters.bugsParked), 'багов ревью отложено'));
+    }
+    box.appendChild(counts);
+
+    var now = renderNow();
+    if (now) box.appendChild(now);
+    if (scope.note) box.appendChild(el('div', 'note', scope.note));
+    return box;
+  }
+
+  function renderSortBar() {
+    var bar = el('div', 'sortbar');
+    bar.setAttribute('role', 'group');
+    bar.setAttribute('aria-label', 'Порядок строк внутри фазы');
+    bar.appendChild(el('span', 'sortbar-label', 'Порядок'));
+    [['plan', 'по ходу работы'], ['volume', 'по объёму']].forEach(function (option) {
+      var button = el('button', 'subtab', option[1]);
+      button.type = 'button';
+      button.setAttribute('aria-current', taskSort === option[0] ? 'true' : 'false');
+      button.addEventListener('click', function () {
+        if (taskSort === option[0]) return;
+        taskSort = option[0];
+        renderPanel();
+      });
+      bar.appendChild(button);
+    });
+    return bar;
+  }
+
+  function orderedTasks(rows) {
+    var list = rows.slice();
+    if (taskSort === 'volume') {
+      list.sort(function (left, right) {
+        return right.tokensTotal - left.tokensTotal;
+      });
+      /* Ревью milestone — объём всей фазы, а не задачи: по объёму оно иначе
+         встаёт первой строкой и читается как самая дорогая issue. */
+      return list.filter(isReviewRow).concat(
+        list.filter(function (task) {
+          return !isReviewRow(task);
+        })
+      );
+    }
+    /* Ход работы: по первой попытке. Ревью фазы встаёт в конец само — оно и
+       идёт последним. */
+    return list.sort(function (left, right) {
+      return String(left.firstStartedAt || '').localeCompare(String(right.firstStartedAt || ''));
+    });
+  }
+
+  function renderPhaseHead(phase) {
+    var row = el('tr', 'phase-head');
+    var first = el('td');
+    first.colSpan = 3;
+    first.appendChild(el('span', 'phase-name', phase.milestone || 'Без фазы'));
+    var counts = [];
+    if (phase.tasks) {
+      counts.push(num(phase.tasks) + ' ' + plural(phase.tasks, 'задача', 'задачи', 'задач'));
+    }
+    if (phase.completed) counts.push('закрыто ' + num(phase.completed));
+    if (phase.parked) counts.push('отложено ' + num(phase.parked));
+    var bugs = (phase.bugsCompleted || 0) + (phase.bugsParked || 0);
+    if (bugs) counts.push('багов ' + num(bugs));
+    if (phase.milestoneReviews) {
+      counts.push(num(phase.milestoneReviews) + ' ' + plural(phase.milestoneReviews, 'ревью', 'ревью', 'ревью'));
+    }
+    if (counts.length) first.appendChild(el('span', 'phase-counts', counts.join(' · ')));
+    row.appendChild(first);
+    row.appendChild(el('td', 'num', duration(phase.wallMs)));
+    var silent = phase.sessions ? phase.sessionsWithoutTokens >= phase.sessions : true;
+    row.appendChild(el('td', 'num', silent ? '—' : tokens(loadedTokens(phase.tokens))));
+    row.appendChild(el('td', 'num', silent ? '—' : tokens(writtenTokens(phase.tokens))));
+    row.appendChild(el('td', 'num', silent ? '—' : tokens(phase.tokensTotal)));
+    return row;
+  }
+
+  /* Строка задачи и, когда она раскрыта, её попытки. */
+  function appendTaskRows(tbody, task) {
+    var review = isReviewRow(task);
+    var key = review ? 'milestone-review:' + (task.milestone || '') : String(task.issue);
+    var open = !!expanded[key];
+    var row = el('tr', 'task-row');
+    row.tabIndex = 0;
+    row.setAttribute('aria-expanded', open ? 'true' : 'false');
+
+    var first = el('td', 'task-id');
+    first.appendChild(el('span', 'marker', open ? '−' : '+'));
+    if (review) {
+      first.appendChild(el('span', 'task-kind', 'Ревью milestone'));
+    } else {
+      first.appendChild(document.createTextNode('#' + task.issue));
+      /* Заголовка нет у попыток старого формата. Прочерк на его месте занял бы
+         колонку молчанием: номер уже сказал, о чём строка. */
+      if (task.title) {
+        var titleSpan = el('span', 'task-title', task.title);
+        titleSpan.title = String(task.title);
+        first.appendChild(titleSpan);
+      }
+    }
+    row.appendChild(first);
+    row.appendChild(el('td', 'num', review ? '—' : num(task.attempts)));
+
+    /* У ревью milestone исход всегда один, а знать надо вердикт: он в reason. */
+    var outcomeText =
+      review && task.lastReason ? cut(String(task.lastReason), 40) : outcomeWord(task.lastOutcome);
+    var outcomeCell = el('td', outcomeClass(task.lastOutcome), outcomeText);
+    /* Подсказка нужна, только когда добавляет текст: у исхода без своего reason
+       сервер подставляет ту же подпись, и всплывающее повторение читалось бы как
+       второе, другое объяснение. */
+    var reasonText = task.lastReason ? String(task.lastReason) : '';
+    if (reasonText && reasonText !== outcomeText) outcomeCell.title = reasonText;
+    row.appendChild(outcomeCell);
+
+    row.appendChild(el('td', 'num', duration(task.wallMs)));
+    /* Ни одной сессии со счётчиками — прочерк вместо нулей: ноль означал бы,
+       что объём измерен и равен нулю. */
+    var noTokens = task.sessions ? task.sessionsWithoutTokens >= task.sessions : true;
+    row.appendChild(el('td', 'num', noTokens ? '—' : tokens(loadedTokens(task.tokens))));
+    row.appendChild(el('td', 'num', noTokens ? '—' : tokens(writtenTokens(task.tokens))));
+    row.appendChild(el('td', 'num', noTokens ? '—' : tokens(task.tokensTotal)));
+
+    function toggle() {
+      if (expanded[key]) delete expanded[key];
+      else expanded[key] = true;
+      renderPanel();
+    }
+
+    row.addEventListener('click', toggle);
+    row.addEventListener('keydown', function (event) {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        toggle();
+      }
+    });
+    tbody.appendChild(row);
+
+    if (!open) return;
+    var detailRow = el('tr');
+    var cell = el('td', 'detail-cell');
+    cell.colSpan = 7;
+    var runs = Array.isArray(task.runs) ? task.runs : [];
+    if (!runs.length) {
+      cell.appendChild(el('div', 'run-meta', 'Журнал не сохранил ни одной попытки'));
+    } else {
+      runs.forEach(function (run, index) {
+        cell.appendChild(renderRun(run, index));
+      });
+    }
+    detailRow.appendChild(cell);
+    tbody.appendChild(detailRow);
+  }
+
   function renderUsage() {
     var frag = document.createDocumentFragment();
 
@@ -1615,6 +1983,7 @@ const script = `
     var totals = tasksData.totals || {};
     var period = tasksData.period || {};
     var tasks = Array.isArray(tasksData.tasks) ? tasksData.tasks : [];
+    var phases = Array.isArray(tasksData.phases) ? tasksData.phases : [];
 
     /* Битый журнал даёт те же нули, что и новый проект. Без этой ветки экран
        врал бы «прогонов ещё не было» поверх лежащей на диске истории. */
@@ -1628,6 +1997,13 @@ const script = `
         )
       );
       return frag;
+    }
+
+    /* Ход прогона идёт первым: он отвечает на вопрос «где мы», а карточка ниже —
+       на вопрос «сколько это стоило». Пока прогона нет и журнал пуст, показывать
+       нечего, и блок не рисуется вовсе. */
+    if (tasks.length || (stateData && stateData.running)) {
+      frag.appendChild(renderProgress(totals, phases));
     }
 
     /* Пустой журнал проверяется до сводки: нули и примечания к ним человеку,
@@ -1729,15 +2105,16 @@ const script = `
     );
     frag.appendChild(summary);
 
+    frag.appendChild(renderSortBar());
+
     var wrap = el('div', 'table-wrap');
     var table = el('table', 'tasks');
     var thead = el('thead');
     var headRow = el('tr');
-    /* Строки уже отсортированы по объёму: сервер отдаёт их от большего к
-       меньшему. */
+    /* Колонки «Milestone» здесь нет: фазу называет заголовок группы, и в каждой
+       строке она повторяла бы его. */
     [
       ['Issue', '', ''],
-      ['Milestone', '', ''],
       ['Попытки', 'num', ''],
       ['Исход', '', ''],
       ['Время', 'num', ''],
@@ -1752,90 +2129,29 @@ const script = `
     thead.appendChild(headRow);
     table.appendChild(thead);
 
-    var tbody = el('tbody');
-    /* Ревью milestone стоит выше issues: это объём всего прогона, и в сортировке
-       по объёму оно иначе встаёт первой строкой, читаясь как самая объёмная
-       issue. Порядок issues между собой сервер уже задал. */
-    var ordered = tasks.filter(isReviewRow).concat(tasks.filter(function (task) {
-      return !isReviewRow(task);
-    }));
-    ordered.forEach(function (task) {
-      var review = isReviewRow(task);
-      var key = review ? 'milestone-review:' + (task.milestone || '') : String(task.issue);
-      var open = !!expanded[key];
-      var row = el('tr', 'task-row');
-      row.tabIndex = 0;
-      row.setAttribute('aria-expanded', open ? 'true' : 'false');
+    /* Каждая фаза — своё tbody: заголовок группы и её строки не разъезжаются
+       при сортировке, а фаза без записей в таблицу не попадает. */
+    var groups = phases.length
+      ? phases.map(function (phase) {
+          return {
+            phase: phase,
+            rows: tasks.filter(function (task) {
+              return (task.milestone || null) === phase.milestone;
+            })
+          };
+        })
+      : [{ phase: null, rows: tasks }];
 
-      var first = el('td', 'task-id');
-      first.appendChild(el('span', 'marker', open ? '−' : '+'));
-      if (review) {
-        first.appendChild(el('span', 'task-kind', 'Ревью milestone'));
-      } else {
-        first.appendChild(document.createTextNode('#' + task.issue));
-        /* Заголовка нет у попыток старого формата. Прочерк на его месте занял
-           бы колонку молчанием: номер уже сказал, о чём строка. */
-        if (task.title) {
-          var titleSpan = el('span', 'task-title', task.title);
-          titleSpan.title = String(task.title);
-          first.appendChild(titleSpan);
-        }
-      }
-      row.appendChild(first);
-      row.appendChild(el('td', '', task.milestone || '—'));
-      row.appendChild(el('td', 'num', review ? '—' : num(task.attempts)));
-
-      /* У ревью milestone исход всегда один, а знать надо вердикт: он в reason. */
-      var outcomeText = review && task.lastReason
-        ? cut(String(task.lastReason), 40)
-        : outcomeWord(task.lastOutcome);
-      var outcomeCell = el('td', outcomeClass(task.lastOutcome), outcomeText);
-      /* Подсказка нужна, только когда добавляет текст: у исхода без своего
-         reason сервер подставляет ту же подпись, и всплывающее повторение
-         читалось бы как второе, другое объяснение. */
-      var reasonText = task.lastReason ? String(task.lastReason) : '';
-      if (reasonText && reasonText !== outcomeText) outcomeCell.title = reasonText;
-      row.appendChild(outcomeCell);
-
-      row.appendChild(el('td', 'num', duration(task.wallMs)));
-      /* Ни одной сессии со счётчиками — прочерк вместо нулей: ноль означал бы,
-         что объём измерен и равен нулю. */
-      var noTokens = task.sessions ? task.sessionsWithoutTokens >= task.sessions : true;
-      row.appendChild(el('td', 'num', noTokens ? '—' : tokens(loadedTokens(task.tokens))));
-      row.appendChild(el('td', 'num', noTokens ? '—' : tokens(writtenTokens(task.tokens))));
-      row.appendChild(el('td', 'num', noTokens ? '—' : tokens(task.tokensTotal)));
-
-      function toggle() {
-        if (expanded[key]) delete expanded[key];
-        else expanded[key] = true;
-        renderPanel();
-      }
-
-      row.addEventListener('click', toggle);
-      row.addEventListener('keydown', function (event) {
-        if (event.key === 'Enter' || event.key === ' ') {
-          event.preventDefault();
-          toggle();
-        }
+    groups.forEach(function (group) {
+      if (!group.rows.length) return;
+      var tbody = el('tbody', 'phase-group');
+      if (group.phase) tbody.appendChild(renderPhaseHead(group.phase));
+      orderedTasks(group.rows).forEach(function (task) {
+        appendTaskRows(tbody, task);
       });
-      tbody.appendChild(row);
-
-      if (open) {
-        var detailRow = el('tr');
-        var cell = el('td', 'detail-cell');
-        cell.colSpan = 8;
-        var runs = Array.isArray(task.runs) ? task.runs : [];
-        if (!runs.length) {
-          cell.appendChild(el('div', 'run-meta', 'Журнал не сохранил ни одной попытки'));
-        } else {
-          runs.forEach(function (run, index) { cell.appendChild(renderRun(run, index)); });
-        }
-        detailRow.appendChild(cell);
-        tbody.appendChild(detailRow);
-      }
+      table.appendChild(tbody);
     });
 
-    table.appendChild(tbody);
     wrap.appendChild(table);
     frag.appendChild(wrap);
     return frag;
