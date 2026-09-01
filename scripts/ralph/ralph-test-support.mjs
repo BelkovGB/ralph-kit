@@ -1,5 +1,6 @@
 import {
   chmodSync,
+  copyFileSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -261,4 +262,60 @@ export function trustedControlFileHashes() {
 
 export function trustedAgentInstructionFiles() {
   return controlPlane().agentInstructionFiles;
+}
+
+/**
+ * Поддельный `gh` на PATH.
+ *
+ * Логика подделки пишется CommonJS-телом: ему доступны `ghArguments` — argv без
+ * служебных элементов — и стандартные require. На POSIX подделку запускает
+ * shell-шим. На Windows цикл ищет именно `gh.exe`, и текстовый шим CreateProcess
+ * не исполнит, поэтому gh.exe — копия node.exe, а тело подключается через
+ * NODE_OPTIONS --require и в чужих процессах node узнаёт чужое имя и молчит.
+ */
+export async function withFakeGh(logicBody, operation) {
+  const directory = mkdtempSync(path.join(executableTempDirectory, '.ralph-fake-gh-'));
+  const logicPath = path.join(directory, 'fake-gh-logic.cjs');
+  writeFileSync(
+    logicPath,
+    `
+const ghExecutableName = require('node:path').basename(process.execPath).toLowerCase();
+const invokedAsGh = ghExecutableName === 'gh.exe' || ghExecutableName === 'gh';
+const invokedAsScript = process.argv[1] === __filename;
+if (invokedAsGh || invokedAsScript) {
+  // Node абсолютизирует argv[1], приняв первый аргумент за путь скрипта:
+  // «pr» приезжает как «C:\\...\\pr». Возвращаем ему исходный вид.
+  const ghArguments = invokedAsScript
+    ? process.argv.slice(2)
+    : [require('node:path').basename(process.argv[1] ?? ''), ...process.argv.slice(2)];
+  ${logicBody}
+  process.exit(0);
+}
+`,
+    'utf8',
+  );
+  if (process.platform === 'win32') {
+    copyFileSync(process.execPath, path.join(directory, 'gh.exe'));
+  } else {
+    const executablePath = path.join(directory, 'gh');
+    writeFileSync(executablePath, `#!/bin/sh\nexec node "${logicPath}" "$@"\n`, 'utf8');
+    chmodSync(executablePath, 0o755);
+  }
+
+  const savedPath = process.env.PATH;
+  const savedNodeOptions = process.env.NODE_OPTIONS;
+  process.env.PATH = `${directory}${path.delimiter}${savedPath ?? ''}`;
+  if (process.platform === 'win32') {
+    process.env.NODE_OPTIONS = `${savedNodeOptions ?? ''} --require ${logicPath}`.trim();
+  }
+
+  try {
+    return await operation({ directory, logicPath });
+  } finally {
+    if (savedPath === undefined) delete process.env.PATH;
+    else process.env.PATH = savedPath;
+    if (savedNodeOptions === undefined) delete process.env.NODE_OPTIONS;
+    else process.env.NODE_OPTIONS = savedNodeOptions;
+    rmSync(directory, { recursive: true, force: true });
+  }
 }
