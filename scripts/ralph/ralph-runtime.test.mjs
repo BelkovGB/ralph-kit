@@ -168,6 +168,17 @@ test('retryTransientOperation повторяет временные ошибки
     isTransientFailure({ stderr: 'Patch "https://api.github.com/issues/65": EOF' }),
     true,
   );
+  // Так GitHub отвечает при кратком отказе на своей стороне. В журнале прогонов
+  // video-meetings за 17–19.08.2026 эта строка остановила прогон трижды —
+  // половина настоящих остановок, и каждая лечилась бы повтором.
+  assert.equal(
+    isTransientFailure({
+      stderr:
+        'gh: No server is currently available to service your request. ' +
+        'Sorry about that. Please try again a bit later.',
+    }),
+    true,
+  );
 });
 
 test('retryTransientOperation останавливается после исчерпания попыток', () => {
