@@ -8,8 +8,8 @@ import { parseJson } from './ralph-config.mjs';
 /**
  * Обращения к GitHub через `gh`: milestones, issues, комментарии и pull requests.
  *
- * Здесь только вызовы API и разбор ответа. Что считать доверенной issue и что
- * писать в её тело — не здесь.
+ * Здесь вызовы API, разбор ответа и сверка ответа с локальным состоянием ветки.
+ * Что считать доверенной issue и что писать в её тело — не здесь.
  */
 
 export function repositoryName() {
@@ -319,4 +319,153 @@ export function postPullRequestReview(repository, pullRequest, body) {
     ],
     { input: body.slice(0, 60_000) },
   );
+}
+
+// -----------------------------------------------------------------------------
+// Pull request ветки и закрытие milestone
+// -----------------------------------------------------------------------------
+// Переехали из ralph-loop.mjs: их причина меняться — поля JSON, которые отдаёт
+// gh, та же, что у остального модуля. Оркестровая половина — валидация, push и
+// сверка истории перед PR — осталась в цикле.
+
+export function existingPullRequest(config, repository) {
+  const pullRequests = parseJson(
+    runNetwork('gh', [
+      'pr',
+      'list',
+      '--repo',
+      repository,
+      '--state',
+      'open',
+      '--head',
+      config.branch,
+      '--limit',
+      '100',
+      '--json',
+      'number,url',
+    ]).stdout,
+    'gh pr list',
+  );
+  return pullRequests[0] ?? null;
+}
+
+export function pullRequestDetails(repository, pullRequest) {
+  return parseJson(
+    runNetwork('gh', [
+      'pr',
+      'view',
+      String(pullRequest),
+      '--repo',
+      repository,
+      '--json',
+      'number,url,title,headRefOid,headRefName,baseRefName',
+    ]).stdout,
+    `gh pr view ${pullRequest}`,
+  );
+}
+
+export function verifyPullRequestTarget(config, pullRequest) {
+  const localHead = run('git', ['rev-parse', 'HEAD']).stdout;
+  const violations = [];
+  if (pullRequest.headRefName !== config.branch) {
+    violations.push(`head=${pullRequest.headRefName}`);
+  }
+  if (pullRequest.baseRefName !== config.baseBranch) {
+    violations.push(`base=${pullRequest.baseRefName}`);
+  }
+  if (pullRequest.headRefOid !== localHead) {
+    violations.push(`GitHub head=${pullRequest.headRefOid}, local HEAD=${localHead}`);
+  }
+  if (violations.length > 0) {
+    fail(`PR #${pullRequest.number} не соответствует текущему запуску: ${violations.join('; ')}.`);
+  }
+
+  return pullRequest;
+}
+
+/** Возвращает существующий открытый PR ветки или создаёт новый — проверенным. */
+export function ensurePullRequestForBranch(config, repository) {
+  const existing = existingPullRequest(config, repository);
+  if (existing) {
+    console.log(`PR уже существует: ${existing.url}`);
+    return verifyPullRequestTarget(config, pullRequestDetails(repository, existing.number));
+  }
+
+  const args = [
+    'pr',
+    'create',
+    '--base',
+    config.baseBranch,
+    '--head',
+    config.branch,
+    '--title',
+    `${config.milestone}`,
+    '--body',
+    `Завершены все issues milestone **${config.milestone}**.\n\nPR создан Ralph Loop и требует ручной проверки.`,
+  ];
+  if (config.draftPullRequest) {
+    args.push('--draft');
+  }
+
+  // Через runNetwork: создание PR — сетевой вызов, и 503 от GitHub не повод
+  // терять прогон. Повторная попытка при уже созданном PR падает своей ошибкой
+  // «pull request already exists», а не молча создаёт второй.
+  const url = runNetwork('gh', args).stdout;
+  console.log(`Создан PR: ${url}`);
+  return verifyPullRequestTarget(config, pullRequestDetails(repository, url));
+}
+
+export function closeMilestone(repository, milestone) {
+  const beforeClose = openIssues(repository, milestone).filter(
+    (issue) => issueState(repository, issue.number) === 'OPEN',
+  );
+  if (beforeClose.length > 0) {
+    fail(
+      `Milestone #${milestone.number} нельзя закрыть: появились открытые issues ` +
+        beforeClose.map((issue) => `#${issue.number}`).join(', '),
+    );
+  }
+  const current = parseJson(
+    runNetwork('gh', ['api', `repos/${repository}/milestones/${milestone.number}`]).stdout,
+    `GitHub milestone ${milestone.number}`,
+  );
+  if (current.state === 'closed') {
+    console.log(`Milestone #${milestone.number} уже закрыт.`);
+    return current;
+  }
+
+  const closed = parseJson(
+    runNetwork('gh', [
+      'api',
+      '--method',
+      'PATCH',
+      `repos/${repository}/milestones/${milestone.number}`,
+      '-f',
+      'state=closed',
+    ]).stdout,
+    `GitHub close milestone ${milestone.number}`,
+  );
+  if (closed.state !== 'closed') {
+    fail(`Milestone #${milestone.number} не закрылся после PASS.`);
+  }
+  console.log(`Milestone #${milestone.number} закрыт после чистого PASS.`);
+  const afterClose = openIssues(repository, milestone).filter(
+    (issue) => issueState(repository, issue.number) === 'OPEN',
+  );
+  if (afterClose.length > 0) {
+    runNetwork('gh', [
+      'api',
+      '--method',
+      'PATCH',
+      `repos/${repository}/milestones/${milestone.number}`,
+      '-f',
+      'state=open',
+    ]);
+    fail(
+      `После закрытия milestone появились issues ${afterClose
+        .map((issue) => `#${issue.number}`)
+        .join(', ')}; milestone снова открыт.`,
+    );
+  }
+  return closed;
 }
