@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
@@ -68,4 +69,57 @@ test('the GUI header shows the kit version', { skip: !existsSync(guiPagePath) },
   const shown = renderPage().match(/class="brand-version">([^<]*)</u);
 
   assert.equal(shown?.[1], KIT_VERSION);
+});
+
+// INSTALL.md, как и CHANGELOG.md, живёт в репозитории набора и в проект не
+// копируется: в установленной копии проверка пропускается.
+const installPath = fileURLToPath(new URL('../../INSTALL.md', import.meta.url));
+const kitRoot = fileURLToPath(new URL('../../', import.meta.url));
+
+// Что набор кладёт в чужой репозиторий. Файлы самого набора — README, CHANGELOG,
+// INSTALL, docs, templates, .github — в проект не едут и в список не входят.
+const shippedRoots = ['.agents', '.claude', 'scripts/ralph'];
+const shippedFiles = [
+  '.gitattributes',
+  '.gitignore',
+  'LICENSE',
+  'templates/AGENTS.md',
+  'templates/CLAUDE.md',
+];
+
+function shippedPaths() {
+  const collected = [...shippedFiles];
+  const walk = (relativeDirectory) => {
+    for (const entry of readdirSync(path.join(kitRoot, relativeDirectory), {
+      withFileTypes: true,
+    })) {
+      const relativePath = `${relativeDirectory}/${entry.name}`;
+      if (entry.isDirectory()) walk(relativePath);
+      else collected.push(relativePath);
+    }
+  };
+  for (const root of shippedRoots) walk(root);
+
+  return collected;
+}
+
+/**
+ * Инструкция установки перечисляет то, что копируют в проект. Новый файл набора
+ * без строки в инструкции — это файл, который потребитель не скопирует и не
+ * обновит, а узнает о пропаже по отказу прогона.
+ */
+test('the install guide names every shipped path', { skip: !existsSync(installPath) }, () => {
+  const guide = readFileSync(installPath, 'utf8');
+  // Из инструкции берутся пути в обратных кавычках; `**` в конце покрывает
+  // каталог целиком.
+  const named = [...guide.matchAll(/`([^`\n]+)`/gu)]
+    .map((match) => match[1].replace(/\*\*$/u, ''))
+    .filter((value) => value.includes('/') || shippedFiles.includes(value));
+
+  for (const shipped of shippedPaths()) {
+    const covered = named.some(
+      (candidate) => shipped === candidate || shipped.startsWith(candidate),
+    );
+    assert.equal(covered, true, `INSTALL.md не называет ${shipped}`);
+  }
 });
