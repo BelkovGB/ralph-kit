@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
+import { rmSync } from 'node:fs';
+import path from 'node:path';
 import test from 'node:test';
 
 import { executeMode, iterationBudget, printCheck, runContinuousLoop } from './ralph-loop.mjs';
 import { runCodexWithTurnLimit } from './ralph-codex-session.mjs';
 import { readRunProgress } from './ralph-gui-data.mjs';
 import { run } from './ralph-process-runner.mjs';
+import { initializePersistentLog } from './ralph-runtime.mjs';
 import { actions, context, temporaryProjectTree, withFakeCodex } from './ralph-test-support.mjs';
 
 function persistentState({ iterationsUsed = 0, issue = null } = {}) {
@@ -814,15 +817,15 @@ test('milestone не закрывается, пока есть отложенн�
 
 /**
  * Договор с пультом: строку про итерацию печатает цикл, а разбирает
- * `ralph-gui-data.mjs`. Тест проводит через разбор именно то, что цикл
- * напечатал, поэтому правка текста роняет его здесь, а не гасит числа на
- * странице молча.
+ * `ralph-gui-data.mjs`. Разбор идёт по настоящему `run.log`, а не по сообщениям
+ * из консоли: журнал добавляет к каждой строке отметку времени и уровень, и
+ * тест на сырых сообщениях пропустил бы разбор, не совпадающий ни с чем.
  */
-test('пульт читает номер итерации и очередь из того, что печатает цикл', async () => {
-  const lines = [];
-  const originalLog = console.log;
-  console.log = (message) => lines.push(String(message));
+test('пульт читает номер итерации и очередь из настоящего run.log', async () => {
+  const root = temporaryProjectTree({});
+  const logPath = path.join(root, 'run.log');
   let listed = false;
+  const restoreConsole = initializePersistentLog(logPath, { test: 'gui-progress' });
   try {
     await runContinuousLoop(
       context(),
@@ -839,14 +842,13 @@ test('пульт читает номер итерации и очередь из
       }),
     );
   } finally {
-    console.log = originalLog;
+    restoreConsole();
   }
 
-  const progress = readRunProgress({
-    runtimeDir: temporaryProjectTree({ 'run.log': `${lines.join('\n')}\n` }),
-  });
+  const progress = readRunProgress({ logPath });
 
   assert.equal(progress.iteration, 1);
   assert.equal(progress.maxIterations, 5);
   assert.equal(progress.issuesRemaining, 2);
+  rmSync(root, { recursive: true, force: true });
 });

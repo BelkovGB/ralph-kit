@@ -1176,6 +1176,8 @@ const script = `
   /* Порядок строк внутри фазы: ход работы или объём. По умолчанию — ход:
      таблица отвечает на вопрос «где прогон», а не «что дороже». */
   var taskSort = 'plan';
+  /* Карточка хода прогона в панели: обновляется отдельно от таблицы. */
+  var progressNode = null;
   var lastLocked = null;
   // Селекты с allowCustom, переведённые пунктом «Другая…» в ручной ввод.
   var customOpen = Object.create(null);
@@ -1511,11 +1513,12 @@ const script = `
       stateData = res.body;
       stateStamp = shownStateStamp(res.body);
       renderStatus();
-      /* Ход прогона стоит на вкладке «Расход», и без этой перерисовки шаг и
-         круги замирали бы на моменте открытия страницы. Сравнение идёт по
-         показанным полям, а не по всему ответу: отметки времени в нём меняются
-         каждый опрос и сбрасывали бы прокрутку таблицы на ровном месте. */
-      if (previous !== stateStamp && tab === 'usage') renderPanel();
+      /* Ход прогона стоит на вкладке «Расход», и без обновления шаг и круги
+         замирали бы на моменте открытия страницы. Меняется только карточка:
+         перестройка всей вкладки на каждом шаге агента роняла бы прокрутку
+         таблицы и фокус клавиатуры на её строке. Сравнение идёт по показанным
+         полям — отметки времени в ответе меняются каждый опрос. */
+      if (previous !== stateStamp && tab === 'usage') refreshProgress();
       var locked = !!stateData.running;
       if (lastLocked !== null && lastLocked !== locked && tab === 'settings' && !isDirty()) {
         loadConfig();
@@ -1703,7 +1706,9 @@ const script = `
       run.turnLimit,
       run.turnFinished,
       run.validationFixAttempts,
+      run.maxTestFixAttempts,
       run.reviewFixAttempts,
+      run.maxReviewFixAttempts,
       run.issuesRemaining
     ].join('\\u0001');
   }
@@ -1790,6 +1795,21 @@ const script = `
     };
   }
 
+  /* Карточка хода живёт в панели, но обновляется отдельно от неё: остальная
+     вкладка от смены шага не меняется. Узел, вынутый из панели при перерисовке,
+     теряет родителя — по нему и видно, что обновлять нечего. */
+  function refreshProgress() {
+    if (!progressNode || !progressNode.parentNode || !tasksData) {
+      renderPanel();
+      return;
+    }
+    var totals = tasksData.totals || {};
+    var phases = Array.isArray(tasksData.phases) ? tasksData.phases : [];
+    var next = renderProgress(totals, phases);
+    progressNode.parentNode.replaceChild(next, progressNode);
+    progressNode = next;
+  }
+
   function renderProgress(totals, phases) {
     var scope = progressScope(totals, phases);
     var counters = scope.counters || {};
@@ -1803,10 +1823,11 @@ const script = `
     counts.appendChild(count(num(counters.completed || 0), 'закрыто'));
     if (counters.parked) counts.appendChild(count(num(counters.parked), 'отложено'));
     var run = stateData && stateData.running ? stateData.run : null;
-    /* Очередь плавает: ревью заводит баги по ходу фазы, и «осталось» растёт.
-       Поэтому число стоит рядом с закрытыми, а не в виде «14 из 20». */
+    /* Очередь плавает: ревью заводит баги по ходу фазы, и число растёт. Поэтому
+       оно стоит рядом с закрытыми, а не в виде «14 из 20». Слово то же, что у
+       цикла: в это число входит и задача, которая идёт прямо сейчас. */
     if (run && typeof run.issuesRemaining === 'number') {
-      counts.appendChild(count(num(run.issuesRemaining), 'в очереди'));
+      counts.appendChild(count(num(run.issuesRemaining), 'открытых issues'));
     }
     /* Баги ревью считаются отдельной парой: это работа, которой в плане фазы не
        было, и смешивать её с задачами плана значит прятать её цену. */
@@ -2003,7 +2024,8 @@ const script = `
        на вопрос «сколько это стоило». Пока прогона нет и журнал пуст, показывать
        нечего, и блок не рисуется вовсе. */
     if (tasks.length || (stateData && stateData.running)) {
-      frag.appendChild(renderProgress(totals, phases));
+      progressNode = renderProgress(totals, phases);
+      frag.appendChild(progressNode);
     }
 
     /* Пустой журнал проверяется до сводки: нули и примечания к ним человеку,
@@ -2136,7 +2158,10 @@ const script = `
           return {
             phase: phase,
             rows: tasks.filter(function (task) {
-              return (task.milestone || null) === phase.milestone;
+              /* Сравнение как на сервере: там пустая строка остаётся пустой
+                 строкой, и приведение её к null увело бы такую задачу мимо
+                 своей группы. */
+              return (task.milestone === undefined ? null : task.milestone) === phase.milestone;
             })
           };
         })
