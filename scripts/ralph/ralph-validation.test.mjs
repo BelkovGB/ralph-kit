@@ -5,7 +5,6 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { loadConfig } from './ralph-config.mjs';
 import { summarizeCommandFailure } from './ralph-failure-summary.mjs';
 import { run } from './ralph-process-runner.mjs';
 import {
