@@ -694,3 +694,49 @@ export function describeOutcome(outcome) {
 
   return outcomeDescriptions[outcome] ?? outcome;
 }
+
+// -----------------------------------------------------------------------------
+// Тела ответов пульта
+// -----------------------------------------------------------------------------
+
+/**
+ * Что именно уходит на страницу, решается здесь, а не в сервере: сервер
+ * запускает себя сам при импорте, и проверить его ответы тестом иначе нечем.
+ * Поля перечислены явно — разворот прочитанного лока отдал бы наружу и то, чего
+ * странице знать незачем.
+ */
+export function stateResponse(dependencies = {}) {
+  const state = readRunState(dependencies);
+
+  return {
+    running: Boolean(state.running),
+    run: state.run ?? null,
+    staleLock: Boolean(state.staleLock),
+    // План фаз читается из конфигурации и живёт дольше прогона: страница
+    // показывает «фаза 2 из 3» и когда состояния на диске уже нет.
+    plannedPhases: state.plannedPhases ?? [],
+  };
+}
+
+export function tasksResponse(dependencies = {}) {
+  const spend = readTaskSpend(dependencies);
+  // Итог словами подставляется здесь: страница подписывает ячейку, сервер —
+  // подсказку к ней, и разные списки читались бы как два разных события.
+  const tasks = [...(spend.tasks ?? [])]
+    .map((task) => ({
+      ...task,
+      lastReason: task.lastReason ?? describeOutcome(task.lastOutcome),
+      runs: (task.runs ?? []).map((run) => ({
+        ...run,
+        reason: run.reason ?? describeOutcome(run.outcome),
+      })),
+    }))
+    .sort((first, second) => (second.tokensTotal ?? 0) - (first.tokensTotal ?? 0));
+
+  return {
+    totals: spend.totals,
+    period: spend.period,
+    phases: spend.phases ?? [],
+    tasks,
+  };
+}

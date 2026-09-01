@@ -2,7 +2,13 @@ import assert from 'node:assert/strict';
 import { rmSync } from 'node:fs';
 import test, { after } from 'node:test';
 
-import { readRunProgress, readRunState, readTaskSpend } from './ralph-gui-data.mjs';
+import {
+  readRunProgress,
+  readRunState,
+  readTaskSpend,
+  stateResponse,
+  tasksResponse,
+} from './ralph-gui-data.mjs';
 import { temporaryProjectTree } from './ralph-test-support.mjs';
 
 // Каталоги фикстур удаляет тот, кто их создал; журнал в тесте хвоста весит
@@ -542,4 +548,42 @@ test('битый журнал расхода отличается от отсу�
     assert.equal(spend.totals.completed, 0);
     assert.equal(spend.totals.tokensTotal, 0);
   }
+});
+
+test('ответ о состоянии несёт план фаз, а ответ о расходе — свод по фазам', () => {
+  const root = metricsTree([metricsEntry({ issue: 1 })], {
+    'ralph.config.json': JSON.stringify({ phases: [{ milestone: 'Фаза 1' }] }),
+  });
+  const dependencies = {
+    runtimeDir: root,
+    metricsPath: `${root}/issue-metrics.json`,
+    configPath: `${root}/ralph.config.json`,
+  };
+
+  const state = stateResponse(dependencies);
+  const tasks = tasksResponse(dependencies);
+
+  assert.deepEqual(state.plannedPhases, ['Фаза 1']);
+  assert.equal(state.running, false);
+  assert.equal(state.run, null);
+  assert.deepEqual(
+    tasks.phases.map((phase) => phase.milestone),
+    ['Фаза 1'],
+  );
+  // Итог словами подставляет сервер: у записи своего reason нет.
+  assert.equal(tasks.tasks[0].lastReason, 'Ralph закрыл issue');
+  assert.equal(tasks.tasks[0].runs[0].reason, 'Ralph закрыл issue');
+});
+
+test('пустой рантайм отдаёт странице массивы, а не пропуски', () => {
+  const root = tree({});
+  const dependencies = {
+    runtimeDir: root,
+    metricsPath: `${root}/issue-metrics.json`,
+    configPath: `${root}/ralph.config.json`,
+  };
+
+  assert.deepEqual(stateResponse(dependencies).plannedPhases, []);
+  assert.deepEqual(tasksResponse(dependencies).phases, []);
+  assert.deepEqual(tasksResponse(dependencies).tasks, []);
 });

@@ -14,10 +14,10 @@ import path from 'node:path';
 
 import { configPath, prepareConfig } from './ralph-config.mjs';
 import {
-  describeOutcome,
   readRunState,
-  readTaskSpend,
   runtimeDirectory,
+  stateResponse,
+  tasksResponse,
 } from './ralph-gui-data.mjs';
 import { fieldGroups } from './ralph-gui-fields.mjs';
 import { renderPage } from './ralph-gui-page.mjs';
@@ -271,36 +271,11 @@ function writeConfigAtomic(config) {
 // -----------------------------------------------------------------------------
 
 function handleState(response) {
-  const state = readRunState();
-  sendJson(response, 200, {
-    running: Boolean(state.running),
-    run: state.run ?? null,
-    staleLock: Boolean(state.staleLock),
-    // План фаз читается из конфигурации и живёт дольше прогона: страница
-    // показывает «фаза 2 из 3» и когда состояния на диске уже нет.
-    plannedPhases: state.plannedPhases ?? [],
-  });
+  sendJson(response, 200, stateResponse());
 }
 
 function handleTasks(response) {
-  const spend = readTaskSpend();
-  const tasks = [...(spend.tasks ?? [])]
-    .map((task) => ({
-      ...task,
-      lastReason: task.lastReason ?? describeOutcome(task.lastOutcome),
-      runs: (task.runs ?? []).map((run) => ({
-        ...run,
-        reason: run.reason ?? describeOutcome(run.outcome),
-      })),
-    }))
-    .sort((first, second) => (second.tokensTotal ?? 0) - (first.tokensTotal ?? 0));
-
-  sendJson(response, 200, {
-    totals: spend.totals,
-    period: spend.period,
-    phases: spend.phases ?? [],
-    tasks,
-  });
+  sendJson(response, 200, tasksResponse());
 }
 
 function handleConfigRead(response) {
