@@ -20,7 +20,9 @@ import {
   hostWorkingTreeHash,
   readValidationAttestations,
   recordValidationAttestation,
+  removeValidationArtifacts,
   runConfiguredScripts,
+  runConfiguredValidation,
   validationAttestationKey,
   validationContainerRunArgs,
   validationImageForSnapshot,
@@ -1065,4 +1067,124 @@ test('пустой и относительный путь домашнего к�
       }),
     /HOME.*абсолютн/u,
   );
+});
+
+/**
+ * Артефакты прошлого прогона.
+ *
+ * В host-режиме проверки идут в рабочей папке, и отчёт, оставленный браузерным
+ * набором, попадает под следующий линтер. Ralph убирает названные пути перед
+ * проверками, но только те, которых нет в Git: удалить отслеживаемый файл
+ * значит потерять работу, а не прибраться.
+ */
+function artifactProject(files = {}) {
+  const root = mkdtempSync(path.join(tmpdir(), 'ralph-artifacts-'));
+  for (const [relativePath, content] of Object.entries(files)) {
+    const target = path.join(root, ...relativePath.split('/'));
+    mkdirSync(path.dirname(target), { recursive: true });
+    writeFileSync(target, content, 'utf8');
+  }
+  return root;
+}
+
+test('артефакты прошлых проверок удаляются перед прогоном', () => {
+  const root = artifactProject({
+    'apps/web/output/report/index.html': '<html></html>',
+    'apps/web/output/trace.zip': 'zip',
+    'apps/web/src/page.tsx': 'code',
+  });
+
+  try {
+    const removed = removeValidationArtifacts(
+      { validationArtifactPaths: ['apps/web/output', 'apps/web/missing'] },
+      { projectRoot: root, run: () => ({ status: 0, stdout: '', stderr: '' }) },
+    );
+
+    assert.deepEqual(removed, ['apps/web/output']);
+    assert.equal(existsSync(path.join(root, 'apps', 'web', 'output')), false);
+    // Отсутствующий путь — не ошибка: первый прогон начинается без артефактов.
+    assert.equal(existsSync(path.join(root, 'apps', 'web', 'src', 'page.tsx')), true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('отслеживаемый путь Ralph не удаляет, а останавливает прогон', () => {
+  const root = artifactProject({ 'docs/plan.md': 'план' });
+
+  try {
+    assert.throws(
+      () =>
+        removeValidationArtifacts(
+          { validationArtifactPaths: ['docs'] },
+          {
+            projectRoot: root,
+            run: () => ({ status: 0, stdout: 'docs/plan.md\0', stderr: '' }),
+          },
+        ),
+      /validationArtifactPaths.*docs.*Git/su,
+    );
+    assert.equal(existsSync(path.join(root, 'docs', 'plan.md')), true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('путь артефактов не выводит за пределы проекта', () => {
+  const root = artifactProject({});
+  const outside = mkdtempSync(path.join(tmpdir(), 'ralph-outside-'));
+
+  try {
+    for (const artifactPath of ['..', '../soseD', outside, '.git', '.git/objects', '.']) {
+      assert.throws(
+        () =>
+          removeValidationArtifacts(
+            { validationArtifactPaths: [artifactPath] },
+            { projectRoot: root, run: () => ({ status: 0, stdout: '', stderr: '' }) },
+          ),
+        /validationArtifactPaths/u,
+        `путь ${artifactPath} должен быть отклонён`,
+      );
+    }
+    assert.equal(existsSync(outside), true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test('уборка идёт до preflight, а не после него', () => {
+  // Preflight создаёт то, что нужно проверкам: генерация кода и миграции. Убор
+  // после него снёс бы собственную подготовку прогона.
+  const root = artifactProject({ 'output/old-report.html': 'прошлый прогон' });
+  const order = [];
+
+  try {
+    runConfiguredValidation(
+      hostValidationConfig({
+        validationArtifactPaths: ['output'],
+        preflightScripts: ['generate'],
+        validationScripts: ['lint'],
+      }),
+      {
+        projectRoot: root,
+        run: (command, args) => {
+          if (command === 'git') return { status: 0, stdout: '', stderr: '' };
+          order.push(args.at(-1));
+          if (args.at(-1) === 'generate') {
+            mkdirSync(path.join(root, 'output'), { recursive: true });
+            writeFileSync(path.join(root, 'output', 'schema.ts'), 'export {}', 'utf8');
+          }
+          return { status: 0, stdout: '', stderr: '' };
+        },
+      },
+    );
+
+    assert.deepEqual(order, ['generate', 'lint']);
+    assert.equal(existsSync(path.join(root, 'output', 'old-report.html')), false);
+    // То, что подготовил preflight, уборка не трогает: она прошла раньше.
+    assert.equal(existsSync(path.join(root, 'output', 'schema.ts')), true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

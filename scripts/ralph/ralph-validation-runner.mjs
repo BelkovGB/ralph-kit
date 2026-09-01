@@ -712,6 +712,58 @@ export function runHostConfiguredScripts(config, scripts, label, options = {}) {
 }
 
 /**
+ * Артефакты прошлого прогона: отчёты, трассы, покрытие.
+ *
+ * В host-режиме проверки идут в рабочей папке проекта, поэтому файл, оставленный
+ * одной командой, попадает под следующую: отчёт браузерного набора — под линтер,
+ * и проверка падает на чужом сгенерированном коде. Пути называет проект: набор
+ * не знает, что у него мусор, а что дорогой кеш, и по умолчанию не удаляет
+ * ничего.
+ *
+ * Удаляется только то, чего нет в Git. Отслеживаемый путь — это работа, а не
+ * мусор, и его удаление прогон останавливает.
+ */
+export function removeValidationArtifacts(config, options = {}) {
+  const artifactPaths = config?.validationArtifactPaths ?? [];
+  if (artifactPaths.length === 0) return [];
+  const root = path.resolve(options.projectRoot ?? projectRoot);
+  const execute = options.run ?? run;
+  const removed = [];
+
+  for (const relativePath of artifactPaths) {
+    const target = path.resolve(root, relativePath);
+    const reject = (reason) =>
+      fail(`Поле "validationArtifactPaths": путь ${relativePath} ${reason}.`);
+    if (target === root) reject('указывает на корень проекта');
+    if (!target.startsWith(root + path.sep)) reject('выходит за пределы проекта');
+    const inside = path.relative(root, target);
+    if (inside.split(path.sep)[0] === '.git') reject('принадлежит служебному каталогу Git');
+
+    const tracked = String(
+      execute('git', ['ls-files', '-z', '--', inside.replaceAll('\\', '/')]).stdout ?? '',
+    ).replaceAll('\0', '');
+    if (tracked !== '') {
+      reject(
+        'отслеживается Git. Ralph удаляет только то, чего в Git нет: удаление ' +
+          'отслеживаемого файла — потеря работы, а не уборка',
+      );
+    }
+
+    if (!existsSync(target)) continue;
+    // Ссылка ведёт наружу, а её содержимое проверкам не принадлежит.
+    if (lstatSync(target).isSymbolicLink()) reject('является символической ссылкой');
+    rmSync(target, { recursive: true, force: true });
+    removed.push(relativePath);
+  }
+
+  if (removed.length > 0) {
+    console.log(`Артефакты прошлых проверок удалены: ${removed.join(', ')}.`);
+  }
+
+  return removed;
+}
+
+/**
  * Возвращает исход прогона: выполнялся ли контейнер или набор был признан
  * проверенным по attestation. Без этого признака длительность стадии
  * бимодальна — доли секунды против нескольких минут на том же наборе, — и
@@ -804,13 +856,16 @@ export function runPreflight(config) {
  * покрывает, знает только сам проект, а неверная догадка молча пропускает
  * проверку.
  */
-export function runConfiguredValidation(config) {
+export function runConfiguredValidation(config, options = {}) {
   // Проверка стоит здесь, а не в runConfiguredScripts: дрейф вносит только
   // сессия агента, а preflight выполняется по заведомо чистому дереву.
   if (config.validationMode === 'container') {
     assertValidationDependenciesCommitted(config);
   }
+  // Уборка идёт до preflight: он готовит то, что нужно проверкам, и уборка
+  // после него снесла бы собственную подготовку прогона.
+  removeValidationArtifacts(config, options);
   // Preflight выполняется первым в том же окружении, что и остальные команды
   // текущей проверки.
-  return runConfiguredScripts(config, config.validationScripts, 'Validation');
+  return runConfiguredScripts(config, config.validationScripts, 'Validation', options);
 }

@@ -584,6 +584,14 @@ export const fieldGroups = [
         default: [],
       },
       {
+        path: 'validationArtifactPaths',
+        label: 'Артефакты проверок',
+        type: 'list',
+        hint: 'Каталоги и файлы, которые проверки создают сами: отчёты, трассы, покрытие. Ralph удаляет их перед прогоном, чтобы отчёт прошлой итерации не попал под следующий линтер. Пути относительные, внутри проекта; путь, отслеживаемый Git, Ralph не удаляет, а останавливает прогон.',
+        unit: null,
+        default: [],
+      },
+      {
         path: 'validationDependencyPaths',
         label: 'Файлы зависимостей образа',
         type: 'list',
