@@ -119,9 +119,16 @@ export function reviewCodexArguments(role) {
 }
 
 export function agentReportedWriteAccessFailure(message) {
-  return /(?:file system|filesystem|файловая система).{0,80}(?:read[- ]only|только для чтения)|(?:access|доступ).{0,40}(?:denied|запрещ[её]н)|(?:EPERM|EACCES).{0,80}(?:write|запис)/is.test(
-    String(message ?? ''),
-  );
+  const text = String(message ?? '');
+  const patterns = [
+    /(?:file system|filesystem|файловая система).{0,80}(?:read[- ]only|только для чтения)/is,
+    /(?:write access|access to write|доступ (?:к|на) запис[ьи]).{0,40}(?:denied|запрещ[её]н)/is,
+    /(?:denied|запрещ[её]н).{0,40}(?:write access|access to write|доступ (?:к|на) запис[ьи])/is,
+    /(?:EPERM|EACCES).{0,80}(?:write|writing|запис)/is,
+    /(?:cannot|can't|unable to|не могу|невозможно).{0,40}(?:write|edit|запис|изменить файл)/is,
+  ];
+
+  return patterns.some((pattern) => pattern.test(text));
 }
 
 function numberOrNull(value) {

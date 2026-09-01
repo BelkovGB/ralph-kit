@@ -293,5 +293,13 @@ test('write access blockers are recognized as infrastructure failures', () => {
     ),
     true,
   );
+  assert.equal(agentReportedWriteAccessFailure('Write access denied.'), true);
+  assert.equal(agentReportedWriteAccessFailure('Доступ к записи запрещён.'), true);
+  assert.equal(
+    agentReportedWriteAccessFailure(
+      'Контролёру доступ запрещён до вызова сервиса.',
+    ),
+    false,
+  );
   assert.equal(agentReportedWriteAccessFailure('Реализация и тесты завершены.'), false);
 });
