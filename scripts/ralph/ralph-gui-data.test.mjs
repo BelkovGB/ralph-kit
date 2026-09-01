@@ -1,8 +1,24 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import { rmSync } from 'node:fs';
+import test, { after } from 'node:test';
 
 import { readRunProgress, readRunState, readTaskSpend } from './ralph-gui-data.mjs';
 import { temporaryProjectTree } from './ralph-test-support.mjs';
+
+// Каталоги фикстур удаляет тот, кто их создал; журнал в тесте хвоста весит
+// сотни килобайт, и остаться на диске он не должен.
+const temporaryRoots = [];
+
+function tree(files) {
+  const root = temporaryProjectTree(files);
+  temporaryRoots.push(root);
+
+  return root;
+}
+
+after(() => {
+  for (const root of temporaryRoots) rmSync(root, { recursive: true, force: true });
+});
 
 /**
  * Чтение рантайма для пульта.
@@ -29,20 +45,32 @@ function metricsEntry(overrides = {}) {
 }
 
 function metricsTree(entries, extra = {}) {
-  return temporaryProjectTree({
+  return tree({
     'issue-metrics.json': JSON.stringify({ version: 1, entries }),
+    // Конфигурация набора здесь своя: план фаз этого репозитория менял бы
+    // порядок групп и ронял тест у потребителя с другой настройкой.
+    'ralph.config.json': JSON.stringify({}),
     ...extra,
   });
 }
 
+/**
+ * Строка журнала в том виде, в каком её пишет `initializePersistentLog`:
+ * отметка времени, уровень, текст. Разбор обязан работать по этому виду, а не
+ * по сообщению, каким оно ушло в консоль.
+ */
+function logLine(text, level = 'INFO') {
+  return `2026-09-01T10:00:00.000Z ${level} ${text}`;
+}
+
 test('пульт берёт ход прогона из последних строк run.log', () => {
-  const root = temporaryProjectTree({
+  const root = tree({
     'run.log': [
-      'Итерация 4/20; осталось issues: 9.',
-      '[claude step 3/50] чтение файла',
-      'claude: использовано шагов 7/50.',
-      'Итерация 5/20; осталось issues: 8.',
-      '[claude step 12/50] правка файла',
+      logLine('Итерация 4/20; осталось issues: 9.'),
+      logLine('[claude step 3/50] чтение файла'),
+      logLine('claude: использовано шагов 7/50.'),
+      logLine('Итерация 5/20; осталось issues: 8.'),
+      logLine('[claude step 12/50] правка файла'),
       '',
     ].join('\n'),
   });
@@ -58,7 +86,9 @@ test('пульт берёт ход прогона из последних стр
 });
 
 test('строка «Resume» тоже считается началом итерации', () => {
-  const root = temporaryProjectTree({ 'run.log': 'Resume 6/20; осталось issues: 3.\n' });
+  const root = tree({
+    'run.log': `${logLine('Resume 6/20; осталось issues: 3.')}\n`,
+  });
 
   const progress = readRunProgress({ runtimeDir: root });
 
@@ -67,8 +97,12 @@ test('строка «Resume» тоже считается началом ите�
 });
 
 test('закрытая сессия показывает итоговое число шагов, а не шаг в работе', () => {
-  const root = temporaryProjectTree({
-    'run.log': ['[codex step 9/40] правка', 'codex: использовано шагов 9/40.', ''].join('\n'),
+  const root = tree({
+    'run.log': [
+      logLine('[codex step 9/40] правка'),
+      logLine('codex: использовано шагов 9/40.'),
+      '',
+    ].join('\n'),
   });
 
   const progress = readRunProgress({ runtimeDir: root });
@@ -78,10 +112,73 @@ test('закрытая сессия показывает итоговое чис
   assert.equal(progress.sessionFinished, true);
 });
 
+test('сессия, убитая лимитом шагов, тоже считается закрытой', () => {
+  const root = tree({
+    // Сообщение circuit breaker начинается с перевода строки, поэтому в журнале
+    // отметка времени стоит на пустой строке, а сам текст — на следующей.
+    'run.log': [
+      logLine('[claude step 50/50] правка'),
+      logLine('', 'ERROR'),
+      'Circuit breaker: Разработка issue #11 попытался превысить лимит 50 шагов.',
+      '',
+    ].join('\n'),
+  });
+
+  const progress = readRunProgress({ runtimeDir: root });
+
+  assert.equal(progress.turn, 50);
+  assert.equal(progress.sessionFinished, true);
+});
+
+test('между сессиями текущего шага нет', () => {
+  const root = tree({
+    'run.log': [
+      logLine('[claude step 12/50] правка'),
+      logLine('claude: использовано шагов 12/50.'),
+      logLine('Итерация 6/20; осталось issues: 4.'),
+      '',
+    ].join('\n'),
+  });
+
+  const progress = readRunProgress({ runtimeDir: root });
+
+  assert.equal(progress.iteration, 6);
+  assert.equal(progress.turn, null);
+  assert.equal(progress.turnLimit, null);
+});
+
+/**
+ * Вывод инструментов агента попадает в журнал целиком, и внутренние строки
+ * многострочного сообщения отметки времени не получают. Считать их строками
+ * цикла нельзя: агенту велено читать `run.log` при разборе падения, и
+ * прочитанный хвост возвращается в журнал.
+ */
+test('строка без отметки журнала числами прогона не считается', () => {
+  const root = tree({
+    'run.log': [
+      logLine('Итерация 5/20; осталось issues: 8.'),
+      logLine('[claude step 3/50] чтение run.log'),
+      'Итерация 99/99; осталось issues: 0.',
+      'подделка: использовано шагов 1/1.',
+      '[claude step 42/50] строка из чужого вывода',
+      '',
+    ].join('\n'),
+  });
+
+  const progress = readRunProgress({ runtimeDir: root });
+
+  assert.equal(progress.iteration, 5);
+  assert.equal(progress.issuesRemaining, 8);
+  assert.equal(progress.turn, 3);
+  assert.equal(progress.sessionFinished, false);
+});
+
 test('пульт читает хвост, а не весь журнал прогона', () => {
-  const noise = `${'x'.repeat(200)}\n`.repeat(2_000);
-  const root = temporaryProjectTree({
-    'run.log': `Итерация 1/20; осталось issues: 40.\n${noise}Итерация 33/40; осталось issues: 2.\n`,
+  const noise = `${logLine('x'.repeat(200))}\n`.repeat(2_000);
+  const root = tree({
+    'run.log':
+      `${logLine('Итерация 1/20; осталось issues: 40.')}\n` +
+      `${noise}${logLine('Итерация 33/40; осталось issues: 2.')}\n`,
   });
 
   const progress = readRunProgress({ runtimeDir: root, maxBytes: 4_096 });
@@ -91,7 +188,7 @@ test('пульт читает хвост, а не весь журнал прог
 });
 
 test('без журнала прогона числа остаются пропуском, а не нулём', () => {
-  const progress = readRunProgress({ runtimeDir: temporaryProjectTree({}) });
+  const progress = readRunProgress({ runtimeDir: tree({}) });
 
   assert.deepEqual(progress, {
     iteration: null,
@@ -104,7 +201,7 @@ test('без журнала прогона числа остаются проп�
 });
 
 test('состояние прогона называет круги проверок и ревью вместе с их лимитами', () => {
-  const root = temporaryProjectTree({
+  const root = tree({
     'run.lock': JSON.stringify({ pid: 4242, mode: '--run', startedAt: '2026-09-01T10:00:00.000Z' }),
     'state.json': JSON.stringify({
       version: 2,
@@ -115,7 +212,7 @@ test('состояние прогона называет круги провер
       iterationsUsed: 12,
       issue: { number: 11, phase: 'validating', validationFixAttempts: 2, reviewFixAttempts: 1 },
     }),
-    'run.log': '[claude step 12/50] запуск проверок\n',
+    'run.log': `${logLine('[claude step 12/50] запуск проверок')}\n`,
     'ralph.config.json': JSON.stringify({
       maxIterations: 20,
       maxTestFixAttempts: 5,
@@ -141,12 +238,17 @@ test('состояние прогона называет круги провер
 });
 
 test('брошенный лок не выдаёт свой последний шаг за текущий', () => {
-  const root = temporaryProjectTree({
+  const root = tree({
     'run.lock': JSON.stringify({ pid: 4242, mode: '--run' }),
-    'run.log': '[claude step 12/50] правка\n',
+    'run.log': `${logLine('[claude step 12/50] правка')}\n`,
+    'ralph.config.json': JSON.stringify({}),
   });
 
-  const state = readRunState({ runtimeDir: root, isProcessAlive: () => false });
+  const state = readRunState({
+    runtimeDir: root,
+    configPath: `${root}/ralph.config.json`,
+    isProcessAlive: () => false,
+  });
 
   assert.equal(state.staleLock, true);
   assert.equal(state.run.turn, null);
@@ -154,7 +256,7 @@ test('брошенный лок не выдаёт свой последний ш
 });
 
 test('без прогона фазы берутся из конфигурации, а не из состояния', () => {
-  const root = temporaryProjectTree({
+  const root = tree({
     'ralph.config.json': JSON.stringify({
       phases: [{ milestone: 'Фаза 1' }, { milestone: 'Фаза 2' }],
     }),
@@ -209,7 +311,10 @@ test('фаза считает закрытые, отложенные задач�
     metricsEntry({ issue: null, outcome: 'milestone-review', reason: 'вердикт pass' }),
   ]);
 
-  const spend = readTaskSpend({ metricsPath: `${root}/issue-metrics.json` });
+  const spend = readTaskSpend({
+    metricsPath: `${root}/issue-metrics.json`,
+    configPath: `${root}/ralph.config.json`,
+  });
   const [phase] = spend.phases;
 
   assert.equal(phase.completed, 2);
@@ -229,7 +334,10 @@ test('последняя попытка задачи решает, закрыт�
     metricsEntry({ issue: 7, outcome: 'completed', startedAt: '2026-09-01T10:30:00.000Z' }),
   ]);
 
-  const spend = readTaskSpend({ metricsPath: `${root}/issue-metrics.json` });
+  const spend = readTaskSpend({
+    metricsPath: `${root}/issue-metrics.json`,
+    configPath: `${root}/ralph.config.json`,
+  });
 
   assert.equal(spend.totals.completed, 1);
   assert.equal(spend.phases[0].tasks, 1);
@@ -243,7 +351,10 @@ test('порядок работы внутри фазы читается по п
     metricsEntry({ issue: 3, startedAt: '2026-09-01T12:00:00.000Z' }),
   ]);
 
-  const spend = readTaskSpend({ metricsPath: `${root}/issue-metrics.json` });
+  const spend = readTaskSpend({
+    metricsPath: `${root}/issue-metrics.json`,
+    configPath: `${root}/ralph.config.json`,
+  });
   const byIssue = new Map(spend.tasks.map((task) => [task.issue, task]));
 
   assert.equal(byIssue.get(3).firstStartedAt, '2026-09-01T09:00:00.000Z');

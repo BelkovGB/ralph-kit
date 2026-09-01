@@ -23,7 +23,8 @@ import {
 } from './ralph-claude-session.mjs';
 import { addUsage } from './ralph-agent-session.mjs';
 import { readRunProgress } from './ralph-gui-data.mjs';
-import { temporaryProjectTree, withFakeClaude } from './ralph-test-support.mjs';
+import { initializePersistentLog } from './ralph-runtime.mjs';
+import { withFakeClaude } from './ralph-test-support.mjs';
 
 const schemaPath = fileURLToPath(new URL('../../.agents/review.schema.json', import.meta.url));
 
@@ -687,11 +688,15 @@ test('403 «Request not allowed» повторяется, 401 остаётся �
  * Договор с пультом: номер шага печатает сессия, а разбирает
  * `ralph-gui-data.mjs`. Живого счётчика шагов больше взять неоткуда —
  * телеметрию CLI присылает только в конце, — поэтому формат строки держит тест.
+ *
+ * Разбор идёт по настоящему `run.log`: журнал добавляет к каждой строке отметку
+ * времени и уровень, и тест на сырых сообщениях консоли проверял бы не тот вид
+ * строки, который читает пульт.
  */
-test('пульт читает номер шага из того, что печатает сессия', async () => {
-  const lines = [];
-  const originalLog = console.log;
-  console.log = (message) => lines.push(String(message));
+test('пульт читает номер шага из настоящего run.log', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'ralph-gui-log-'));
+  const logPath = path.join(root, 'run.log');
+  const restoreConsole = initializePersistentLog(logPath, { test: 'gui-step' });
   try {
     await withFakeClaude(
       claudeStreamScript([
@@ -710,16 +715,15 @@ test('пульт читает номер шага из того, что печа
       },
     );
   } finally {
-    console.log = originalLog;
+    restoreConsole();
   }
 
-  const progress = readRunProgress({
-    runtimeDir: temporaryProjectTree({ 'run.log': `${lines.join('\n')}\n` }),
-  });
+  const progress = readRunProgress({ logPath });
 
   assert.equal(progress.turn, 2);
   assert.equal(progress.turnLimit, 7);
   // Итог сессии напечатан последним: пульт обязан показать её закрытой, а не
   // держать шаг мёртвой сессии как текущий.
   assert.equal(progress.sessionFinished, true);
+  rmSync(root, { recursive: true, force: true });
 });
