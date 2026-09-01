@@ -11,6 +11,8 @@
  * содержать угловые скобки.
  */
 
+import { readFileSync } from "node:fs";
+
 import { outcomeDescriptions } from "./ralph-run-metrics.mjs";
 import { KIT_VERSION } from "./ralph-version.mjs";
 
@@ -1141,11 +1143,28 @@ const markup = `
 <template id="icon-close">${icons.close}</template>
 `;
 
-// Клиентский скрипт. Внутри нет шаблонных литералов и обратных кавычек:
-// строка целиком лежит в шаблонном литерале модуля.
-const script = `
-(function () {
-  'use strict';
+// Клиентский скрипт собирается из двух частей: исходник ralph-gui-view.mjs
+// вклеивается внутрь IIFE сразу после 'use strict', остальное лежит в шаблонной
+// строке ниже. Внутри шаблона по-прежнему нет обратных кавычек; в модуле вида
+// они законны — он попадает в страницу конкатенацией, мимо шаблона.
+//
+// Чтение одно, на загрузке модуля: renderPage зовётся на каждый HTTP-запрос, а
+// отсутствие файла должно остановить старт пульта, а не давать 500 на запрос.
+const viewSourcePath = new URL("./ralph-gui-view.mjs", import.meta.url);
+let viewSource;
+try {
+  viewSource = readFileSync(viewSourcePath, "utf8");
+} catch (error) {
+  throw new Error(
+    `Не найден scripts/ralph/ralph-gui-view.mjs (${error.code}): ` +
+      "пульту нужен модуль логики вида — скопируйте scripts/ralph/** целиком.",
+  );
+}
+// Классический скрипт не знает export: групповая строка экспорта снимается.
+// Остаток export в странице уронил бы тест разбора, молча он не проедет.
+const embeddedViewSource = viewSource.replace(/^export \{[^}]*\};\n/mu, "");
+
+const scriptTail = `
 
   var token = window.__RALPH_TOKEN__ || '';
   // Перечень команд статичен и приезжает вместе со страницей: вкладка
@@ -1225,129 +1244,6 @@ const script = `
 
   /* --- форматирование --- */
 
-  function plural(n, one, few, many) {
-    var a = Math.abs(Math.round(n)) % 100;
-    var b = a % 10;
-    if (a > 10 && a < 20) return many;
-    if (b > 1 && b < 5) return few;
-    if (b === 1) return one;
-    return many;
-  }
-
-  function num(value, digits) {
-    var n = Number(value) || 0;
-    return n.toLocaleString('ru-RU', {
-      minimumFractionDigits: digits || 0,
-      maximumFractionDigits: digits || 0
-    });
-  }
-
-  function money(value) {
-    return num(Number(value) || 0, 2) + ' $';
-  }
-
-  function tokensOf(value) {
-    if (typeof value === 'number') return value;
-    if (value && typeof value === 'object') {
-      var sum = 0;
-      Object.keys(value).forEach(function (key) {
-        if (typeof value[key] === 'number') sum += value[key];
-      });
-      return sum;
-    }
-    return 0;
-  }
-
-  function tokens(value) {
-    var n = tokensOf(value);
-    if (n >= 1000000) return num(n / 1000000, 1) + ' млн';
-    if (n >= 10000) return num(n / 1000, 0) + ' тыс.';
-    return num(n, 0);
-  }
-
-  /* Доля, которая округлилась бы в ноль, пишется как «<1%»: ноль рядом с
-     непустым числом читается как «ничего», а «1%» завысил бы её в разы. */
-  function share(part, total) {
-    if (!total) return '';
-    var percent = ((Number(part) || 0) / total) * 100;
-    return percent > 0 && percent < 0.5 ? '<1%' : num(percent, 0) + '%';
-  }
-
-  /* Пять видов токенов не пересекаются и в сумме дают весь объём. Порядок —
-     путь текста через модель: сначала то, что агент загрузил, потом то, что
-     написал сам. */
-  var tokenKinds = [
-    ['cacheRead', 'чтение кэша'],
-    ['cacheCreation', 'запись в кэш'],
-    ['uncachedInput', 'новый текст'],
-    ['reasoning', 'рассуждения'],
-    ['answer', 'ответ']
-  ];
-
-  function kindSum(value, keys) {
-    var t = value || {};
-    return keys.reduce(function (sum, key) { return sum + (Number(t[key]) || 0); }, 0);
-  }
-
-  function loadedTokens(value) {
-    return kindSum(value, ['cacheRead', 'cacheCreation', 'uncachedInput']);
-  }
-
-  function writtenTokens(value) {
-    return kindSum(value, ['reasoning', 'answer']);
-  }
-
-  /* Вид с нулём пропускается: строка и так длинная, а ноль ничего не решает. */
-  function tokenKindList(value, withShare) {
-    var t = value || {};
-    var total = tokensOf(t);
-    var parts = tokenKinds
-      .map(function (kind) { return { label: kind[1], value: Number(t[kind[0]]) || 0 }; })
-      .filter(function (part) { return part.value > 0; });
-    if (withShare) parts.sort(function (a, b) { return b.value - a.value; });
-    return parts.map(function (part) {
-      var percent = withShare ? ' · ' + share(part.value, total) : '';
-      return part.label + ' ' + tokens(part.value) + percent;
-    });
-  }
-
-  function duration(ms) {
-    var total = Math.max(0, Math.round((Number(ms) || 0) / 1000));
-    if (total < 60) return total + ' с';
-    var minutes = Math.round(total / 60);
-    if (minutes < 60) return minutes + ' мин';
-    var hours = Math.floor(minutes / 60);
-    var rest = minutes % 60;
-    return rest ? hours + ' ч ' + rest + ' мин' : hours + ' ч';
-  }
-
-  function hours(ms) {
-    return num((Number(ms) || 0) / 3600000, 1) + ' ч';
-  }
-
-  function parseDate(value) {
-    if (!value) return null;
-    var date = new Date(value);
-    return isNaN(date.getTime()) ? null : date;
-  }
-
-  function clock(value) {
-    var date = parseDate(value);
-    if (!date) return '';
-    return date.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
-  }
-
-  function stamp(value) {
-    var date = parseDate(value);
-    if (!date) return '';
-    return date.toLocaleString('ru-RU', {
-      day: 'numeric',
-      month: 'short',
-      hour: '2-digit',
-      minute: '2-digit'
-    });
-  }
-
   /* Итог попытки в одну строку: колонка не переносится. Незнакомое значение
      показывается как есть — подмена скрыла бы новый код.
 
@@ -1355,76 +1251,6 @@ const script = `
      сервер той же парой заполняет reason, и разные формулировки читались бы как
      два разных события. */
   var outcomeWords = ${jsonLiteral(outcomeDescriptions)};
-
-  var successOutcomes = { completed: 1 };
-
-  /* Ни успех, ни провал: issue цела, но ждёт решения человека. Красный тут
-     соврал бы — работа не потеряна и не сломана. */
-  var pendingOutcomes = { 'review-parked': 1, 'iteration-limit': 1 };
-
-  function outcomeWord(value) {
-    if (!value) return '—';
-    return outcomeWords[String(value)] || String(value);
-  }
-
-  function isSuccess(value) {
-    return !!successOutcomes[String(value)];
-  }
-
-  /* Класс ячейки исхода: зелёный по умолчанию не ставится, красный — только на
-     то, что действительно провалилось. */
-  function outcomeClass(value) {
-    if (isSuccess(value)) return '';
-    if (pendingOutcomes[String(value)]) return 'warn';
-    if (String(value) === 'milestone-review') return 'muted';
-    return 'bad';
-  }
-
-  /* Стадия текущей issue из state.json. Значения выписаны из
-     ralph-state-store.mjs: цикл пишет в phase только их. Ключи
-     implementation/validation/review сюда не приходят: список из них оставил бы
-     полосу состояния с сырым agent-running вместо слов. */
-  var phaseWords = {
-    'agent-running': 'идёт разработка',
-    'working-tree': 'правки не закоммичены',
-    validating: 'идут проверки',
-    staging: 'Ralph готовит коммит',
-    committed: 'коммит сделан',
-    pushed: 'ветка отправлена',
-    reviewing: 'идёт ревью',
-    'review-failed': 'ревью вернуло замечания'
-  };
-
-  function phaseWord(value) {
-    if (!value) return '';
-    return phaseWords[String(value)] || String(value);
-  }
-
-  /* Метрики пишут три роли: development, review и milestone-review. Остальные
-     оставлены на случай чужого журнала. */
-  var roleWords = {
-    development: 'разработка',
-    implementation: 'разработка',
-    validation: 'проверка',
-    review: 'ревью',
-    'milestone-review': 'ревью milestone',
-    summary: 'итог'
-  };
-
-  function roleWord(value) {
-    if (!value) return 'агент';
-    return roleWords[String(value)] || String(value);
-  }
-
-  /* Запись без номера issue — ревью milestone: цикл пишет его отдельной
-     строкой, потому что оно оплачено прогоном, а не какой-то одной issue. */
-  function isReviewRow(task) {
-    return task.issue === null || task.issue === undefined;
-  }
-
-  function cut(text, limit) {
-    return text.length > limit ? text.slice(0, limit - 1) + '…' : text;
-  }
 
   /* --- DOM --- */
 
@@ -1542,14 +1368,6 @@ const script = `
     });
   }
 
-  function stageMs(value) {
-    if (typeof value === 'number') return value;
-    if (value && typeof value === 'object') {
-      return Number(value.wallMs || value.ms || value.durationMs || 0) || 0;
-    }
-    return 0;
-  }
-
   function renderBar(stages) {
     var s = stages || {};
     var parts = [
@@ -1595,7 +1413,7 @@ const script = `
     if (run.wallMs) when.push(duration(run.wallMs));
     if (run.agentCli) when.push(run.agentCli);
     if (when.length) head.appendChild(el('span', 'run-meta', when.join(' · ')));
-    var outcomeText = outcomeWord(run.outcome);
+    var outcomeText = outcomeWord(outcomeWords, run.outcome);
     head.appendChild(el('span', outcomeClass(run.outcome), outcomeText));
     box.appendChild(head);
 
@@ -1666,34 +1484,7 @@ const script = `
 
   /* --- ход прогона --- */
 
-  /* Слепок того, что показывает карточка хода. Отметок времени в нём нет: они
-     меняются на каждый опрос, а на экране их не видно. */
-  function shownStateStamp(data) {
-    var run = (data && data.run) || {};
-    return [
-      data && data.running ? 1 : 0,
-      data && data.staleLock ? 1 : 0,
-      ((data && data.plannedPhases) || []).join('|'),
-      run.milestone,
-      run.phaseIndex,
-      run.phaseCount,
-      run.iterationsUsed,
-      run.maxIterations,
-      run.issueNumber,
-      run.issueTitle,
-      run.issuePhase,
-      run.turn,
-      run.turnLimit,
-      run.turnFinished,
-      run.validationFixAttempts,
-      run.maxTestFixAttempts,
-      run.reviewFixAttempts,
-      run.maxReviewFixAttempts,
-      run.issuesRemaining
-    ].join('\\u0001');
-  }
-
-  /* Значение впереди подписи: счётчик читают числом, а не словом. */
+  /* Значение впереди подписи  /* Значение впереди подписи: счётчик читают числом, а не словом. */
   function count(value, label) {
     var box = el('span', 'count');
     box.appendChild(el('span', 'count-value', value));
@@ -1702,13 +1493,7 @@ const script = `
     return box;
   }
 
-  /* Лимит показываем, только когда он известен: «круг 2 из null» хуже, чем
-     «круг 2». */
-  function outOf(value, limit) {
-    return typeof limit === 'number' ? num(value) + ' из ' + num(limit) : num(value);
-  }
-
-  /* Что идёт прямо сейчас. Строка живёт минуты и существует только при живом
+  /* Что идёт прямо сейчас.  /* Что идёт прямо сейчас. Строка живёт минуты и существует только при живом
      прогоне: у брошенного лока сервер эти числа не отдаёт. */
   function renderNow() {
     var run = stateData && stateData.running ? stateData.run : null;
@@ -1744,38 +1529,7 @@ const script = `
     return box;
   }
 
-  /* Счёт задач относится к фазе, пока прогон идёт, и ко всему журналу, когда
-     его нет. Смешивать нельзя: «фаза 2 из 3» рядом с числом за все фазы
-     читалось бы как счёт этой фазы. */
-  function progressScope(totals, phases) {
-    var run = stateData && stateData.running ? stateData.run : null;
-    var planned = (stateData && stateData.plannedPhases) || [];
-    if (run) {
-      var current = phases.filter(function (phase) {
-        return phase.milestone === run.milestone;
-      })[0];
-      return {
-        title:
-          typeof run.phaseIndex === 'number' && run.phaseCount
-            ? 'Фаза ' + (run.phaseIndex + 1) + ' из ' + run.phaseCount
-            : 'Идёт прогон',
-        subtitle: run.milestone || '',
-        counters: current || totals,
-        note: current ? '' : 'Журнал этой фазы пока пуст: числа ниже — за весь журнал.'
-      };
-    }
-    var started = phases.filter(function (phase) {
-      return phase.planned;
-    }).length;
-    return {
-      title: planned.length ? 'Фаз в плане ' + planned.length : 'Прогона нет',
-      subtitle: planned.length ? 'в журнале ' + started : '',
-      counters: totals,
-      note: 'Счёт по всему журналу, а не по одной фазе.'
-    };
-  }
-
-  /* Карточка хода живёт в панели, но обновляется отдельно от неё: остальная
+  /* Карточка хода живёт в панели  /* Карточка хода живёт в панели, но обновляется отдельно от неё: остальная
      вкладка от смены шага не меняется. Узел, вынутый из панели при перерисовке,
      теряет родителя — по нему и видно, что обновлять нечего. */
   function refreshProgress() {
@@ -1791,7 +1545,7 @@ const script = `
   }
 
   function renderProgress(totals, phases) {
-    var scope = progressScope(totals, phases);
+    var scope = progressScope(stateData, totals, phases);
     var counters = scope.counters || {};
     var box = el('div', 'progress');
     var line = el('div', 'progress-line');
@@ -1842,27 +1596,6 @@ const script = `
       bar.appendChild(button);
     });
     return bar;
-  }
-
-  function orderedTasks(rows) {
-    var list = rows.slice();
-    if (taskSort === 'volume') {
-      list.sort(function (left, right) {
-        return right.tokensTotal - left.tokensTotal;
-      });
-      /* Ревью milestone — объём всей фазы, а не задачи: по объёму оно иначе
-         встаёт первой строкой и читается как самая дорогая issue. */
-      return list.filter(isReviewRow).concat(
-        list.filter(function (task) {
-          return !isReviewRow(task);
-        })
-      );
-    }
-    /* Ход работы: по первой попытке. Ревью фазы встаёт в конец само — оно и
-       идёт последним. */
-    return list.sort(function (left, right) {
-      return String(left.firstStartedAt || '').localeCompare(String(right.firstStartedAt || ''));
-    });
   }
 
   function renderPhaseHead(phase) {
@@ -1919,7 +1652,7 @@ const script = `
 
     /* У ревью milestone исход всегда один, а знать надо вердикт: он в reason. */
     var outcomeText =
-      review && task.lastReason ? cut(String(task.lastReason), 40) : outcomeWord(task.lastOutcome);
+      review && task.lastReason ? cut(String(task.lastReason), 40) : outcomeWord(outcomeWords, task.lastOutcome);
     var outcomeCell = el('td', outcomeClass(task.lastOutcome), outcomeText);
     /* Подсказка нужна, только когда добавляет текст: у исхода без своего reason
        сервер подставляет ту же подпись, и всплывающее повторение читалось бы как
@@ -2138,10 +1871,7 @@ const script = `
           return {
             phase: phase,
             rows: tasks.filter(function (task) {
-              /* Сравнение как на сервере: там пустая строка остаётся пустой
-                 строкой, и приведение её к null увело бы такую задачу мимо
-                 своей группы. */
-              return (task.milestone === undefined ? null : task.milestone) === phase.milestone;
+              return taskBelongsToPhase(task, phase);
             })
           };
         })
@@ -2151,7 +1881,7 @@ const script = `
       if (!group.rows.length) return;
       var tbody = el('tbody', 'phase-group');
       if (group.phase) tbody.appendChild(renderPhaseHead(group.phase));
-      orderedTasks(group.rows).forEach(function (task) {
+      orderedTasks(group.rows, taskSort).forEach(function (task) {
         appendTaskRows(tbody, task);
       });
       table.appendChild(tbody);
@@ -3174,6 +2904,11 @@ const script = `
   }, 15000);
 })();
 `;
+
+// Явные переводы строк в склейке обязательны: модуль, кончающийся строчным
+// комментарием, иначе проглотил бы первую строку шаблона.
+const script = ["", "(function () {", "  'use strict';", "", embeddedViewSource, scriptTail].join("\n");
+
 
 export function renderPage(options = {}) {
   const token = options.token ?? "";
