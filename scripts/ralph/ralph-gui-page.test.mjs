@@ -212,7 +212,10 @@ test('the view module source is safe to embed into the page', () => {
   if (!existsSync(viewPath)) return;
   const source = readFileSync(viewPath, 'utf8');
 
+  // Регистр важен HTML-токенизатору, а не JavaScript: </SCRIPT> закрывает тег
+  // так же, как </script>, поэтому сравнение идёт по нижнему регистру.
+  const lowered = source.toLowerCase();
   for (const forbidden of ['</script', '<script', '<!--']) {
-    assert.equal(source.includes(forbidden), false, `в модуле вида нельзя писать ${forbidden}`);
+    assert.equal(lowered.includes(forbidden), false, `в модуле вида нельзя писать ${forbidden}`);
   }
 });
