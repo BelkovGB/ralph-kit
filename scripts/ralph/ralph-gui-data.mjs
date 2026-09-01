@@ -147,9 +147,12 @@ const stepsUsedLinePattern = new RegExp(
   'g',
 );
 // Сессия, убитая лимитом шагов, итога не печатает: circuit breaker обрывает её
-// раньше. Отметки журнала у этой строки нет — сообщение начинается с перевода
-// строки, и приходится узнавать её по тексту.
-const sessionKilledPattern = /(?:^|\n)Circuit breaker: [^\n]*лимит \d+ шагов\./g;
+// раньше. Число шагов берётся из самой строки: breaker срабатывает ровно на
+// лимите, а последний шаг в окне мог остаться от прошлой сессии.
+const sessionKilledPattern = new RegExp(
+  `${logLinePrefix}Circuit breaker: [^\\n]*лимит (\\d+) шагов\\.`,
+  'g',
+);
 
 function emptyProgress() {
   return {
@@ -176,8 +179,12 @@ function readFileTail(filePath, maxBytes) {
     const text = buffer.subarray(0, read).toString('utf8');
     // Хвост начинается посреди строки, а на кириллице — и посреди символа.
     // Первая строка отбрасывается целиком: разобранная наполовину, она дала бы
-    // неверное число.
-    return length < size ? text.slice(text.indexOf('\n') + 1) : text;
+    // неверное число. Перевода строки в окне нет вовсе — целой строки в нём нет
+    // и подавно, а её обрезок дал бы начало строки на случайном месте.
+    if (length >= size) return text;
+    const firstBreak = text.indexOf('\n');
+
+    return firstBreak === -1 ? '' : text.slice(firstBreak + 1);
   } catch {
     return '';
   } finally {
@@ -210,24 +217,22 @@ export function readRunProgress(dependencies = {}) {
   // итерации после конца сессии значит, что новая ещё не началась: шага нет
   // вовсе, и выдавать шаг прошлой сессии за текущий нельзя.
   const marks = [
-    step ? { kind: 'step', index: step.index, match: step } : null,
-    used ? { kind: 'end', index: used.index, match: used } : null,
-    killed ? { kind: 'end', index: killed.index, match: null } : null,
-    iteration ? { kind: 'iteration', index: iteration.index, match: null } : null,
+    step ? { kind: 'step', index: step.index, turn: step[1], limit: step[2] } : null,
+    used ? { kind: 'end', index: used.index, turn: used[1], limit: used[2] } : null,
+    // Оборванная сессия дошла ровно до лимита: breaker срабатывает на нём.
+    killed ? { kind: 'end', index: killed.index, turn: killed[1], limit: killed[1] } : null,
+    iteration ? { kind: 'iteration', index: iteration.index } : null,
   ].filter(Boolean);
   const last = marks.sort((left, right) => left.index - right.index).at(-1) ?? null;
-  const finished = last?.kind === 'end';
-  // У оборванной сессии итогового числа нет: последнее известное — её последний
-  // шаг.
-  const turns = last?.kind === 'step' ? step : finished ? (last.match ?? step) : null;
+  const turns = last?.kind === 'iteration' ? null : last;
 
   return {
     iteration: iteration ? Number(iteration[1]) : null,
     maxIterations: iteration ? Number(iteration[2]) : null,
     issuesRemaining: iteration ? Number(iteration[3]) : null,
-    turn: turns ? Number(turns[1]) : null,
-    turnLimit: turns ? Number(turns[2]) : null,
-    sessionFinished: finished,
+    turn: turns ? Number(turns.turn) : null,
+    turnLimit: turns ? Number(turns.limit) : null,
+    sessionFinished: last?.kind === 'end',
   };
 }
 

@@ -263,11 +263,13 @@ function initializePersistentLog(logPath, metadata = {}) {
   const append = (level, args) => {
     const stamp = new Date().toISOString();
     const text = format(...args).replaceAll(nullCharacter, '');
-    appendFileSync(
-      logPath,
-      `${stamp} ${level} ${collapseRepeatedMessage(firstSeen, stamp, text)}\n`,
-      'utf8',
-    );
+    // Продолжение записи уходит под отступ, поэтому запись начинается с отметки
+    // и только с неё. Без этого строка внутри вывода инструмента — а туда
+    // попадает и хвост самого журнала, который агент читает при разборе
+    // падения, — стоит в файле там же, где строка цикла, и читатель журнала
+    // принимает её за свою.
+    const record = collapseRepeatedMessage(firstSeen, stamp, text).replaceAll('\n', '\n  ');
+    appendFileSync(logPath, `${stamp} ${level} ${record}\n`, 'utf8');
   };
   detailAppend = append;
   console.log = (...args) => {

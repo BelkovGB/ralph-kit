@@ -718,12 +718,71 @@ test('пульт читает номер шага из настоящего run.
     restoreConsole();
   }
 
-  const progress = readRunProgress({ logPath });
+  try {
+    const journal = readFileSync(logPath, 'utf8');
 
-  assert.equal(progress.turn, 2);
-  assert.equal(progress.turnLimit, 7);
-  // Итог сессии напечатан последним: пульт обязан показать её закрытой, а не
-  // держать шаг мёртвой сессии как текущий.
-  assert.equal(progress.sessionFinished, true);
-  rmSync(root, { recursive: true, force: true });
+    // Итог сессии напечатан последним: пульт обязан показать её закрытой, а не
+    // держать шаг мёртвой сессии как текущий.
+    const finished = readRunProgress({ logPath });
+    assert.equal(finished.turn, 2);
+    assert.equal(finished.turnLimit, 7);
+    assert.equal(finished.sessionFinished, true);
+
+    // Тот же журнал, обрезанный до строки итога, — это то, что пульт видит
+    // посреди сессии. Числа взять неоткуда, кроме строки шага, поэтому её
+    // формат держит именно этот ассерт.
+    const livePath = path.join(root, 'live.log');
+    writeFileSync(livePath, journal.slice(0, journal.indexOf('использовано шагов')), 'utf8');
+    const live = readRunProgress({ logPath: livePath });
+    assert.equal(live.turn, 2);
+    assert.equal(live.turnLimit, 7);
+    assert.equal(live.sessionFinished, false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+/**
+ * Вторая половина того же договора: сессию, убитую лимитом шагов, обрывает
+ * circuit breaker, и строки итога у неё нет. Пульт узнаёт конец по его
+ * сообщению, поэтому текст сообщения держит тест.
+ */
+test('пульт узнаёт оборванную сессию по строке circuit breaker', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'ralph-gui-log-'));
+  const logPath = path.join(root, 'run.log');
+  const restoreConsole = initializePersistentLog(logPath, { test: 'gui-breaker' });
+  try {
+    await withFakeClaude(
+      claudeStreamScript([
+        assistantEvent('msg-1', 'one'),
+        assistantEvent('msg-2', 'two'),
+        assistantEvent('msg-3', 'three'),
+        { type: 'result', subtype: 'success', is_error: false, result: 'done' },
+      ]),
+      async () => {
+        await assert.rejects(
+          runClaudeWithTurnLimit(
+            developmentClaudeArguments({
+              developmentModel: 'claude-opus-5',
+              developmentEffort: 'medium',
+            }),
+            { input: 'work', maxTurns: 2, timeoutMs: 60_000, label: 'Claude test' },
+          ),
+          (error) => error.code === 'RALPH_MAX_TURNS',
+        );
+      },
+    );
+  } finally {
+    restoreConsole();
+  }
+
+  try {
+    const progress = readRunProgress({ logPath });
+
+    assert.equal(progress.sessionFinished, true);
+    assert.equal(progress.turn, 2);
+    assert.equal(progress.turnLimit, 2);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

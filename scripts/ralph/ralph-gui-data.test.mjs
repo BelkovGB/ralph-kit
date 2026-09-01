@@ -114,20 +114,60 @@ test('закрытая сессия показывает итоговое чис
 
 test('сессия, убитая лимитом шагов, тоже считается закрытой', () => {
   const root = tree({
-    // Сообщение circuit breaker начинается с перевода строки, поэтому в журнале
-    // отметка времени стоит на пустой строке, а сам текст — на следующей.
+    // Шаг в окне остался от прошлой сессии; число берётся из строки breaker,
+    // потому что он срабатывает ровно на лимите.
     'run.log': [
-      logLine('[claude step 50/50] правка'),
-      logLine('', 'ERROR'),
-      'Circuit breaker: Разработка issue #11 попытался превысить лимит 50 шагов.',
+      logLine('[claude step 7/50] правка'),
+      logLine('Circuit breaker: Ревью issue #11 попытался превысить лимит 30 шагов.', 'ERROR'),
       '',
     ].join('\n'),
   });
 
   const progress = readRunProgress({ runtimeDir: root });
 
-  assert.equal(progress.turn, 50);
+  assert.equal(progress.turn, 30);
+  assert.equal(progress.turnLimit, 30);
   assert.equal(progress.sessionFinished, true);
+});
+
+/**
+ * Журнал ставит отметку только первой строке записи, а продолжение уводит под
+ * отступ. Поэтому отметка и служит границей: хвост журнала, который агент читает
+ * при разборе падения и печатает обратно, своих чисел пульту не навязывает.
+ */
+test('процитированный хвост журнала не подменяет числа прогона', () => {
+  const quoted = [
+    'вывод инструмента: cat .git/ralph-loop/run.log',
+    '  2026-08-31T10:00:00.000Z INFO Итерация 99/99; осталось issues: 0.',
+    '  2026-08-31T10:00:01.000Z INFO [claude step 49/50] чтение файла',
+    '  2026-08-31T10:00:02.000Z INFO claude: использовано шагов 49/50.',
+  ].join('\n');
+  const root = tree({
+    'run.log': [
+      logLine('Итерация 5/20; осталось issues: 8.'),
+      logLine('[claude step 3/50] чтение run.log'),
+      logLine(quoted),
+      '',
+    ].join('\n'),
+  });
+
+  const progress = readRunProgress({ runtimeDir: root });
+
+  assert.equal(progress.iteration, 5);
+  assert.equal(progress.issuesRemaining, 8);
+  assert.equal(progress.turn, 3);
+  assert.equal(progress.sessionFinished, false);
+});
+
+test('окно без единого перевода строки не даёт чисел', () => {
+  const root = tree({
+    'run.log': `${logLine('начало')}\n${'x'.repeat(9_000)}\n`,
+  });
+
+  const progress = readRunProgress({ runtimeDir: root, maxBytes: 4_096 });
+
+  assert.equal(progress.iteration, null);
+  assert.equal(progress.turn, null);
 });
 
 test('между сессиями текущего шага нет', () => {
@@ -359,4 +399,147 @@ test('порядок работы внутри фазы читается по п
 
   assert.equal(byIssue.get(3).firstStartedAt, '2026-09-01T09:00:00.000Z');
   assert.equal(byIssue.get(8).firstStartedAt, '2026-09-01T11:00:00.000Z');
+});
+
+test('пустой журнал прогона и журнал без строк цикла дают пропуск', () => {
+  assert.equal(readRunProgress({ runtimeDir: tree({ 'run.log': '' }) }).turn, null);
+
+  const started = tree({ 'run.log': `${logLine('Ralph process started {"pid":1}')}\n` });
+
+  assert.deepEqual(readRunProgress({ runtimeDir: started }), {
+    iteration: null,
+    maxIterations: null,
+    issuesRemaining: null,
+    turn: null,
+    turnLimit: null,
+    sessionFinished: false,
+  });
+});
+
+test('число фаз берётся из плана, когда состояние его не знает', () => {
+  const root = tree({
+    'run.lock': JSON.stringify({ pid: 4242, mode: '--run' }),
+    // Состояние прошлого формата: `phaseCount` в нём не записан.
+    'state.json': JSON.stringify({ version: 2, phaseIndex: 1, milestone: 'Фаза 2' }),
+    'ralph.config.json': JSON.stringify({
+      phases: [{ milestone: 'Фаза 1' }, { milestone: 'Фаза 2' }, { milestone: 'Фаза 3' }],
+    }),
+  });
+
+  const state = readRunState({
+    runtimeDir: root,
+    configPath: `${root}/ralph.config.json`,
+    isProcessAlive: () => true,
+  });
+
+  assert.equal(state.run.phaseCount, 3);
+});
+
+test('состояние отдаёт заголовок задачи, очередь и признак закрытой сессии', () => {
+  const root = tree({
+    'run.lock': JSON.stringify({ pid: 4242, mode: '--run' }),
+    'state.json': JSON.stringify({
+      version: 2,
+      milestone: 'Фаза 2',
+      issue: { number: 11, title: 'Перенести цены', phase: 'reviewing' },
+    }),
+    'run.log': [
+      logLine('Итерация 12/20; осталось issues: 5.'),
+      logLine('[claude step 27/50] правка'),
+      logLine('Ревью issue #11: использовано шагов 27/50.'),
+      '',
+    ].join('\n'),
+    'ralph.config.json': JSON.stringify({}),
+  });
+
+  const state = readRunState({
+    runtimeDir: root,
+    configPath: `${root}/ralph.config.json`,
+    isProcessAlive: () => true,
+  });
+
+  assert.equal(state.run.issueTitle, 'Перенести цены');
+  assert.equal(state.run.issuesRemaining, 5);
+  assert.equal(state.run.turn, 27);
+  assert.equal(state.run.turnFinished, true);
+});
+
+test('фаза складывает время, сессии и токены своих задач', () => {
+  const root = metricsTree([
+    metricsEntry({ issue: 1, wallMs: 600_000 }),
+    metricsEntry({
+      issue: 2,
+      wallMs: 300_000,
+      agents: [
+        { role: 'development', turns: 3, outputTokens: 200, cacheReadTokens: 1_800 },
+        { role: 'review', turns: 2, outputTokens: 100, cacheReadTokens: 900 },
+      ],
+    }),
+  ]);
+
+  const [phase] = readTaskSpend({
+    metricsPath: `${root}/issue-metrics.json`,
+    configPath: `${root}/ralph.config.json`,
+  }).phases;
+
+  assert.equal(phase.wallMs, 900_000);
+  assert.equal(phase.sessions, 3);
+  assert.equal(phase.sessionsWithoutTokens, 0);
+  // 100 + 900 у первой задачи и 200 + 1800 + 100 + 900 у второй.
+  assert.equal(phase.tokensTotal, 4_000);
+  assert.equal(phase.tokens.cacheRead, 3_600);
+});
+
+test('сессия без счётчиков считается отдельно от объёма фазы', () => {
+  const root = metricsTree([
+    metricsEntry({ issue: 1, agents: [{ role: 'development', turns: 3 }] }),
+  ]);
+
+  const [phase] = readTaskSpend({
+    metricsPath: `${root}/issue-metrics.json`,
+    configPath: `${root}/ralph.config.json`,
+  }).phases;
+
+  assert.equal(phase.sessions, 1);
+  assert.equal(phase.sessionsWithoutTokens, 1);
+  assert.equal(phase.tokensTotal, 0);
+});
+
+test('запись без заголовка и без milestone не ломает свод', () => {
+  const root = metricsTree([
+    { issue: 42, outcome: 'completed', startedAt: '2026-09-01T10:00:00.000Z', wallMs: 60_000 },
+  ]);
+
+  const spend = readTaskSpend({
+    metricsPath: `${root}/issue-metrics.json`,
+    configPath: `${root}/ralph.config.json`,
+  });
+
+  assert.equal(spend.tasks[0].title, null);
+  assert.equal(spend.tasks[0].isBug, false);
+  assert.equal(spend.phases[0].milestone, null);
+  assert.equal(spend.phases[0].planned, false);
+  assert.equal(spend.totals.completed, 1);
+  assert.equal(spend.totals.bugsCompleted, 0);
+});
+
+test('битый журнал расхода отличается от отсутствующего', () => {
+  const broken = tree({ 'issue-metrics.json': '{"version": 1, "entries": [' });
+  const wrongShape = tree({ 'issue-metrics.json': JSON.stringify({ version: 1, entries: {} }) });
+  const missing = tree({});
+
+  const brokenSpend = readTaskSpend({ metricsPath: `${broken}/issue-metrics.json` });
+  const wrongSpend = readTaskSpend({ metricsPath: `${wrongShape}/issue-metrics.json` });
+  const missingSpend = readTaskSpend({ metricsPath: `${missing}/issue-metrics.json` });
+
+  assert.equal(brokenSpend.totals.metricsUnreadable, true);
+  assert.equal(wrongSpend.totals.metricsUnreadable, true);
+  // Файла нет — прогонов не было; это не поломка, и страница говорит другое.
+  assert.equal(missingSpend.totals.metricsUnreadable, false);
+  for (const spend of [brokenSpend, wrongSpend, missingSpend]) {
+    assert.deepEqual(spend.phases, []);
+    assert.deepEqual(spend.tasks, []);
+    assert.equal(spend.totals.completed, 0);
+    assert.equal(spend.totals.tokensTotal, 0);
+  }
 });
