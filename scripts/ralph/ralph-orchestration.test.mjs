@@ -855,3 +855,93 @@ test('пульт читает номер итерации и очередь из
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+/**
+ * Журнал одобренных issues внутри scripts/ralph — ловушка обновления: этот
+ * каталог перезаписывают целиком, и журнал проекта погибает вместе с ним.
+ * INSTALL.md велит перенести файл, а --check обязан напоминать тем, кто
+ * инструкцию не читал.
+ */
+test('printCheck предупреждает о журнале одобрений внутри scripts/ralph', () => {
+  const baseConfig = {
+    maxIterations: 40,
+    maxTurns: 120,
+    maxTestFixAttempts: 3,
+    developmentModel: 'gpt-5.6',
+    rulesFile: '.agents/ralph-rules.md',
+    review: { enabled: false },
+    milestoneReview: { enabled: false },
+  };
+  const check = (approvedIssueSnapshotsFile) => {
+    const lines = [];
+    const originalLog = console.log;
+    console.log = (message) => lines.push(String(message));
+    try {
+      printCheck(
+        { ...baseConfig, approvedIssueSnapshotsFile },
+        'owner/repository',
+        { title: 'Test milestone' },
+        { currentBranch: 'feature/test', clean: true },
+        [],
+        { used: 0, limit: 40, remaining: 40 },
+      );
+    } finally {
+      console.log = originalLog;
+    }
+    return lines.join('\n');
+  };
+
+  const inside = check('scripts/ralph/approved-issues.json');
+  assert.match(inside, /ВНИМАНИЕ: журнал одобренных issues/u);
+  assert.match(inside, /обновление набора перезаписывает/u);
+  assert.match(inside, /INSTALL\.md/u);
+
+  // Перенесённый журнал предупреждения не получает: ловушки больше нет.
+  assert.doesNotMatch(check('.agents/approved-issues.json'), /журнал одобренных issues/u);
+});
+
+/**
+ * Вторая ветка той же строки итерации: продолжение сохранённой issue печатает
+ * «Resume N/M», и пульт обязан разобрать её так же, как «Итерация N/M». Без
+ * этого теста правка текста в ветке Resume гасила бы числа пульта молча.
+ */
+test('пульт читает строку Resume из настоящего run.log', async () => {
+  const root = temporaryProjectTree({});
+  const logPath = path.join(root, 'run.log');
+  let listed = false;
+  const stateStore = persistentState({
+    iterationsUsed: 2,
+    issue: { number: 12, title: 'Сохранённая задача', phase: 'committed', commit: 'abc' },
+  });
+  const restoreConsole = initializePersistentLog(logPath, { test: 'gui-resume' });
+  try {
+    await runContinuousLoop(
+      context({ stateStore }),
+      actions({
+        openIssues: () => {
+          if (listed) return [];
+          listed = true;
+          return [{ number: 12, title: 'Сохранённая задача' }];
+        },
+        issueState: () => 'OPEN',
+        refreshIssue: (_repository, _number, issue) => ({ ...issue, state: 'OPEN' }),
+        runAgentOnIssue: async () => {
+          stateStore.clearIssue();
+          return { completed: true };
+        },
+      }),
+    );
+  } finally {
+    restoreConsole();
+  }
+
+  try {
+    const progress = readRunProgress({ logPath });
+
+    assert.equal(progress.iteration, 2);
+    assert.equal(progress.maxIterations, 5);
+    assert.equal(progress.issuesRemaining, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
