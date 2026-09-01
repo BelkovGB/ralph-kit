@@ -161,3 +161,18 @@ test('the page script parses as JavaScript', { skip: !existsSync(guiPagePath) },
     assert.doesNotThrow(() => new Function(source), `скрипт страницы не разбирается`);
   }
 });
+
+/**
+ * Подписи исходов на странице и на сервере — один список из контракта журнала.
+ * Тест разбирает интерполированный объект из готовой страницы: совпадение
+ * проверяется по тому, что реально уедет в браузер.
+ */
+test('the page outcome words are the journal contract, verbatim', { skip: !existsSync(guiPagePath) }, async () => {
+  const { renderPage } = await import('./ralph-gui-page.mjs');
+  const { outcomeDescriptions } = await import('./ralph-run-metrics.mjs');
+  const page = renderPage({ token: 'test-token' });
+  const match = page.match(/var outcomeWords = (\{[\s\S]*?\});/u);
+
+  assert.notEqual(match, null);
+  assert.deepEqual(JSON.parse(match[1]), outcomeDescriptions);
+});
