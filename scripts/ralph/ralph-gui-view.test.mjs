@@ -56,6 +56,17 @@ test('форматтеры чисел, токенов и времени', { skip
   assert.equal(view.parseDate('не дата'), null);
   assert.equal(view.clock('не дата'), '');
   assert.notEqual(view.parseDate('2026-09-01T10:00:00Z'), null);
+
+  // Ожидания часов и дат строятся теми же toLocale*-вызовами: точная строка
+  // зависит от часового пояса и ICU машины.
+  const moment = new Date('2026-09-01T10:00:00Z');
+  assert.equal(view.clock(moment.toISOString()), moment.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }));
+  assert.notEqual(view.stamp(moment.toISOString()), '');
+  assert.equal(view.stamp('не дата'), '');
+
+  // digits управляет дробной частью, а не только проксирует toLocaleString.
+  assert.match(view.num(2, 2), /^2[,.]00$/u);
+  assert.equal(view.num(2.4), '2');
 });
 
 test('разбивка токенов по видам не теряет и не выдумывает объём', { skip }, async () => {
@@ -155,6 +166,11 @@ test('счёт карточки хода относится к фазе при �
     phases,
   );
   assert.equal(idle.title, 'Фаз в плане 3');
+
+  // Прогон без номера фазы в состоянии: заголовок честно говорит «идёт», а не
+  // выдумывает номер.
+  const unnumbered = view.progressScope({ running: true, run: {} }, totals, phases);
+  assert.equal(unnumbered.title, 'Идёт прогон');
   assert.equal(idle.subtitle, 'в журнале 2');
   assert.equal(idle.counters, totals);
 });
