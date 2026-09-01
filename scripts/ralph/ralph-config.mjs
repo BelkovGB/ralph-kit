@@ -936,7 +936,13 @@ function resolveControlPlanePaths(config) {
 // Модули GUI ставятся не в каждую копию набора. Их отсутствие исключает файл из
 // доверенного набора, а не роняет загрузку конфигурации.
 const optionalTrustedControlFiles = new Set(
-  ['ralph-gui.mjs', 'ralph-gui-data.mjs', 'ralph-gui-fields.mjs', 'ralph-gui-page.mjs'].map((name) =>
+  [
+    'ralph-gui.mjs',
+    'ralph-gui-data.mjs',
+    'ralph-gui-fields.mjs',
+    'ralph-gui-page.mjs',
+    'ralph-gui-view.mjs',
+  ].map((name) =>
     path.join(scriptDirectory, name),
   ),
 );
@@ -965,6 +971,7 @@ function collectTrustedControlFileHashes(config) {
     path.join(scriptDirectory, 'ralph-gui-data.mjs'),
     path.join(scriptDirectory, 'ralph-gui-fields.mjs'),
     path.join(scriptDirectory, 'ralph-gui-page.mjs'),
+    path.join(scriptDirectory, 'ralph-gui-view.mjs'),
     path.join(scriptDirectory, 'ralph-issue-contract.mjs'),
     path.join(scriptDirectory, 'ralph-loop.mjs'),
     path.join(scriptDirectory, 'ralph-milestone-review.mjs'),
