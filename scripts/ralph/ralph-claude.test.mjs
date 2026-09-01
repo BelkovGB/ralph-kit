@@ -22,7 +22,8 @@ import {
   sessionFailureCode,
 } from './ralph-claude-session.mjs';
 import { addUsage } from './ralph-agent-session.mjs';
-import { withFakeClaude } from './ralph-test-support.mjs';
+import { readRunProgress } from './ralph-gui-data.mjs';
+import { temporaryProjectTree, withFakeClaude } from './ralph-test-support.mjs';
 
 const schemaPath = fileURLToPath(new URL('../../.agents/review.schema.json', import.meta.url));
 
@@ -680,4 +681,45 @@ test('403 «Request not allowed» повторяется, 401 остаётся �
 
   // Обычный сбой сессии кода не получает и обрабатывается как всегда.
   assert.equal(sessionFailureCode({}, 'Something else went wrong'), null);
+});
+
+/**
+ * Договор с пультом: номер шага печатает сессия, а разбирает
+ * `ralph-gui-data.mjs`. Живого счётчика шагов больше взять неоткуда —
+ * телеметрию CLI присылает только в конце, — поэтому формат строки держит тест.
+ */
+test('пульт читает номер шага из того, что печатает сессия', async () => {
+  const lines = [];
+  const originalLog = console.log;
+  console.log = (message) => lines.push(String(message));
+  try {
+    await withFakeClaude(
+      claudeStreamScript([
+        assistantEvent('msg-1', 'one'),
+        assistantEvent('msg-2', 'two'),
+        { type: 'result', subtype: 'success', is_error: false, result: 'done' },
+      ]),
+      async () => {
+        await runClaudeWithTurnLimit(
+          developmentClaudeArguments({
+            developmentModel: 'claude-opus-5',
+            developmentEffort: 'medium',
+          }),
+          { input: 'work', maxTurns: 7, timeoutMs: 60_000, label: 'Claude test' },
+        );
+      },
+    );
+  } finally {
+    console.log = originalLog;
+  }
+
+  const progress = readRunProgress({
+    runtimeDir: temporaryProjectTree({ 'run.log': `${lines.join('\n')}\n` }),
+  });
+
+  assert.equal(progress.turn, 2);
+  assert.equal(progress.turnLimit, 7);
+  // Итог сессии напечатан последним: пульт обязан показать её закрытой, а не
+  // держать шаг мёртвой сессии как текущий.
+  assert.equal(progress.sessionFinished, true);
 });

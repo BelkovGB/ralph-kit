@@ -276,6 +276,9 @@ function handleState(response) {
     running: Boolean(state.running),
     run: state.run ?? null,
     staleLock: Boolean(state.staleLock),
+    // План фаз читается из конфигурации и живёт дольше прогона: страница
+    // показывает «фаза 2 из 3» и когда состояния на диске уже нет.
+    plannedPhases: state.plannedPhases ?? [],
   });
 }
 
@@ -292,7 +295,12 @@ function handleTasks(response) {
     }))
     .sort((first, second) => (second.tokensTotal ?? 0) - (first.tokensTotal ?? 0));
 
-  sendJson(response, 200, { totals: spend.totals, period: spend.period, tasks });
+  sendJson(response, 200, {
+    totals: spend.totals,
+    period: spend.period,
+    phases: spend.phases ?? [],
+    tasks,
+  });
 }
 
 function handleConfigRead(response) {

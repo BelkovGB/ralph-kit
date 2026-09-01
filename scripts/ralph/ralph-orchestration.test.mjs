@@ -3,8 +3,9 @@ import test from 'node:test';
 
 import { executeMode, iterationBudget, printCheck, runContinuousLoop } from './ralph-loop.mjs';
 import { runCodexWithTurnLimit } from './ralph-codex-session.mjs';
+import { readRunProgress } from './ralph-gui-data.mjs';
 import { run } from './ralph-process-runner.mjs';
-import { actions, context, withFakeCodex } from './ralph-test-support.mjs';
+import { actions, context, temporaryProjectTree, withFakeCodex } from './ralph-test-support.mjs';
 
 function persistentState({ iterationsUsed = 0, issue = null } = {}) {
   let used = iterationsUsed;
@@ -809,4 +810,43 @@ test('milestone не закрывается, пока есть отложенн�
   assert.equal(closed, false, 'milestone не должен закрываться с незавершённой задачей');
   assert.equal(result.verdict, 'parked');
   assert.deepEqual(result.parkedIssues, [97]);
+});
+
+/**
+ * Договор с пультом: строку про итерацию печатает цикл, а разбирает
+ * `ralph-gui-data.mjs`. Тест проводит через разбор именно то, что цикл
+ * напечатал, поэтому правка текста роняет его здесь, а не гасит числа на
+ * странице молча.
+ */
+test('пульт читает номер итерации и очередь из того, что печатает цикл', async () => {
+  const lines = [];
+  const originalLog = console.log;
+  console.log = (message) => lines.push(String(message));
+  let listed = false;
+  try {
+    await runContinuousLoop(
+      context(),
+      actions({
+        openIssues: () => {
+          if (listed) return [];
+          listed = true;
+          return [
+            { number: 12, title: 'Первая' },
+            { number: 13, title: 'Вторая' },
+          ];
+        },
+        runAgentOnIssue: async () => ({ completed: true }),
+      }),
+    );
+  } finally {
+    console.log = originalLog;
+  }
+
+  const progress = readRunProgress({
+    runtimeDir: temporaryProjectTree({ 'run.log': `${lines.join('\n')}\n` }),
+  });
+
+  assert.equal(progress.iteration, 1);
+  assert.equal(progress.maxIterations, 5);
+  assert.equal(progress.issuesRemaining, 2);
 });
