@@ -33,7 +33,10 @@ function isTransientFailure(error) {
   ) {
     return true;
   }
-  return /(?:\b408\b|\b429\b|\b500\b|\b502\b|\b503\b|\b504\b|timed?\s*out|connection reset|could not resolve host|temporary failure|tls handshake|secondary rate limit|\beof\b|remote end hung up)/i.test(
+  // «no server is currently available» — ответ gh при кратком отказе GitHub;
+  // код возврата при этом 1, без HTTP-статуса, и только текст отличает этот
+  // сбой от настоящей ошибки запроса.
+  return /(?:\b408\b|\b429\b|\b500\b|\b502\b|\b503\b|\b504\b|timed?\s*out|connection reset|could not resolve host|temporary failure|tls handshake|secondary rate limit|\beof\b|remote end hung up|no server is currently available)/i.test(
     text,
   );
 }

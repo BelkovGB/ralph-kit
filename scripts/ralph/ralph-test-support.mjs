@@ -1,4 +1,12 @@
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,12 +17,31 @@ import { loadConfig, prepareConfig, trustedFileHash } from './ralph-config.mjs';
  * Общие фикстуры тестов Ralph: те, которыми пользуется больше одного файла.
  */
 
+/**
+ * Каталог git этой копии репозитория.
+ *
+ * В worktree `.git` — файл со строкой `gitdir: <путь>`, и mkdir внутри него
+ * роняет прогон на импорте этого модуля. Путь из файла ведёт в приватный
+ * каталог worktree внутри основного `.git`: он исполняемый и невидимый для
+ * `git ls-files`, как и обычный `.git`. Когда `.git` нет вовсе — так выглядит
+ * workspace контейнера проверок, — возвращается путь для создания.
+ */
+export function repositoryGitDirectory(root) {
+  const dotGit = path.join(root, '.git');
+  const stats = statSync(dotGit, { throwIfNoEntry: false });
+  if (!stats?.isFile()) return dotGit;
+  const pointer = /^gitdir: (.+)$/m.exec(readFileSync(dotGit, 'utf8'));
+
+  return pointer ? path.resolve(root, pointer[1].trim()) : dotGit;
+}
+
 // Validation deliberately mounts /tmp with noexec, so fake executables cannot
 // live there. `.git` is on the exec-mounted workspace, exists in every clone
 // and in the container snapshot, and `git ls-files` never lists it — so its
 // contents cannot leak into a validation snapshot.
-export const executableTempDirectory = fileURLToPath(
-  new URL('../../.git/ralph-test/', import.meta.url),
+export const executableTempDirectory = path.join(
+  repositoryGitDirectory(fileURLToPath(new URL('../..', import.meta.url))),
+  'ralph-test',
 );
 mkdirSync(executableTempDirectory, { recursive: true });
 
