@@ -1,14 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import {
-  chmodSync,
-  copyFileSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -16,7 +8,7 @@ import test from 'node:test';
 import { runAgentOnIssue } from './ralph-loop.mjs';
 import { loadConfig } from './ralph-config.mjs';
 import { setActiveStateStore } from './ralph-state-store.mjs';
-import { withFakeCodex } from './ralph-test-support.mjs';
+import { withFakeCodex, withFakeGh } from './ralph-test-support.mjs';
 
 /**
  * Жизненный цикл issue целиком, in-process: commit найден → push → ревью →
@@ -26,8 +18,9 @@ import { withFakeCodex } from './ralph-test-support.mjs';
  * Устройство стенда: git-команды цикла уводятся в одноразовый репозиторий
  * переменными GIT_DIR и GIT_WORK_TREE — cwd команд остаётся прежним, поэтому
  * годится любой путь без относительных pathspec; путь со staging сюда не
- * входит и остаётся за будущим швом. `gh` подменяется скриптом на PATH, который
- * ведёт журнал вызовов и состояние issue в файлах. Ревью-сессию обслуживает
+ * входит и остаётся за будущим швом. `gh` подменяет withFakeGh из
+ * ralph-test-support: логика этого стенда ведёт журнал вызовов и состояние
+ * issue в файлах. Ревью-сессию обслуживает
  * поддельный codex: приглашение ревью он узнаёт по пути файла результата в
  * своих аргументах.
  */
@@ -91,38 +84,24 @@ function createFakeGh(root) {
   );
   writeFileSync(callsPath, '', 'utf8');
 
-  // Логика подделки — CommonJS, потому что на Windows она подключается через
-  // NODE_OPTIONS --require: цикл запускает `gh.exe`, найденный по PATH, и
-  // текстовый шим тут не годится — CreateProcess исполняет только настоящие
-  // exe. Поэтому gh.exe — копия node.exe, а поведение задаёт preload, который
-  // узнаёт себя по имени исполняемого файла. На POSIX достаточно shell-шима.
-  const logicPath = path.join(directory, 'fake-gh-logic.cjs');
-  writeFileSync(
-    logicPath,
-    `
-const { appendFileSync, readFileSync, writeFileSync } = require('node:fs');
-const nodePath = require('node:path');
-const executable = nodePath.basename(process.execPath).toLowerCase();
-const invokedAsGh = executable === 'gh.exe' || executable === 'gh';
-const invokedAsScript = process.argv[1] === __filename;
-if (invokedAsGh || invokedAsScript) {
+  const logicBody = `
+  const { appendFileSync, readFileSync, writeFileSync } = require('node:fs');
   const statePath = ${JSON.stringify(statePath)};
   const callsPath = ${JSON.stringify(callsPath)};
-  const args = process.argv.slice(invokedAsScript ? 2 : 1);
   let method = 'GET';
   const positional = [];
-  for (let i = 0; i < args.length; i += 1) {
-    if (args[i] === '--method') method = args[++i];
-    else if (args[i] === '--input') i += 1;
-    else if (args[i] === '-F' || args[i] === '-f') i += 1;
-    else positional.push(args[i]);
+  for (let i = 0; i < ghArguments.length; i += 1) {
+    if (ghArguments[i] === '--method') method = ghArguments[++i];
+    else if (ghArguments[i] === '--input') i += 1;
+    else if (ghArguments[i] === '-F' || ghArguments[i] === '-f') i += 1;
+    else positional.push(ghArguments[i]);
   }
   const resource = positional[1] ?? '';
   let input = '';
   try {
     input = readFileSync(0, 'utf8');
   } catch {}
-  appendFileSync(callsPath, JSON.stringify({ method, resource, input }) + '\\n', 'utf8');
+  appendFileSync(callsPath, JSON.stringify({ method, resource, input }) + String.fromCharCode(10), 'utf8');
   const state = JSON.parse(readFileSync(statePath, 'utf8'));
   if (method === 'PATCH') {
     Object.assign(state, JSON.parse(input || '{}'));
@@ -135,25 +114,10 @@ if (invokedAsGh || invokedAsScript) {
   } else {
     process.stdout.write(JSON.stringify(state));
   }
-  process.exit(0);
-}
-`,
-    'utf8',
-  );
-
-  if (process.platform === 'win32') {
-    copyFileSync(process.execPath, path.join(directory, 'gh.exe'));
-  } else {
-    const executablePath = path.join(directory, 'gh');
-    writeFileSync(executablePath, `#!/bin/sh
-exec node "${logicPath}" "$@"
-`, 'utf8');
-    chmodSync(executablePath, 0o755);
-  }
+`;
 
   return {
-    directory,
-    logicPath,
+    logicBody,
     calls: () =>
       readFileSync(callsPath, 'utf8')
         .split(/\r?\n/u)
@@ -258,8 +222,6 @@ async function withLifecycleStand(branch, verdictJson, operation) {
   const savedEnv = {
     GIT_DIR: process.env.GIT_DIR,
     GIT_WORK_TREE: process.env.GIT_WORK_TREE,
-    NODE_OPTIONS: process.env.NODE_OPTIONS,
-    PATH: null,
   };
   const restoreVariable = (name) => {
     if (savedEnv[name] === undefined) delete process.env[name];
@@ -267,29 +229,21 @@ async function withLifecycleStand(branch, verdictJson, operation) {
   };
 
   try {
-    await withFakeCodex(
-      codexSource(reviewOutputPath, verdictJson, repository.commit),
-      async () => {
-        savedEnv.PATH = process.env.PATH;
-        process.env.PATH = `${gh.directory}${path.delimiter}${process.env.PATH}`;
-        process.env.GIT_DIR = path.join(repository.workTree, '.git');
-        process.env.GIT_WORK_TREE = repository.workTree;
-        if (process.platform === 'win32') {
-          // gh.exe — копия node.exe; поведение ему выдаёт preload, который
-          // в любом другом процессе node узнаёт чужое имя и молчит.
-          process.env.NODE_OPTIONS =
-            `${savedEnv.NODE_OPTIONS ?? ''} --require ${gh.logicPath}`.trim();
-        }
-        try {
-          await operation({ repository, gh, reviewOutputPath });
-        } finally {
-          process.env.PATH = savedEnv.PATH;
-          restoreVariable('GIT_DIR');
-          restoreVariable('GIT_WORK_TREE');
-          restoreVariable('NODE_OPTIONS');
-        }
-      },
-    );
+    await withFakeGh(gh.logicBody, async () => {
+      await withFakeCodex(
+        codexSource(reviewOutputPath, verdictJson, repository.commit),
+        async () => {
+          process.env.GIT_DIR = path.join(repository.workTree, '.git');
+          process.env.GIT_WORK_TREE = repository.workTree;
+          try {
+            await operation({ repository, gh, reviewOutputPath });
+          } finally {
+            restoreVariable('GIT_DIR');
+            restoreVariable('GIT_WORK_TREE');
+          }
+        },
+      );
+    });
   } finally {
     setActiveStateStore(null);
     rmSync(repository.root, { recursive: true, force: true });
