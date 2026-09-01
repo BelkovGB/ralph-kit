@@ -293,5 +293,33 @@ test('write access blockers are recognized as infrastructure failures', () => {
     ),
     true,
   );
+  assert.equal(agentReportedWriteAccessFailure('Write access denied.'), true);
+  assert.equal(agentReportedWriteAccessFailure('Доступ к записи запрещён.'), true);
+  assert.equal(
+    agentReportedWriteAccessFailure(
+      'Контролёру доступ запрещён до вызова сервиса.',
+    ),
+    false,
+  );
   assert.equal(agentReportedWriteAccessFailure('Реализация и тесты завершены.'), false);
+
+  // Итоговое сообщение агента объясняет, чего он не сделал, теми же словами,
+  // что и отказ песочницы. Совпадение обрывает прогон, поэтому такие фразы
+  // отказом не считаются.
+  assert.equal(
+    agentReportedWriteAccessFailure(
+      'Тест на таймаут написать не смог: cannot write a fake clock without a new dependency.',
+    ),
+    false,
+  );
+  assert.equal(
+    agentReportedWriteAccessFailure(
+      'Не могу изменить файл миграции: он генерируется сборкой, правку внёс в шаблон.',
+    ),
+    false,
+  );
+  assert.equal(
+    agentReportedWriteAccessFailure('Unable to edit the generated schema, so I regenerated it.'),
+    false,
+  );
 });

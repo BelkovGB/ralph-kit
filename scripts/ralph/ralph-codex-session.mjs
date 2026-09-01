@@ -118,10 +118,24 @@ export function reviewCodexArguments(role) {
   ];
 }
 
+/**
+ * Совпадение обрывает весь прогон кодом `RALPH_AGENT_WRITE_ACCESS`, поэтому
+ * шаблоны узкие: каждый требует слова про запись или файловую систему рядом с
+ * отказом. «Не могу изменить файл» и «cannot write a test» — обычные фразы
+ * итогового сообщения агента, а не отказ песочницы, и ложное совпадение стоило
+ * бы ночного прогона целиком. Пропущенный отказ дешевле: сессия закончится
+ * пустым diff, и его разберёт обычный путь.
+ */
 export function agentReportedWriteAccessFailure(message) {
-  return /(?:file system|filesystem|файловая система).{0,80}(?:read[- ]only|только для чтения)|(?:access|доступ).{0,40}(?:denied|запрещ[её]н)|(?:EPERM|EACCES).{0,80}(?:write|запис)/is.test(
-    String(message ?? ''),
-  );
+  const text = String(message ?? '');
+  const patterns = [
+    /(?:file system|filesystem|файловая система).{0,80}(?:read[- ]only|только для чтения)/is,
+    /(?:write access|access to write|доступ (?:к|на) запис[ьи]).{0,40}(?:denied|запрещ[её]н)/is,
+    /(?:denied|запрещ[её]н).{0,40}(?:write access|access to write|доступ (?:к|на) запис[ьи])/is,
+    /(?:EPERM|EACCES).{0,80}(?:write|writing|запис)/is,
+  ];
+
+  return patterns.some((pattern) => pattern.test(text));
 }
 
 function numberOrNull(value) {

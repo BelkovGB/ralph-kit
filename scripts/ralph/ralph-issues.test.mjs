@@ -564,6 +564,18 @@ test('every project-local SKILL.md exposes loadable frontmatter', () => {
   assert.doesNotThrow(() => verifyAgentSkills());
 });
 
+test('relative references from project-local skills exist', () => {
+  for (const file of agentSkillFiles()) {
+    const content = readFileSync(file, 'utf8');
+    for (const match of content.matchAll(
+      /\]\((references\/[^)#?]+)(?:#[^)]+)?\)/gu,
+    )) {
+      const target = path.resolve(path.dirname(file), match[1]);
+      assert.equal(existsSync(target), true, `${file}: отсутствует ${match[1]}`);
+    }
+  }
+});
+
 test('a skill body in .agents is mirrored by a link in .claude', () => {
   // Claude Code loads skills from `.claude/skills`, Codex from
   // `.agents/skills`. A skill that lives only in `.claude` is legitimate: it
