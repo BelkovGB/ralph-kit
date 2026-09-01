@@ -8,6 +8,10 @@ import {
   appendIssueMetrics,
   beginIssueMetrics,
   currentIssueMetrics,
+  describeOutcome,
+  incompleteIssueOutcome,
+  incompleteIssueOutcomes,
+  outcomeDescriptions,
   finishIssueMetrics,
   formatIssueMetrics,
   recordAgentTelemetry,
@@ -261,4 +265,47 @@ test('короткие стадии печатаются в секундах, д
   assert.match(line, /45s — validation 8s ×3/);
   // Ни одной сессии не было: объём печатать нечего, и нулей быть не должно.
   assert.doesNotMatch(line, /вход/);
+});
+
+/**
+ * Полнота таксономии: каждый слаг, который цикл способен записать в журнал,
+ * обязан иметь подпись. Незнакомый слаг страница показывает как есть — это
+ * защита от нового кода, а не разрешение выпускать код без подписи.
+ */
+test('у каждого исхода, который пишет цикл, есть подпись словами', () => {
+  const writtenByLoop = [
+    // Литералы из ralph-loop.mjs: успех, ревью milestone, остановка бюджета,
+    // обрыв без кода ошибки.
+    'completed',
+    'milestone-review',
+    'iteration-limit',
+    'aborted',
+    // Коды исключений, которыми попытка попадает в журнал.
+    'RALPH_VALIDATION_FAILED',
+    'RALPH_MAX_TURNS',
+    'RALPH_AGENT_TIMEOUT',
+    'RALPH_AGENT_AUTH',
+    'RALPH_AGENT_WRITE_ACCESS',
+    'RALPH_UNTRUSTED_ISSUE',
+    'RALPH_COMMAND_FAILED',
+    'RALPH_COMMAND_NOT_FOUND',
+    'RALPH_COMMAND_TIMEOUT',
+    'RALPH_COMMAND_TERMINATED',
+    ...incompleteIssueOutcomes.map(([, outcome]) => outcome),
+  ];
+
+  for (const outcome of writtenByLoop) {
+    assert.equal(
+      typeof outcomeDescriptions[outcome],
+      'string',
+      `исход ${outcome} остался без подписи`,
+    );
+    assert.equal(describeOutcome(outcome), outcomeDescriptions[outcome]);
+  }
+
+  // Классификация незавершённой попытки отвечает слагом из той же таблицы.
+  assert.equal(incompleteIssueOutcome({ parked: true }).outcome, 'review-parked');
+  assert.equal(incompleteIssueOutcome({}).outcome, 'review-failed');
+  assert.equal(describeOutcome(''), 'итог неизвестен');
+  assert.equal(describeOutcome('something-new'), 'something-new');
 });
