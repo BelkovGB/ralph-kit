@@ -381,6 +381,92 @@ test('host validation names the command that failed', () => {
   );
 });
 
+test('host: подделка доверенного control-файла останавливает проверки до первой команды', () => {
+  const calls = [];
+  const orchestratorPath = fileURLToPath(new URL('./ralph-loop.mjs', import.meta.url));
+  const tamperedHashes = new Map(hostValidationConfig().trustedControlFileHashes);
+  assert.equal(tamperedHashes.has(orchestratorPath), true);
+  tamperedHashes.set(orchestratorPath, 'not-the-real-hash');
+
+  assert.throws(
+    () =>
+      runConfiguredScripts(
+        hostValidationConfig({ trustedControlFileHashes: tamperedHashes }),
+        ['pnpm check'],
+        'Validation',
+        { run: unchangedHostTreeRun(calls) },
+      ),
+    /изменила доверенный файл/u,
+  );
+  assert.deepEqual(calls, [], 'ни одна команда проверки не выполняется после подделки');
+});
+
+test('host: изменённый набор файлов инструкций останавливает проверки до первой команды', () => {
+  const calls = [];
+
+  assert.throws(
+    () =>
+      runConfiguredScripts(
+        hostValidationConfig({ agentInstructionFiles: [] }),
+        ['pnpm check'],
+        'Validation',
+        { run: unchangedHostTreeRun(calls) },
+      ),
+    /изменила набор доверенных файлов инструкций/u,
+  );
+  assert.deepEqual(calls, []);
+});
+
+test('host: общий бюджет прогона обрывает набор своим кодом, а не провалом проверки', () => {
+  // Бюджет считается от реальных часов внутри runner, подменить их нечем,
+  // поэтому поддельная команда честно занимает время: 40 мс против бюджета
+  // в 25 мс делают исход детерминированным на любой машине.
+  const budgetMs = 25;
+  const calls = [];
+  const execute = (command, args, options) => {
+    if (command === 'git') {
+      return { status: 0, stdout: 'scripts/ralph/README.md\0', stderr: '' };
+    }
+    calls.push({ command, args, options });
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 40);
+    return { status: 0, stdout: '', stderr: '' };
+  };
+
+  assert.throws(
+    () =>
+      runConfiguredScripts(
+        hostValidationConfig({ runtime: { validationRunTimeoutMs: budgetMs } }),
+        ['pnpm check'],
+        'Validation',
+        { run: execute },
+      ),
+    (error) => {
+      assert.equal(error.code, 'RALPH_COMMAND_TIMEOUT');
+      assert.match(error.message, new RegExp(`общий лимит ${budgetMs} ms исчерпан`, 'u'));
+      assert.equal(error.script, 'pnpm check');
+      return true;
+    },
+  );
+  assert.deepEqual(
+    calls.map((call) => call.args.at(-1)),
+    ['pnpm db:migrate'],
+    'команда после исчерпания бюджета не запускается',
+  );
+});
+
+test('host: пустой набор команд не берёт снимок дерева и не трогает доверенные файлы', () => {
+  const calls = [];
+  const result = runConfiguredScripts(
+    hostValidationConfig({ preflightScripts: [], trustedControlFileHashes: new Map() }),
+    [],
+    'Validation',
+    { run: unchangedHostTreeRun(calls) },
+  );
+
+  assert.deepEqual(result, { ran: false, attested: false, scripts: [] });
+  assert.deepEqual(calls, []);
+});
+
 test('host validation reports both a failed command and its file mutation', () => {
   let gitCalls = 0;
   const commandFailure = Object.assign(new Error('native command failed'), {
