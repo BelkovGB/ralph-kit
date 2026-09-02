@@ -27,8 +27,8 @@ contracts. Keep it short: an agent reads this file on every task.
   misleading one does not.
 - One name, one behaviour. Two same-named functions with different output are a
   silent bug waiting for the next person who deduplicates them.
-- Name the unit or the scope whenever more than one exists — `validationTimeoutMs`
-  per container next to `validationRunTimeoutMs` per run.
+- Name the unit or the scope whenever more than one exists — `requestTimeoutMs`
+  per call next to `sessionTimeoutMs` per session.
 - A shared type belongs to the contract module, not to the component that first
   needed it.
 - Do not combine a redesign, a behaviour change and a structural extraction in
