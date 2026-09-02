@@ -396,7 +396,6 @@ function normalizeStages(stages) {
         {
           ms: numberOrZero(stage.ms),
           runs: numberOrZero(stage.runs),
-          attested: stage.attested ?? null,
         },
       ];
     }),

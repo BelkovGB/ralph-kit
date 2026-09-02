@@ -39,12 +39,11 @@ test('startStage складывает время повторных прогон
   withMetricsFile((metricsPath) => {
     beginIssueMetrics({ issue: 7 }, { now: clockOf([0, 100, 400, 1000, 1600, 1600]) });
     startStage('validation')();
-    startStage('validation')({ attested: true });
+    startStage('validation')();
     const record = finishIssueMetrics({ outcome: 'completed' }, { metricsPath });
 
     assert.equal(record.stages.validation.runs, 2);
     assert.equal(record.stages.validation.ms, 300 + 600);
-    assert.equal(record.stages.validation.attested, true);
   });
 });
 
@@ -148,7 +147,7 @@ test('строка для оператора считает токены, а н�
     wallMs: 1_339_000,
     stages: {
       implementation: { ms: 621_000, runs: 1 },
-      validation: { ms: 172_000, runs: 1, attested: true },
+      validation: { ms: 172_000, runs: 1 },
       review: { ms: 533_000, runs: 1 },
     },
     totals: {
@@ -169,7 +168,7 @@ test('строка для оператора считает токены, а н�
   });
 
   assert.match(line, /Стоимость issue #57: 22m19s/);
-  assert.match(line, /validation 2m52s, из attestation/);
+  assert.match(line, /validation 2m52s/);
   assert.match(line, /шагов 88, вызовов инструментов 34/);
   // Строка называет только то, что прислал CLI: счётчики по видам обращения.
   // Взвешенной суммы в ней нет — веса пришлось бы подобрать, а подобранное

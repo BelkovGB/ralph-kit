@@ -11,8 +11,8 @@ import { readJsonFile, writeJsonAtomic } from './ralph-runtime.mjs';
  * единственном случае, ради которого их и собирают.
  *
  * Каталог `.git/ralph-loop` выбран потому, что он невидим для
- * `git status --porcelain` и не попадает в snapshot валидации: запись метрик не
- * может изменить проверяемое дерево и не может сдвинуть attestation.
+ * `git status --porcelain`: запись метрик не может изменить проверяемое
+ * дерево и не может остановить проверки как его правка.
  */
 
 const metricsProjectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -267,8 +267,7 @@ export function formatIssueMetrics(record) {
   const stages = Object.entries(record.stages)
     .map(([name, stage]) => {
       const runs = stage.runs > 1 ? ` ×${stage.runs}` : '';
-      const attested = stage.attested === true ? ', из attestation' : '';
-      return `${name} ${formatDuration(stage.ms)}${runs}${attested}`;
+      return `${name} ${formatDuration(stage.ms)}${runs}`;
     })
     .join(', ');
   const { turns, toolResults } = record.totals;

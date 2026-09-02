@@ -24,8 +24,8 @@ import { loadConfig, prepareConfig, trustedFileHash } from './ralph-config.mjs';
  * В worktree `.git` — файл со строкой `gitdir: <путь>`, и mkdir внутри него
  * роняет прогон на импорте этого модуля. Путь из файла ведёт в приватный
  * каталог worktree внутри основного `.git`: он исполняемый и невидимый для
- * `git ls-files`, как и обычный `.git`. Когда `.git` нет вовсе — так выглядит
- * workspace контейнера проверок, — возвращается путь для создания.
+ * `git ls-files`, как и обычный `.git`. Когда `.git` нет вовсе, возвращается
+ * путь для создания.
  */
 export function repositoryGitDirectory(root) {
   const dotGit = path.join(root, '.git');
@@ -36,10 +36,8 @@ export function repositoryGitDirectory(root) {
   return pointer ? path.resolve(root, pointer[1].trim()) : dotGit;
 }
 
-// Validation deliberately mounts /tmp with noexec, so fake executables cannot
-// live there. `.git` is on the exec-mounted workspace, exists in every clone
-// and in the container snapshot, and `git ls-files` never lists it — so its
-// contents cannot leak into a validation snapshot.
+// Fake executables live under `.git`: it exists in every clone, `git ls-files`
+// never lists it, and a temp directory on a noexec mount could not run them.
 export const executableTempDirectory = path.join(
   repositoryGitDirectory(fileURLToPath(new URL('../..', import.meta.url))),
   'ralph-test',

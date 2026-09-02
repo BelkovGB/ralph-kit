@@ -14,7 +14,7 @@ import { agentClis, reasoningEffortsFor } from './ralph-agent-backends.mjs';
 /**
  * Чтение `ralph.config.json`, его проверка и сбор доверенного control plane.
  *
- * `loadConfig` набирает значения по умолчанию для контейнера и review после
+ * `loadConfig` набирает значения по умолчанию для проверок и review после
  * чтения snapshots: на этом порядке держатся сообщения об ошибках.
  */
 
@@ -34,21 +34,6 @@ const skillsDirectories = [
 ];
 
 export const configPath = path.join(projectRoot, '.agents', 'ralph.config.json');
-
-/**
- * Тег образа валидации по умолчанию выводится из имени каталога репозитория:
- * общий тег на машине означал бы, что второй проект перезаписывает образ
- * первого, и валидация шла бы в чужом окружении.
- */
-function defaultValidationImage() {
-  const name = path
-    .basename(projectRoot)
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, '-')
-    .replace(/^[^a-z0-9]+/, '')
-    .replace(/[^a-z0-9]+$/, '');
-  return `${name === '' ? 'ralph' : name}-ralph-validation:latest`;
-}
 
 export function parseJson(value, source) {
   try {
@@ -371,12 +356,29 @@ const configFields = new Set([
   'syncBaseBranch',
   'trustedIssueAuthors',
   'validationArtifactPaths',
-  'validationContainer',
-  'validationDependencyPaths',
   'validationEnvironment',
-  'validationMode',
   'validationScripts',
 ]);
+
+/**
+ * Ключи контейнерного режима, удалённого в 2.0.0.
+ *
+ * Названы отдельно от общего отказа по неизвестному полю: без имени выпуска
+ * оператор читает такой отказ как опечатку и ищет, куда делся рабочий ключ.
+ */
+const removedContainerFields = ['validationMode', 'validationContainer', 'validationDependencyPaths'];
+
+function rejectRemovedContainerFields(config) {
+  if (typeof config !== 'object' || config === null || Array.isArray(config)) return;
+  const present = removedContainerFields.filter((field) => field in config);
+  if (present.length === 0) return;
+
+  fail(
+    `Контейнерный режим проверок удалён в 2.0.0: проверки идут командами оболочки ` +
+      `в рабочей папке проекта. Удалите ключи ${present.join(', ')} из ${configPath} — ` +
+      'на вкладке «Настройки» пульта они лежат в блоке «Не распознано» с кнопкой «Удалить».',
+  );
+}
 
 function rejectUnknownFields(config) {
   if (typeof config !== 'object' || config === null || Array.isArray(config)) {
@@ -434,8 +436,8 @@ function applyLoopDefaults(config) {
   config.runtime ??= {};
   // Значения живут в ralph-process-runner.mjs: тот же набор действует до
   // loadConfig, и раздвоение дефолтов расходилось бы молча.
-  // validationTimeoutMs — бюджет docker build, validationRunTimeoutMs — бюджет
-  // прогона всего набора в одном контейнере.
+  // validationTimeoutMs — бюджет git-коммита, validationRunTimeoutMs — бюджет
+  // всего набора команд проверки.
   for (const [field, value] of Object.entries(defaultRuntimeSettings)) {
     config.runtime[field] ??= value;
   }
@@ -524,29 +526,11 @@ function readApprovedIssueSnapshots(config) {
 }
 
 function applyValidationAndReviewDefaults(config) {
-  config.validationMode ??= 'container';
   config.validationEnvironment ??= [];
-  if (config.validationMode === 'container') {
-    // Умолчание стоит на каждом поле отдельно, а не на всём объекте: на объекте
-    // оно означало бы, что удаление одного ключа `image` останавливает прогон,
-    // хотя имя образа выводится из имени каталога.
-    config.validationContainer ??= {};
-    if (
-      typeof config.validationContainer === 'object' &&
-      !Array.isArray(config.validationContainer)
-    ) {
-      config.validationContainer.image ??= defaultValidationImage();
-      config.validationContainer.dockerfile ??= 'scripts/ralph/Dockerfile.validation';
-      config.validationContainer.writableVolumes ??= [];
-    }
-  }
   // Проект обязан назвать свои команды сам: набор проверок зависит от стека, и
   // угаданное умолчание молча проверяло бы не то.
   config.preflightScripts ??= [];
   config.validationScripts ??= [];
-  // Пути, которые попадают в слой зависимостей образа: манифесты и lock-файлы
-  // проекта. Без них образ собрать нельзя, а какие они — знает только проект.
-  config.validationDependencyPaths ??= [];
   // Артефакты прошлых проверок, которые Ralph убирает перед прогоном. Пусто по
   // умолчанию: набор не знает, что в чужом проекте мусор, а что дорогой кеш.
   config.validationArtifactPaths ??= [];
@@ -650,71 +634,17 @@ function validateApprovedIssueSnapshots(config) {
   }
 }
 
-function prepareValidationContainer(config) {
-  if (!['host', 'container'].includes(config.validationMode)) {
-    fail('Поле "validationMode" должно быть одним из: host, container.');
-  }
-  if (config.validationMode === 'host') return;
-
-  if (
-    typeof config.validationContainer !== 'object' ||
-    config.validationContainer === null ||
-    Array.isArray(config.validationContainer)
-  ) {
-    fail('Поле "validationContainer" должно быть объектом.');
-  }
-  // Набор символов ограничен не ради опечаток: на Windows commandSpec
-  // запускает CLI агента через `cmd.exe /d /s /c <name>.cmd`,
-  // то есть через настоящий shell, который заново разбирает аргументы. Тот же
-  // довод действует для имён моделей ниже — они попадают в argv агента.
-  for (const field of ['image', 'dockerfile']) {
-    if (
-      typeof config.validationContainer[field] !== 'string' ||
-      config.validationContainer[field].trim() === '' ||
-      !/^[a-zA-Z0-9._/:-]+$/.test(config.validationContainer[field])
-    ) {
-      fail(`Поле "validationContainer.${field}" должно содержать безопасное значение.`);
-    }
-  }
-  if (
-    !Array.isArray(config.validationContainer.writableVolumes) ||
-    config.validationContainer.writableVolumes.some(
-      (target) =>
-        typeof target !== 'string' ||
-        !/^\/(?:[a-zA-Z0-9._-]+\/)*[a-zA-Z0-9._-]+$/.test(target) ||
-        ['/source', '/workspace', '/tmp'].some(
-          (reserved) => target === reserved || target.startsWith(`${reserved}/`),
-        ),
-    ) ||
-    new Set(config.validationContainer.writableVolumes).size !==
-      config.validationContainer.writableVolumes.length
-  ) {
-    fail(
-      'Поле "validationContainer.writableVolumes" должно содержать уникальные ' +
-        'абсолютные POSIX-пути вне /source, /workspace и /tmp.',
-    );
-  }
-  config.validationContainer.dockerfilePath = resolveProjectFile(
-    config.validationContainer.dockerfile,
-    'validationContainer.dockerfile',
-  );
-  if (!existsSync(config.validationContainer.dockerfilePath)) {
-    fail(`Dockerfile изоляции валидации не найден: ${config.validationContainer.dockerfilePath}`);
-  }
-}
-
 const maxValidationCommandLength = 500;
-const hostCommandControlOperators = /[;&|`]/u;
+const commandControlOperators = /[;&|`]/u;
 
 function validateValidationCommands(config) {
   // Команда выполняется оболочкой как есть. От подстановки произвольной команды
-  // защищает control plane: автономный агент не может изменить конфиг. В
-  // host-режиме цепочки запрещены отдельно, потому что Windows PowerShell и
-  // cmd возвращают код последней native-команды, скрывая более ранний отказ.
+  // защищает control plane: автономный агент не может изменить конфиг. Цепочки
+  // запрещены отдельно, потому что Windows PowerShell и cmd возвращают код
+  // последней native-команды, скрывая более ранний отказ.
   //
-  // Перевод строки запрещён: имя упавшей команды печатается маркером в поток
-  // контейнера и разбирается построчно, и многострочная команда назвала бы в
-  // отчёте не тот шаг.
+  // Перевод строки запрещён по тому же доводу: оболочка выполнила бы такую
+  // строку как несколько команд, и отчёт назвал бы не тот шаг.
   if (
     !Array.isArray(config.preflightScripts) ||
     !Array.isArray(config.validationScripts) ||
@@ -732,30 +662,13 @@ function validateValidationCommands(config) {
     );
   }
   if (
-    config.validationMode === 'host' &&
     [...config.preflightScripts, ...config.validationScripts].some((command) =>
-      hostCommandControlOperators.test(command),
+      commandControlOperators.test(command),
     )
   ) {
     fail(
-      'Host-проверка принимает одну команду на элемент и не допускает управляющие ' +
+      'Проверка принимает одну команду на элемент и не допускает управляющие ' +
         'операторы ; & | `. Разнесите цепочку по отдельным строкам.',
-    );
-  }
-  if (
-    !Array.isArray(config.validationDependencyPaths) ||
-    config.validationDependencyPaths.some((file) => {
-      if (typeof file !== 'string' || file.trim() === '') return true;
-      const normalized = file.replaceAll('\\', '/');
-      return (
-        normalized.startsWith('/') ||
-        /^[a-zA-Z]:/.test(normalized) ||
-        normalized.split('/').includes('..')
-      );
-    })
-  ) {
-    fail(
-      'Поле "validationDependencyPaths" должно быть массивом относительных путей внутри проекта.',
     );
   }
   if (
@@ -1009,9 +922,6 @@ function collectTrustedControlFileHashes(config) {
     configPath,
     config.rulesPath,
     config.approvedIssueSnapshotsPath,
-    ...(config.validationMode === 'container'
-      ? [config.validationContainer.dockerfilePath]
-      : []),
     // Модули перечислены поимённо, а не сканированием каталога: сканирование
     // приняло бы в доверенный набор любой подложенный файл. Тест требует, чтобы
     // каждый .mjs из scripts/ralph был в этом списке.
@@ -1038,8 +948,6 @@ function collectTrustedControlFileHashes(config) {
     path.join(scriptDirectory, 'ralph-runtime.mjs'),
     path.join(scriptDirectory, 'ralph-scope.mjs'),
     path.join(scriptDirectory, 'ralph-state-store.mjs'),
-    path.join(scriptDirectory, 'ralph-validation-docker-shim.sh'),
-    path.join(scriptDirectory, 'ralph-validation-entrypoint.sh'),
     path.join(scriptDirectory, 'ralph-validation-runner.mjs'),
     path.join(scriptDirectory, 'ralph-version.mjs'),
     path.join(projectRoot, '.agents', 'RALPH.md'),
@@ -1075,6 +983,7 @@ function collectTrustedControlFileHashes(config) {
 export function prepareConfig(config) {
   // Проверка идёт до умолчаний: они дописывают в объект свои ключи, и после них
   // отличить ключ из файла от ключа из кода уже нельзя.
+  rejectRemovedContainerFields(config);
   rejectUnknownFields(config);
   requirePromptTemplate(config);
   applyLoopDefaults(config);
@@ -1082,7 +991,6 @@ export function prepareConfig(config) {
   applyValidationAndReviewDefaults(config);
   validateLoopFields(config);
   validateApprovedIssueSnapshots(config);
-  prepareValidationContainer(config);
   validateValidationCommands(config);
   validateRuntimeSettings(config);
   validateAgentRoles(config);
