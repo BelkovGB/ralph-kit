@@ -1992,6 +1992,34 @@ test('имя теста pytest остаётся селектором, а пов�
   ]);
 });
 
+test('ключи удалённого контейнерного режима называют выпуск и способ починки', () => {
+  // Общий отказ «неизвестное поле» здесь не годится: оператор читает его как
+  // опечатку и ищет, куда делся рабочий ключ.
+  for (const removed of [
+    { validationMode: 'container' },
+    { validationContainer: { image: 'ralph-validation:latest' } },
+    { validationDependencyPaths: ['package.json'] },
+  ]) {
+    assert.throws(
+      () =>
+        withPatchedRalphConfig(removed, () => {
+          throw new Error('loadConfig should have failed');
+        }),
+      /Контейнерный режим проверок удалён в 2\.0\.0/u,
+      `ключ ${Object.keys(removed)[0]} должен останавливать загрузку`,
+    );
+  }
+
+  assert.throws(
+    () =>
+      withPatchedRalphConfig({ validationMode: 'host' }, () => {
+        throw new Error('loadConfig should have failed');
+      }),
+    /validationMode/u,
+    'прежнее рабочее значение host тоже отвергается: выбора режима больше нет',
+  );
+});
+
 test('developmentSkills резолвятся в файлы скиллов с описаниями', () => {
   // Пустое умолчание: без ключа прогон ведёт себя как раньше.
   withPatchedRalphConfig({ developmentSkills: undefined }, (config) => {
