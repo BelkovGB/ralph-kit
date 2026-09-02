@@ -246,19 +246,16 @@ node --test --test-concurrency=1 "scripts/ralph/*.test.mjs"
 
 Падать не должен ни один тест. Ключ `--test-concurrency=1`
 обязателен: часть тестов пишет в файлы самого репозитория — журнал одобренных
-issues `scripts/ralph/approved-issues.json`, пробный файл в `.claude` и
-`scripts/ralph/ralph-validation-entrypoint.sh` — и возвращают их на место за
-собой, а параллельный тестовый файл считает контрольные суммы тех же файлов
+issues `scripts/ralph/approved-issues.json` и пробный файл в `.claude` — и
+возвращают их на место за собой, а параллельный тестовый файл считает контрольные суммы тех же файлов
 ровно в этот момент и падает. Без ключа падает часть тестов. Прогон по каталогу
 (`node --test scripts/ralph/`) не работает вовсе: Node принимает путь за модуль
 и отвечает `Cannot find module`.
 
 Настройки проекта на результат не влияют: тесты разбирают конфигурацию в памяти
-и проверяют поведение кода, а не значения из `.agents/ralph.config.json`. Один
-тест сверяет снимок зависимостей с закоммиченными байтами, и пока набор в
-проекте не закоммичен, он отмечается пропущенным — сравнивать не с чем. Второй
-пропуск в чужом проекте штатный: `CHANGELOG.md` в проект не копируют, а тест
-версии сверяется с ним. В таком проекте два теста отмечаются пропущенными.
+и проверяют поведение кода, а не значения из `.agents/ralph.config.json`.
+Пропуск в чужом проекте штатный: `CHANGELOG.md` в проект не копируют, а тест
+версии сверяется с ним.
 
 Пока идёт `--run`, тесты не запускайте: они подменяют файлы, за которыми
 прогон следит как за подделкой.
@@ -365,11 +362,17 @@ issues `scripts/ralph/approved-issues.json`, пробный файл в `.claude
 
 Перезаписывайте целиком:
 
-- `scripts/ralph/` — все `*.mjs`, `*.sh` и тесты;
+- `scripts/ralph/` — все `*.mjs` и тесты;
 - `.agents/RALPH.md`, `.agents/ralph-rules.md`, `.agents/review.schema.json`,
   `.agents/skills/`;
 - `.claude/agents/`, `.claude/skills/`;
 - `.gitattributes`, если он пришёл из набора и своих правил в нём нет.
+
+Перезапись каталога не удаляет файлы, которых в новой версии нет, и не правит
+ваш конфиг. После 2.0.0 удалите из проекта `scripts/ralph/Dockerfile.validation`,
+`ralph-validation-entrypoint.sh` и `ralph-validation-docker-shim.sh`, а из
+`.agents/ralph.config.json` — ключи `validationMode`, `validationContainer` и
+`validationDependencyPaths`: с любым из них конфиг не загрузится.
 
 Не трогайте никогда:
 
