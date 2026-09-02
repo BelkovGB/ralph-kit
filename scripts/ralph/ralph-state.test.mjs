@@ -71,6 +71,75 @@ test('automatic issue approvals survive an AFK process restart', () => {
   }
 });
 
+test('trusted issue prompts survive finish and stay bound to the approved snapshot', () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'ralph-state-prompts-'));
+  const statePath = path.join(directory, 'state.json');
+  const config = {
+    branch: 'feature/review-context',
+    baseBranch: 'master',
+    milestone: 'Review context',
+  };
+  const approvedSnapshotHash = 'a'.repeat(64);
+  const trustedPromptBody = 'Requirements\n\nSigned Ralph review context.';
+
+  try {
+    const first = createStateStore(config, '--run', statePath);
+    first.beginIssue(
+      {
+        number: 26,
+        title: 'Trusted task',
+        body: 'Requirements',
+        url: 'https://example.test/issues/26',
+      },
+      'c'.repeat(40),
+    );
+    first.trustIssuePromptBody(26, approvedSnapshotHash, trustedPromptBody);
+    first.clearIssue();
+    first.finish();
+    assert.equal(existsSync(statePath), false);
+
+    const resumed = createStateStore(config, '--run', statePath);
+    assert.equal(
+      resumed.trustedIssuePromptBody(26, approvedSnapshotHash),
+      trustedPromptBody,
+    );
+    assert.equal(resumed.trustedIssuePromptBody(26, 'b'.repeat(64)), null);
+    resumed.clearTrustedIssuePrompt(26);
+    resumed.finish();
+
+    const cleared = createStateStore(config, '--run', statePath);
+    assert.equal(cleared.trustedIssuePromptBody(26, approvedSnapshotHash), null);
+    cleared.finish();
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('replacing an approved snapshot invalidates its trusted issue prompt', () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'ralph-state-prompt-rotation-'));
+  const statePath = path.join(directory, 'state.json');
+  const config = {
+    branch: 'feature/review-context',
+    baseBranch: 'master',
+    milestone: 'Review context',
+  };
+  const oldSnapshot = { title: 'Old task', body: 'Old requirements.' };
+  const newSnapshot = { title: 'New task', body: 'New requirements.' };
+
+  try {
+    const store = createStateStore(config, '--run', statePath);
+    store.approveIssueSnapshot(26, oldSnapshot);
+    store.trustIssuePromptBody(26, 'a'.repeat(64), 'Old trusted prompt.');
+    store.approveIssueSnapshot(26, newSnapshot, true);
+
+    assert.equal(store.trustedIssuePromptBody(26, 'a'.repeat(64)), null);
+    assert.deepEqual(store.approvedIssueSnapshots['26'], newSnapshot);
+    store.finish();
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('check mode does not create persistent state', () => {
   const directory = mkdtempSync(path.join(tmpdir(), 'ralph-state-check-'));
   const statePath = path.join(directory, 'state.json');

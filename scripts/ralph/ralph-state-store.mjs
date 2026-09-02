@@ -13,6 +13,12 @@ import { fail } from './ralph-scope.mjs';
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 export const runtimeStatePath = path.join(projectRoot, '.git', 'ralph-loop', 'state.json');
+export const runtimeTrustedIssuePromptsPath = path.join(
+  projectRoot,
+  '.git',
+  'ralph-loop',
+  'trusted-issue-prompts.json',
+);
 
 // Активный state store читается как значение параметра по умолчанию, то есть в
 // момент вызова. Функция сохраняет этот момент: импортированную переменную
@@ -28,8 +34,39 @@ export function activeStateStore() {
   return currentStateStore;
 }
 
-export function createStateStore(config, selectedMode, statePath = runtimeStatePath) {
+export function createStateStore(
+  config,
+  selectedMode,
+  statePath = runtimeStatePath,
+  trustedIssuePromptsPath = path.join(path.dirname(statePath), 'trusted-issue-prompts.json'),
+) {
   let state = readJsonFile(statePath, null);
+  const trustedIssuePrompts = readJsonFile(trustedIssuePromptsPath, { version: 1, issues: {} });
+  if (
+    trustedIssuePrompts?.version !== 1 ||
+    !trustedIssuePrompts.issues ||
+    Array.isArray(trustedIssuePrompts.issues) ||
+    typeof trustedIssuePrompts.issues !== 'object'
+  ) {
+    fail(
+      `Хранилище доверенных prompt ${trustedIssuePromptsPath} повреждено. ` +
+        'Проверьте файл вручную; Ralph не будет брать текст issue из GitHub.',
+    );
+  }
+  for (const [issueNumber, record] of Object.entries(trustedIssuePrompts.issues)) {
+    if (
+      !/^\d+$/u.test(issueNumber) ||
+      !record ||
+      typeof record !== 'object' ||
+      !/^[a-f0-9]{64}$/u.test(record.approvedSnapshotHash ?? '') ||
+      typeof record.body !== 'string'
+    ) {
+      fail(
+        `Хранилище доверенных prompt ${trustedIssuePromptsPath} содержит некорректную запись. ` +
+          'Проверьте файл вручную; Ralph не будет брать текст issue из GitHub.',
+      );
+    }
+  }
   const configuredPhaseIndex = config.phaseIndex ?? 0;
   const configuredPhaseCount = config.phaseCount ?? 1;
   const configuredPlanId = config.phasePlanId;
@@ -78,6 +115,13 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
     state.updatedAt = new Date().toISOString();
     writeJsonAtomic(statePath, state);
   };
+  const persistTrustedIssuePrompts = () => {
+    if (Object.keys(trustedIssuePrompts.issues).length === 0) {
+      removeFileIfExists(trustedIssuePromptsPath);
+      return;
+    }
+    writeJsonAtomic(trustedIssuePromptsPath, trustedIssuePrompts);
+  };
 
   return {
     get state() {
@@ -101,9 +145,35 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
       const key = String(issueNumber);
       const existing = state.approvedIssueSnapshots[key];
       if (existing && !replace) return existing;
+      if (replace && trustedIssuePrompts.issues[key]) {
+        delete trustedIssuePrompts.issues[key];
+        persistTrustedIssuePrompts();
+      }
       state.approvedIssueSnapshots[key] = snapshot;
       persist();
       return snapshot;
+    },
+    trustedIssuePromptBody(issueNumber, approvedSnapshotHash) {
+      const record = trustedIssuePrompts.issues[String(issueNumber)];
+      if (!record || record.approvedSnapshotHash !== approvedSnapshotHash) return null;
+      return record.body;
+    },
+    trustIssuePromptBody(issueNumber, approvedSnapshotHash, body) {
+      if (!/^[a-f0-9]{64}$/u.test(approvedSnapshotHash) || typeof body !== 'string') {
+        fail(`Нельзя сохранить доверенный prompt issue #${issueNumber}: некорректные данные.`);
+      }
+      trustedIssuePrompts.issues[String(issueNumber)] = {
+        approvedSnapshotHash,
+        body,
+      };
+      persistTrustedIssuePrompts();
+      return body;
+    },
+    clearTrustedIssuePrompt(issueNumber) {
+      const key = String(issueNumber);
+      if (!trustedIssuePrompts.issues[key]) return;
+      delete trustedIssuePrompts.issues[key];
+      persistTrustedIssuePrompts();
     },
     // `foreignPaths` — то, что уже лежало в рабочем дереве, когда issue
     // началась. Записывается один раз, при заведении записи: на продолжении

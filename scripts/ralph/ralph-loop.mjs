@@ -373,6 +373,7 @@ function closeIssue(config, repository, issue, commit, review = null) {
   if (closedIssue.state?.toUpperCase() !== 'CLOSED') {
     fail(`Issue #${issue.number} не закрылась после успешной реализации.`);
   }
+  activeStateStore()?.clearTrustedIssuePrompt?.(issue.number);
 }
 
 /**
@@ -493,7 +494,7 @@ async function reviewAndCloseCommittedIssue(config, repository, issue, commit) {
     const reviewFixAttempts = (activeStateStore()?.issue?.reviewFixAttempts ?? 0) + 1;
     // Замечания попадают в тело issue первыми: именно их читает следующая
     // сессия агента, и без них она не знает, что чинить.
-    updateIssueReviewContext(repository, issue, review);
+    updateIssueReviewContext(config, repository, issue, review);
     // Состояние сохраняется, а не стирается: реализация уже в HEAD и уже прошла
     // валидацию, и следующая сессия должна чинить замечания поверх неё, а не
     // выяснять заново, что сделано. `startingCommit` обязан переехать вперёд —
@@ -1128,6 +1129,7 @@ export async function runContinuousLoop(context, actions) {
           );
         }
         actions.clearIssueCompletionState(repository, recoveryIssue);
+        stateStore.clearTrustedIssuePrompt?.(recoveryIssue.number);
         console.log(
           `Сохранённая issue #${recoveryIssue.number} уже закрыта; локальная recovery-фаза очищена.`,
         );

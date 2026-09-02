@@ -77,7 +77,12 @@ function rejectUntrustedIssue(message) {
   throw error;
 }
 
-export function assertTrustedIssue(config, issue, repository) {
+export function assertTrustedIssue(
+  config,
+  issue,
+  repository,
+  stateStore = activeStateStore(),
+) {
   assertTrustedIssueAuthor(config, issue, repository);
   const snapshot = config.approvedIssueSnapshots?.[String(issue.number)];
   if (!snapshot) {
@@ -96,12 +101,29 @@ export function assertTrustedIssue(config, issue, repository) {
         'Its mutable GitHub title or body changed after approval; review and explicitly update the snapshot.',
     );
   }
+  const approvedSnapshotHash = issueContentHash(snapshot);
+  const trustedPromptBody =
+    stateStore?.trustedIssuePromptBody?.(issue.number, approvedSnapshotHash) ?? snapshot.body;
+  const issuePromptContent = {
+    title: issue.title,
+    body: issueBodyWithoutCompletionState(issue),
+  };
+  const trustedPromptContent = {
+    title: snapshot.title,
+    body: trustedPromptBody,
+  };
+  if (issueContentHash(issuePromptContent) !== issueContentHash(trustedPromptContent)) {
+    rejectUntrustedIssue(
+      `Issue #${issue.number} does not match the trusted Ralph review context. ` +
+        'Its review metadata changed on GitHub after Ralph generated it; inspect the issue before restarting AFK.',
+    );
+  }
   return {
     ...issue,
     title: snapshot.title,
-    // Completion markers are only recovery pointers. Review context is retained
-    // so the next implementation session receives the latest reviewer findings.
-    body: issueBodyWithoutCompletionState(issue),
+    // В prompt возвращается локально сохранённое тело, а не совпавшие с ним
+    // изменяемые байты GitHub. Completion-маркеры в сохранённое тело не входят.
+    body: trustedPromptBody,
   };
 }
 
@@ -199,10 +221,38 @@ export function issueBodyWithReviewContext(issue, review) {
   return `${originalBody}\n\n${startMarker}\n${reviewContext}${belowFloorNote}\n${endMarker}`.trim();
 }
 
-export function updateIssueReviewContext(repository, issue, review) {
-  const latest = issueDetails(repository, issue.number);
-  const updatedBody = issueBodyWithReviewContext({ ...issue, body: latest.body }, review);
-  issue.body = patchIssue(repository, issue.number, { body: updatedBody }).body;
+export function updateIssueReviewContext(config, repository, issue, review, dependencies = {}) {
+  const stateStore = dependencies.stateStore ?? activeStateStore();
+  if (!stateStore?.trustIssuePromptBody) {
+    fail(
+      `Issue #${issue.number}: Ralph не может сохранить доверенный review context. ` +
+        'Остановите прогон и проверьте локальное state-хранилище.',
+    );
+  }
+
+  // Повторная проверка защищает этот экспорт от будущего вызова с сырым GitHub
+  // issue. Новый блок строится только из уже доверенного локального тела.
+  const trustedIssue = assertTrustedIssue(config, issue, repository, stateStore);
+  const snapshot = config.approvedIssueSnapshots[String(issue.number)];
+  const approvedSnapshotHash = issueContentHash(snapshot);
+  const updatedBody = issueBodyWithReviewContext(trustedIssue, review);
+  // Сначала сохраняем ожидаемое тело. Если процесс оборвётся вокруг PATCH,
+  // следующий запуск примет только это точное значение и иначе остановится.
+  stateStore.trustIssuePromptBody(issue.number, approvedSnapshotHash, updatedBody);
+
+  const updateRemoteIssue = dependencies.patchIssue ?? patchIssue;
+  const updatedIssue = updateRemoteIssue(repository, issue.number, { body: updatedBody });
+  const returnedBody = issueBodyWithoutCompletionState(updatedIssue);
+  if (
+    issueContentHash({ title: snapshot.title, body: returnedBody }) !==
+    issueContentHash({ title: snapshot.title, body: updatedBody })
+  ) {
+    fail(
+      `Issue #${issue.number}: GitHub вернул тело, отличающееся от записанного review context. ` +
+        'Ralph остановил прогон и не передаст это тело агенту.',
+    );
+  }
+  issue.body = updatedBody;
 }
 
 export function issueBodyWithoutCompletionState(issue) {
