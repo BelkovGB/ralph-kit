@@ -343,6 +343,15 @@ export const fieldGroups = [
         default: 'medium',
       },
       {
+        path: 'developmentSkills',
+        section: 'Разработка',
+        label: 'Скиллы прогона',
+        type: 'list',
+        hint: 'Имена скиллов проекта из .agents/skills или .claude/skills — например, правила вашего стека. Ralph впишет описание и путь каждого в prompt задачи, и агент прочитает файл по ходу работы. Инструмент Skill автономной сессии не выдаётся; опечатка в имени останавливает --check.',
+        unit: null,
+        default: [],
+      },
+      {
         path: 'prompt',
         section: 'Разработка',
         label: 'Текст задания',

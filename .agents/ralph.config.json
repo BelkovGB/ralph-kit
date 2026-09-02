@@ -28,6 +28,7 @@
   },
   "developmentModel": "claude-opus-5",
   "developmentEffort": "medium",
+  "developmentSkills": [],
   "reviewSeverityFloor": "P1",
   "autoApproveConfiguredIssues": true,
   "trustedIssueAuthors": [],
