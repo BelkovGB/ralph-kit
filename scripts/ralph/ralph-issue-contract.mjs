@@ -99,9 +99,13 @@ export function assertTrustedIssue(config, issue, repository) {
   return {
     ...issue,
     title: snapshot.title,
-    // Completion markers are only recovery pointers. Review context is retained
-    // so the next implementation session receives the latest reviewer findings.
-    body: issueBodyWithoutCompletionState(issue),
+    // Тело берётся из снимка, а не из живого issue. Блок review context в снимок
+    // не входит: Ralph дописывает его сам, и с ним прогон с ручными снимками
+    // останавливался бы на собственной записи. Значит правку блока на GitHub
+    // проверка снимка не ловит, и живое тело в prompt пускать нельзя — иначе
+    // любой с правом редактировать issue диктует агенту через этот блок.
+    // Замечания ревью следующая сессия получает из состояния прогона.
+    body: snapshot.body,
   };
 }
 
@@ -161,32 +165,13 @@ export function issueBodyWithoutRalphMetadata(issue) {
 }
 
 /**
- * Замечания прошлого ревью, если они есть в теле issue.
+ * Текст замечаний ревью для следующей сессии.
  *
- * Внутри тела блок доезжает до ревьюера без подписи, вперемешку с критериями
- * готовности. Отдельная секция нужна, чтобы можно было потребовать проверить
- * закрытие каждого пункта: неподписанный текст такого требования не выдерживает.
+ * В него попадают только блокирующие замечания: замечания ниже порога означали
+ * бы приказ чинить то, что порог осознанно не блокирует. Их текст живёт в
+ * комментарии ревью и в отложенных issues; здесь — счётчик со ссылкой на них.
  */
-export function reviewContextFromIssueBody(issue) {
-  const [block] = issueBodyWithoutCompletionState(issue).match(reviewContextPattern) ?? [];
-  if (!block) return null;
-
-  return block
-    .replace('<!-- ralph-issue-review-context:start -->', '')
-    .replace('<!-- ralph-issue-review-context:end -->', '')
-    .trim();
-}
-
-export function issueBodyWithReviewContext(issue, review) {
-  const startMarker = '<!-- ralph-issue-review-context:start -->';
-  const endMarker = '<!-- ralph-issue-review-context:end -->';
-  const originalBody = issueBodyWithoutCompletionState(issue)
-    .replace(reviewContextPattern, '')
-    .trimEnd();
-  // В тело issue попадают только блокирующие замечания: этот блок читает
-  // следующая fix-сессия, и замечания ниже порога в нём означали бы приказ
-  // чинить то, что порог осознанно не блокирует. Их текст живёт в комментарии
-  // ревью и в отложенных issues; здесь — только счётчик со ссылкой на них.
+export function reviewContextText(review) {
   const belowFloorCount = review.belowFloorFindings?.length ?? 0;
   const reviewContext = formatReviewComment({ ...review, belowFloorFindings: undefined }).replace(
     '\n\nIssue reopened. Fix the findings, rerun the relevant checks, and start Ralph Loop again.',
@@ -196,7 +181,20 @@ export function issueBodyWithReviewContext(issue, review) {
     belowFloorCount > 0
       ? `\n\n${belowFloorCount} finding(s) below the severity floor are tracked as separate deferred GitHub issues and are not part of this issue. Do not fix them here.`
       : '';
-  return `${originalBody}\n\n${startMarker}\n${reviewContext}${belowFloorNote}\n${endMarker}`.trim();
+
+  return `${reviewContext}${belowFloorNote}`;
+}
+
+export function issueBodyWithReviewContext(issue, review) {
+  const startMarker = '<!-- ralph-issue-review-context:start -->';
+  const endMarker = '<!-- ralph-issue-review-context:end -->';
+  const originalBody = issueBodyWithoutCompletionState(issue)
+    .replace(reviewContextPattern, '')
+    .trimEnd();
+  // Блок в теле issue читает человек. Агент получает те же замечания из
+  // состояния прогона: тело issue правит любой, кто вправе редактировать её на
+  // GitHub, и в prompt оно не идёт.
+  return `${originalBody}\n\n${startMarker}\n${reviewContextText(review)}\n${endMarker}`.trim();
 }
 
 export function updateIssueReviewContext(repository, issue, review) {
