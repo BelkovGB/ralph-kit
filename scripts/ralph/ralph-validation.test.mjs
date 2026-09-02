@@ -12,6 +12,7 @@ import {
   removeValidationArtifacts,
   runConfiguredScripts,
   runConfiguredValidation,
+  runPreflight,
 } from './ralph-validation-runner.mjs';
 import {
   ralphConfigPath,
@@ -378,6 +379,34 @@ test('host-проверка получает свой домашний ката�
   assert.equal(overridden.HOME, '/custom/home');
   assert.equal(overridden.USERPROFILE, '/custom/home');
   assert.equal(overridden.XDG_CONFIG_HOME, path.join('/custom/home', '.config'));
+});
+
+test('отдельный прогон preflight не считает подготовку правкой дерева', () => {
+  // runPreflight в начале фазы выполняет команды подготовки, и по контракту
+  // они вправе менять дерево: миграции и генерация кода для того и существуют.
+  // Снимок дерева обязан браться после них, иначе прогон падает на собственной
+  // подготовке ещё до первой issue.
+  let prepared = false;
+  const calls = [];
+  const execute = (command, args, options) => {
+    if (command === 'git') {
+      return {
+        status: 0,
+        stdout: `${prepared ? 'package-lock.json' : 'scripts/ralph/README.md'} `,
+        stderr: '',
+      };
+    }
+    calls.push({ command, args, options });
+    prepared = true;
+    return { status: 0, stdout: '', stderr: '' };
+  };
+
+  const result = runPreflight(hostValidationConfig({ preflightScripts: ['npm ci'] }), {
+    run: execute,
+  });
+
+  assert.deepEqual(result.scripts, ['npm ci']);
+  assert.equal(calls.length, 1);
 });
 
 test('host: preflight готовит окружение до снимка дерева, проверки — после', () => {

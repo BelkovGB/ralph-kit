@@ -257,12 +257,11 @@ function hostShellCommand(script, platform = process.platform) {
 
 export function runConfiguredScripts(config, scripts, label, options = {}) {
   const execute = options.run ?? run;
-  const includePreflight = options.includePreflight ?? true;
   // Preflight готовит окружение и по своему контракту вправе менять дерево:
   // миграции и генерация кода для того и существуют. Снимок берётся после него,
   // иначе подготовка останавливала бы прогон собственным результатом, а
   // следующий запуск повторял бы её с тем же исходом.
-  const preparation = includePreflight ? [...config.preflightScripts] : [];
+  const preparation = [...config.preflightScripts];
   const guarded = [...scripts];
   if (preparation.length + guarded.length === 0) return { ran: false, scripts: [] };
 
@@ -410,10 +409,15 @@ export function removeValidationArtifacts(config, options = {}) {
   return removed;
 }
 
-export function runPreflight(config) {
-  return runConfiguredScripts(config, config.preflightScripts, 'Preflight', {
-    includePreflight: false,
-  });
+/**
+ * Отдельный прогон подготовки в начале фазы.
+ *
+ * Набор проверок пуст: команды подготовки Ralph берёт из конфигурации сам, и
+ * они идут подготовкой, а не проверкой. Передать их вторым аргументом значило
+ * бы поставить их под снимок дерева и уронить прогон на собственной миграции.
+ */
+export function runPreflight(config, options = {}) {
+  return runConfiguredScripts(config, [], 'Preflight', options);
 }
 
 /**
