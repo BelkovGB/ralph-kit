@@ -677,3 +677,40 @@ test('shell-подсказка ревью не обещает PowerShell на ч
   const claude = { agentCli: 'claude' };
   assert.equal(reviewShellGuidance(claude, 'linux'), reviewShellGuidance(claude, 'win32'));
 });
+
+/**
+ * Скиллы проекта подключаются к прогону ссылками в prompt, а не инструментом
+ * Skill: пофамильного разрешения скиллов нет ни у одного CLI (у Claude
+ * синтаксиса Skill(имя) не существует, allow-правила в режиме без
+ * подтверждений не действуют; у Codex — только глобальные флаги), а канал
+ * через чтение файла работает у обоих одинаково.
+ */
+test('prompt перечисляет скиллы проекта со ссылками на файлы', () => {
+  const base = {
+    milestone: 'Фаза 1',
+    branch: 'ralph/phase-1',
+    prompt: 'Возьми issue #{issue_number}.',
+    maxTurns: 50,
+    maxTestFixAttempts: 5,
+    developmentSkillDetails: [
+      {
+        name: 'typescript-best-practices',
+        file: '.agents/skills/typescript-best-practices/SKILL.md',
+        description: 'Типы, обработка ошибок, структура TypeScript.',
+      },
+    ],
+  };
+  const issue = { number: 7, title: 'Задача', url: 'https://example.test/7', body: 'Тело.' };
+
+  const prompt = renderPrompt(base, issue, 'правила');
+
+  assert.match(prompt, /## Скиллы проекта/u);
+  assert.match(prompt, /typescript-best-practices/u);
+  assert.match(prompt, /Типы, обработка ошибок/u);
+  assert.match(prompt, /\.agents\/skills\/typescript-best-practices\/SKILL\.md/u);
+  // Инструмент Skill сессии запрещён — prompt велит читать файл, а не звать его.
+  assert.match(prompt, /[Пп]рочитай файл/u);
+
+  const withoutSkills = renderPrompt({ ...base, developmentSkillDetails: [] }, issue, 'правила');
+  assert.doesNotMatch(withoutSkills, /Скиллы проекта/u);
+});

@@ -26,7 +26,34 @@ export function renderPrompt(config, issue, rules) {
   const renderedRules = renderTemplate(rules, replacements);
   const issueBody = issue.body?.trim() || '(Описание issue пустое.)';
 
-  return `${prompt}\n\n## Текущая issue\n\n- Number: #${issue.number}\n- Title: ${issue.title}\n- URL: ${issue.url}\n\n### Body и критерии готовности\n\n${issueBody}\n\n---\n\n${renderedRules}`;
+  return `${prompt}\n\n## Текущая issue\n\n- Number: #${issue.number}\n- Title: ${issue.title}\n- URL: ${issue.url}\n\n### Body и критерии готовности\n\n${issueBody}${developmentSkillsSection(config)}\n\n---\n\n${renderedRules}`;
+}
+
+/**
+ * Скиллы проекта в prompt задачи — ссылками, а не инструментом Skill.
+ *
+ * Пофамильного разрешения скиллов нет ни у одного CLI: у Claude синтаксиса
+ * Skill(имя) не существует, а allow-правила в режиме без подтверждений не
+ * действуют; у Codex — только глобальные флаги. Разрешить инструмент целиком
+ * значило бы открыть сессии и собственные скиллы набора вроде /issues, который
+ * посреди прогона правил бы беклог в GitHub. Чтение файла по ссылке работает у
+ * обоих CLI одинаково, а файлы скиллов уже защищены хешами control plane.
+ */
+function developmentSkillsSection(config) {
+  const skills = config.developmentSkillDetails ?? [];
+  if (skills.length === 0) return '';
+  const rows = skills
+    .map((skill) => `- **${skill.name}** — ${skill.description}\n  Файл: ${skill.file}`)
+    .join('\n');
+
+  return (
+    '\n\n## Скиллы проекта\n\n' +
+    'Проект приложил к работе свои правила. Перед соответствующей частью работы ' +
+    'прочитай файл скилла целиком инструментом чтения файлов; файлы, на которые ' +
+    'он ссылается, читай по мере надобности. Инструмента Skill у этой сессии ' +
+    'нет, он и не нужен.\n\n' +
+    rows
+  );
 }
 
 // Both review prompts need these blocks verbatim, so they live here once: a

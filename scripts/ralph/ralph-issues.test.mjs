@@ -2102,3 +2102,41 @@ test('имя теста pytest остаётся селектором, а пов�
     'tests/test_profile.py::test_accepts_unicode',
   ]);
 });
+
+test('developmentSkills резолвятся в файлы скиллов с описаниями', () => {
+  // Пустое умолчание: без ключа прогон ведёт себя как раньше.
+  withPatchedRalphConfig({ developmentSkills: undefined }, (config) => {
+    assert.deepEqual(config.developmentSkills, []);
+    assert.deepEqual(config.developmentSkillDetails, []);
+  });
+
+  // Имя поставляемого скилла резолвится в файл и описание из frontmatter.
+  withPatchedRalphConfig({ developmentSkills: ['prd'] }, (config) => {
+    assert.equal(config.developmentSkillDetails.length, 1);
+    const [skill] = config.developmentSkillDetails;
+    assert.equal(skill.name, 'prd');
+    assert.equal(skill.file, '.agents/skills/prd/SKILL.md');
+    assert.equal(typeof skill.description, 'string');
+    assert.notEqual(skill.description, '');
+  });
+
+  for (const broken of ['строка', [''], [7], ['prd', 'prd']]) {
+    assert.throws(
+      () =>
+        withPatchedRalphConfig({ developmentSkills: broken }, () => {
+          throw new Error('loadConfig should have failed');
+        }),
+      /developmentSkills/u,
+      `значение ${JSON.stringify(broken)} должно быть отклонено`,
+    );
+  }
+
+  // Несуществующий скилл останавливает загрузку и называет оба пути поиска.
+  assert.throws(
+    () =>
+      withPatchedRalphConfig({ developmentSkills: ['no-such-skill'] }, () => {
+        throw new Error('loadConfig should have failed');
+      }),
+    /no-such-skill[\s\S]*\.agents[\s\S]*\.claude/u,
+  );
+});

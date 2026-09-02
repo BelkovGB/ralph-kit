@@ -351,6 +351,7 @@ const configFields = new Set([
   'baseBranch',
   'developmentEffort',
   'developmentModel',
+  'developmentSkills',
   'draftPullRequest',
   'githubAccount',
   'maxIterations',
@@ -452,6 +453,9 @@ function applyLoopDefaults(config) {
   }
   config.developmentModel ??= 'gpt-5.6-terra';
   config.developmentEffort ??= 'medium';
+  // Пусто по умолчанию: без списка prompt задачи не меняется ни на байт.
+  config.developmentSkills ??= [];
+  resolveDevelopmentSkills(config);
   config.rulesFile ??= '.agents/ralph-rules.md';
   config.autoApproveConfiguredIssues ??= true;
   config.trustedIssueAuthors ??= [];
@@ -931,6 +935,59 @@ function resolveControlPlanePaths(config) {
       config.milestoneReview.schemaPath,
     );
   }
+}
+
+/**
+ * Скиллы проекта, приложенные к прогону: имена из `developmentSkills`
+ * резолвятся в файлы и описания на загрузке конфигурации — опечатка в имени
+ * останавливает `--check`, а не молча оставляет prompt без скилла.
+ *
+ * Инструмент Skill автономной сессии по-прежнему запрещён: пофамильного
+ * разрешения скиллов нет ни у одного CLI, а разрешение целиком открыло бы и
+ * собственные скиллы набора вроде /issues. Вместо этого prompt задачи получает
+ * имя, описание и путь, а агент читает файл инструментом чтения.
+ */
+function resolveDevelopmentSkills(config) {
+  const names = config.developmentSkills;
+  if (
+    !Array.isArray(names) ||
+    names.some((name) => typeof name !== 'string' || name.trim() === '')
+  ) {
+    fail('Поле "developmentSkills" должно быть массивом имён скиллов проекта.');
+  }
+  if (new Set(names).size !== names.length) {
+    fail('Поле "developmentSkills" повторяет имя скилла.');
+  }
+
+  config.developmentSkillDetails = names.map((name) => {
+    if (!/^[A-Za-z0-9._-]+$/.test(name)) {
+      fail(`Поле "developmentSkills": имя "${name}" — не имя каталога скилла.`);
+    }
+    const candidates = skillsDirectories.map((directory) =>
+      path.join(directory, name, 'SKILL.md'),
+    );
+    const found = candidates.find((candidate) => existsSync(candidate));
+    if (!found) {
+      fail(
+        `Поле "developmentSkills": скилл "${name}" не найден ни в ` +
+          `.agents/skills/${name}/SKILL.md, ни в .claude/skills/${name}/SKILL.md.`,
+      );
+    }
+    const { fields, errors } = parseSkillFrontmatter(readFileSync(found, 'utf8'));
+    const description = fields.get('description') ?? '';
+    if (errors.length > 0 || description === '') {
+      fail(
+        `Поле "developmentSkills": у скилла "${name}" нет валидного frontmatter ` +
+          `с description (${found}).`,
+      );
+    }
+
+    return {
+      name,
+      file: path.relative(projectRoot, found).replaceAll('\\', '/'),
+      description,
+    };
+  });
 }
 
 // Модули GUI ставятся не в каждую копию набора. Их отсутствие исключает файл из
