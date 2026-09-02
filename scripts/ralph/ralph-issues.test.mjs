@@ -53,7 +53,7 @@ import {
   issueBodyWithoutRalphMetadata,
   issueCompletionState,
   normalizeReviewResult,
-  reviewContextFromIssueBody,
+  reviewContextText,
 } from './ralph-issue-contract.mjs';
 import {
   createOrReopenReviewIssues,
@@ -234,9 +234,20 @@ test('after a rejected review the retry is told the work is already committed', 
   assert.doesNotMatch(prompt, /исправь последний сбой/);
   assert.doesNotMatch(prompt, /процесс завершился до фиксации результата/);
 
-  // Замечания в prompt не копируются: их несёт тело issue, которое и так
-  // подставляется целиком.
-  assert.doesNotMatch(prompt, /Location:/);
+  // Замечания приходят из состояния прогона: тело issue правит любой, кто
+  // вправе редактировать её на GitHub, и в prompt оно идёт из снимка.
+  assert.doesNotMatch(prompt, /в теле issue/u);
+
+  const withFindings = recoveryPrompt({
+    phase: 'review-failed',
+    commit,
+    startingCommit: commit,
+    lastFailure: null,
+    reviewFindings: 'P1 Repair recovery\nLocation: loop.mjs:1',
+  });
+
+  assert.match(withFindings, /P1 Repair recovery/u);
+  assert.match(withFindings, /Location: loop\.mjs:1/u);
 });
 
 test('a branch that moved on is judged by ancestry, not by an exact HEAD match', () => {
@@ -289,24 +300,22 @@ test('a rejected review never resumes without a new agent session', () => {
   assert.equal(committedRecoveryPhases.includes('closing'), true);
 });
 
-test('review context is separable from the issue body so the next review can be asked about it', () => {
-  const body = issueBodyWithReviewContext(
-    { body: 'Original requirements' },
-    {
-      summary: 'Review summary',
-      findings: [
-        { severity: 'P2', title: 'Missing guard', file: 'guard.ts', line: 7, body: 'Add it' },
-      ],
-    },
-  );
+test('блок замечаний в теле issue отделим от требований автора', () => {
+  const review = {
+    summary: 'Review summary',
+    findings: [
+      { severity: 'P2', title: 'Missing guard', file: 'guard.ts', line: 7, body: 'Add it' },
+    ],
+  };
+  const body = issueBodyWithReviewContext({ body: 'Original requirements' }, review);
 
-  const findings = reviewContextFromIssueBody({ body });
-  assert.match(findings, /Missing guard/);
-  assert.doesNotMatch(findings, /ralph-issue-review-context/);
-  // Тело без метаданных не должно повторять тот же блок: иначе замечания
-  // приезжают в prompt дважды и оба раза без подписи.
+  // Один текст замечаний служит и телу issue для человека, и состоянию прогона
+  // для следующей сессии: разойдясь, они показали бы разное об одном ревью.
+  assert.match(body, /Missing guard/u);
+  assert.ok(body.includes(reviewContextText(review)));
+  // Требования автора отделимы от блока: снимок хранит именно их, и с ними
+  // сверяется каждая следующая итерация.
   assert.equal(issueBodyWithoutRalphMetadata({ body }), 'Original requirements');
-  assert.equal(reviewContextFromIssueBody({ body: 'Original requirements' }), null);
 });
 
 function inventoryRunner(commits) {

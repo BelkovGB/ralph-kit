@@ -168,12 +168,18 @@ export const clearedFailure = { lastFailure: null, lastFailureSummary: null };
  * и так целиком попадает в prompt.
  */
 function reviewRecoveryPrompt(storedIssue) {
+  // Замечания приезжают из состояния прогона, а не из тела issue: тело правит
+  // на GitHub любой, кто вправе её редактировать, и подменённый текст читался
+  // бы сессией как задание ревьюера.
+  const findings = storedIssue.reviewFindings?.trim()
+    ? `\n\nЗамечания ревьюера:\n\n${storedIssue.reviewFindings.trim()}`
+    : '';
+
   return (
     '\n\n## AFK recovery: независимое ревью вернуло замечания\n\nHEAD уже содержит ' +
     `commit ${storedIssue.commit} — твою реализацию этой issue, и весь набор ` +
-    'validationScripts на этом дереве прошёл. Замечания ревьюера перечислены в теле ' +
-    'issue выше. Исправь их поверх HEAD: не переделывай реализацию заново и не ' +
-    'откатывай существующие изменения.'
+    `validationScripts на этом дереве прошёл.${findings}\n\nИсправь замечания поверх ` +
+    'HEAD: не переделывай реализацию заново и не откатывай существующие изменения.'
   );
 }
 

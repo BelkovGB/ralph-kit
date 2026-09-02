@@ -106,8 +106,8 @@ import {
   formatFindingList,
   formatReviewComment,
   issueBodyWithoutRalphMetadata,
+  reviewContextText,
   normalizeReviewResult,
-  reviewContextFromIssueBody,
   updateIssueReviewContext,
 } from './ralph-issue-contract.mjs';
 
@@ -281,7 +281,7 @@ async function runIndependentReview(config, repository, issue, commit) {
     commit,
     {
       changes: inventory,
-      previousFindings: reviewContextFromIssueBody(issue),
+      previousFindings: activeStateStore()?.issue?.reviewFindings ?? null,
       previousReview: previouslyAuditedCommit(inventory, commit),
     },
   );
@@ -514,6 +514,7 @@ async function reviewAndCloseCommittedIssue(config, repository, issue, commit) {
       commitMessage: null,
       validationFixAttempts: 0,
       reviewFixAttempts,
+      reviewFindings: reviewContextText(review),
       ...clearedFailure,
     });
     reopenIssueWithComment(repository, issue, formatReviewComment(review));
