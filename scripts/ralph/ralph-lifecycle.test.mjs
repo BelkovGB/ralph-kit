@@ -191,7 +191,6 @@ function lifecycleConfig(repository, reviewOutputPath) {
     branch: repository.branch,
     trustedIssueAuthors: ['trusted-author'],
     approvedIssueSnapshots: { [issueNumber]: { title: issueTitle, body: issueBody } },
-    validationMode: 'host',
     preflightScripts: [],
     validationScripts: [],
     validationArtifactPaths: [],

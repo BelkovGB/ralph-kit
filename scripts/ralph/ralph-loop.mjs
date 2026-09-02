@@ -184,7 +184,7 @@ function measuredValidation(runValidation) {
   const endStage = startStage('validation');
   try {
     const outcome = runValidation();
-    endStage({ attested: outcome?.attested === true });
+    endStage();
     return outcome;
   } catch (error) {
     endStage({ failed: true });
@@ -226,13 +226,6 @@ function verifyTools(config) {
   run('git', ['--version']);
   run('gh', ['--version']);
   run(agentBinary(config), ['--version']);
-  // Docker нужен только контейнерному режиму и только при непустом наборе.
-  if (
-    config.validationMode === 'container' &&
-    config.preflightScripts.length + config.validationScripts.length > 0
-  ) {
-    run('docker', ['version']);
-  }
   verifyGitHubAuthentication(config);
 }
 

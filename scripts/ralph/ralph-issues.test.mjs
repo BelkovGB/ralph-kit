@@ -25,7 +25,6 @@ import {
   verifyAgentSkills,
 } from './ralph-config.mjs';
 import {
-  failingScriptOutput,
   formatFailureSummary,
   recoveryPrompt,
   summarizeCommandFailure,
@@ -239,33 +238,6 @@ test('after a rejected review the retry is told the work is already committed', 
   // подставляется целиком.
   assert.doesNotMatch(prompt, /Location:/);
 });
-
-test('the failure excerpt comes from the script that failed, not the one before it', () => {
-  const output = [
-    'RALPH_VALIDATION_SCRIPT=npm run lint',
-    'PASS test/example.e2e-spec.ts',
-    'Tests:       158 passed, 158 total',
-    'RALPH_VALIDATION_SCRIPT=npm test',
-    'Error: expect(page).toHaveURL(expected) failed',
-    '  1) [desktop-chromium] › e2e/profile.spec.ts:849:5 › resumed page returns to sign-in',
-  ].join('\n');
-
-  const scoped = failingScriptOutput(output, 'npm test');
-  assert.match(scoped, /toHaveURL/);
-  // Хвост предыдущей, успешной команды в отчёт попадать не должен: иначе про
-  // упавшую команду показываются строки PASS от предыдущей.
-  assert.doesNotMatch(scoped, /158 passed/);
-  assert.doesNotMatch(scoped, /RALPH_VALIDATION_SCRIPT/);
-
-  // Маркеры разошлись с атрибуцией ошибки — показываем всё, а не чужой кусок.
-  assert.equal(failingScriptOutput(output, 'lint'), stripAnsiForTest(output));
-  assert.equal(failingScriptOutput('без маркеров', 'lint'), 'без маркеров');
-});
-
-function stripAnsiForTest(text) {
-  // eslint-disable-next-line no-control-regex
-  return text.replace(/\[[0-9;]*m/g, '');
-}
 
 test('a branch that moved on is judged by ancestry, not by an exact HEAD match', () => {
   const calls = [];
@@ -1047,63 +1019,6 @@ test('the console marks the fields the config cannot do without', () => {
   assert.deepEqual(marked, new Set(['prompt', 'phases', 'approvedIssueSnapshotsHash']));
 });
 
-test('the validation image is derived per field when the config omits it', () => {
-  const original = JSON.parse(readFileSync(ralphConfigPath, 'utf8'));
-  const validationContainer = {
-    dockerfile: 'scripts/ralph/Dockerfile.validation',
-    writableVolumes: [],
-  };
-
-  // Умолчание на всём объекте означало бы, что удаление одного ключа
-  // останавливает прогон. Имя образа выводится из имени каталога репозитория,
-  // поэтому проверяется форма имени, а не конкретная строка.
-  withPatchedRalphConfig(
-    { ...original, validationMode: 'container', validationContainer },
-    (config) => {
-      assert.equal(config.validationContainer.image.endsWith('-ralph-validation:latest'), true);
-      assert.equal(config.validationContainer.dockerfile, validationContainer.dockerfile);
-    },
-  );
-});
-
-test('validation writable volumes accept unique absolute POSIX paths only', () => {
-  withPatchedRalphConfig(
-    {
-      validationMode: 'container',
-      validationContainer: {
-        dockerfile: 'scripts/ralph/Dockerfile.validation',
-        writableVolumes: ['/opt/pnpm-store'],
-      },
-    },
-    (config) => {
-      assert.deepEqual(config.validationContainer.writableVolumes, ['/opt/pnpm-store']);
-    },
-  );
-  for (const writableVolumes of [
-    ['relative/path'],
-    ['/opt/pnpm-store', '/opt/pnpm-store'],
-    ['/opt/pnpm store'],
-    ['/source/cache'],
-  ]) {
-    assert.throws(
-      () =>
-        withPatchedRalphConfig(
-          {
-            validationMode: 'container',
-            validationContainer: {
-              dockerfile: 'scripts/ralph/Dockerfile.validation',
-              writableVolumes,
-            },
-          },
-          () => {
-            throw new Error('loadConfig should have failed');
-          },
-        ),
-      /writableVolumes.*POSIX/u,
-    );
-  }
-});
-
 test('умолчание не убирает артефакты проверок', () => {
   // Ключа в конфиге нет — Ralph не удаляет ничего: он не знает, что в чужом
   // проекте мусор, а что дорогой кеш.
@@ -1133,22 +1048,6 @@ test('умолчание не убирает артефакты проверок
   withPatchedRalphConfig({ validationArtifactPaths: ['apps/web/output'] }, (config) => {
     assert.deepEqual(config.validationArtifactPaths, ['apps/web/output']);
   });
-});
-
-test('host validation does not require Docker settings', () => {
-  withPatchedRalphConfig(
-    {
-      validationMode: 'host',
-      validationContainer: undefined,
-      validationDependencyPaths: undefined,
-      validationEnvironment: ['DATABASE_URL=postgres://validation'],
-    },
-    (config) => {
-      assert.equal(config.validationMode, 'host');
-      assert.equal(config.validationContainer, undefined);
-      assert.deepEqual(config.validationDependencyPaths, []);
-    },
-  );
 });
 
 test('a host validation mutation blocks recovery until the original diff is restored', () => {
@@ -1200,12 +1099,12 @@ test('validation environment accepts unique NAME=value entries only', () => {
   );
 });
 
-test('host validation rejects shell command chains', () => {
+test('проверки отвергают цепочки команд оболочки', () => {
   for (const command of ['pnpm lint; pnpm test', 'pnpm lint && pnpm test', 'pnpm lint | tee log']) {
     assert.throws(
       () =>
         withPatchedRalphConfig(
-          { validationMode: 'host', validationScripts: [command] },
+          { validationScripts: [command] },
           () => {
             throw new Error('loadConfig should have failed');
           },
@@ -1351,7 +1250,7 @@ function playwrightFailureOutput() {
 }
 
 function validationError(output) {
-  return Object.assign(new Error('Команда docker run завершилась с кодом 1.'), {
+  return Object.assign(new Error('Команда pnpm check завершилась с кодом 1.'), {
     code: 'RALPH_COMMAND_FAILED',
     status: 1,
     stdout: output,
@@ -2008,16 +1907,6 @@ test('проверка авторизации GitHub смотрит на тот 
       ),
     /other-bot/u,
   );
-});
-
-test('поле записываемых томов контейнера доступно на пульте', () => {
-  // Ключ поставляется в конфиге и описан в документации: без поля пульт
-  // показывает его в блоке «Не распознано» с кнопкой удаления.
-  const field = fieldGroups
-    .flatMap((group) => group.fields)
-    .find((item) => item.path === 'validationContainer.writableVolumes');
-
-  assert.equal(field?.type, 'list');
 });
 
 test('адрес origin закрепляется на весь прогон, а не на фазу', () => {

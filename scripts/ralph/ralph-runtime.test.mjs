@@ -395,7 +395,7 @@ test('retention keeps the newest runs even when every rotation shares one timest
   withTemporaryDirectory((directory) => {
     const logPath = path.join(directory, 'run.log');
     // Метка задаётся явно, а не берётся с часов: восемь ротаций укладываются в
-    // одну миллисекунду на tmpfs контейнера и не укладываются на диске Windows,
+    // одну миллисекунду на быстрой файловой системе и не укладываются на диске Windows,
     // поэтому только явная метка воспроизводит этот случай на любой машине.
     const stamp = '2026-08-16T17:41:21.721Z';
 
@@ -420,7 +420,7 @@ test('retention keeps the newest runs even when every rotation shares one timest
 test('two rotations within the same millisecond keep both archives', () => {
   withTemporaryDirectory((directory) => {
     const logPath = path.join(directory, 'run.log');
-    // Метка времени одна и та же для обеих ротаций: на tmpfs контейнера восемь
+    // Метка времени одна и та же для обеих ротаций: на быстрой файловой системе восемь
     // ротаций укладываются в одну миллисекунду. Имя архива уникально по
     // построению: иначе вторая ротация переименовала бы файл поверх первого
     // архива и уничтожила его.
@@ -542,7 +542,7 @@ test('a review is not retried when the failure cannot change between attempts', 
 
 test(
   'commandSpec spawns a native executable directly and keeps cmd.exe for batch shims',
-  // Ветка целиком windows-only: в Linux-контейнере валидации проверять нечего.
+  // Ветка целиком windows-only: на Linux проверять нечего.
   { skip: process.platform !== 'win32' ? 'windows-only' : false },
   () => {
     withTemporaryDirectory((root) => {
@@ -593,8 +593,8 @@ test('подробности идут в журнал, а объёмный по�
   withTemporaryDirectory((directory) => {
     const logPath = path.join(directory, 'run.log');
     const printed = [];
-    // Вывод контейнера длиннее порога: именно такие куски и повторяются.
-    const containerOutput = `RALPH_VALIDATION_SCRIPT=lint\n${'x'.repeat(600)}`;
+    // Вывод проверки длиннее порога: именно такие куски и повторяются.
+    const longOutput = `первая строка вывода\n${'x'.repeat(600)}`;
 
     let restore;
     try {
@@ -603,8 +603,8 @@ test('подробности идут в журнал, а объёмный по�
       // консоль, они окажутся здесь.
       console.log = (...args) => printed.push(args.join(' '));
       console.error = (...args) => printed.push(args.join(' '));
-      logDetail(containerOutput);
-      logDetail(containerOutput);
+      logDetail(longOutput);
+      logDetail(longOutput);
       logDetailError('короткая строка ошибки');
     } finally {
       restore?.();
@@ -612,9 +612,9 @@ test('подробности идут в журнал, а объёмный по�
 
     const log = readFileSync(logPath, 'utf8');
     // Консоль не получила ничего: за ходом прогона в ней видно шаги, а не
-    // десятки тысяч строк вывода контейнера.
+    // десятки тысяч строк вывода проверок.
     assert.deepEqual(printed, []);
-    assert.match(log, /RALPH_VALIDATION_SCRIPT=lint/);
+    assert.match(log, /первая строка вывода/);
     assert.match(log, /ERROR короткая строка ошибки/);
 
     const digest = log.match(/<сообщение ([0-9a-f]{12})>/)?.[1];

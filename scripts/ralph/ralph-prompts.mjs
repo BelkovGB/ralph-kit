@@ -75,8 +75,8 @@ const toolReviewGuidance =
   'Read efficiently with the only tools you have — Grep, Glob and Read: locate code with Grep before opening a file, and read bounded ranges with Read rather than whole files. Glob patterns and Grep `--glob` filters treat square brackets as a character class, so a path segment written in brackets never matches literally: reach it with a wildcard segment, then pass the exact path to Read. Do not dump full logs, lockfiles, or generated files.';
 
 /**
- * Оболочка ревьюера — это оболочка машины оператора, а не контейнера проверок,
- * поэтому подсказка выбирается по платформе, а не только по CLI. Роль Claude
+ * Оболочка ревьюера — это оболочка машины оператора, поэтому подсказка
+ * выбирается по платформе, а не только по CLI. Роль Claude
  * оболочки не получает вовсе, и её подсказка от платформы не зависит.
  */
 export function reviewShellGuidance(config, platform = process.platform) {
@@ -150,7 +150,7 @@ function reviewValidationEvidence(config) {
 
   return `
 
-The Ralph orchestrator already ran ${scripts.join(', ')} in an isolated container against this exact tree, and all of them passed. Do not rerun them, and do not report a finding whose only content is that a check should be run.`;
+The Ralph orchestrator already ran ${scripts.join(', ')} against this exact tree, and all of them passed. Do not rerun them, and do not report a finding whose only content is that a check should be run.`;
 }
 
 function reviewPreviousFindings(previousFindings) {

@@ -20,7 +20,6 @@ import {
   inheritableEnvironmentVariables,
   run,
 } from './ralph-process-runner.mjs';
-import { validationContainerRunArgs } from './ralph-validation-runner.mjs';
 import { withFakeCodex } from './ralph-test-support.mjs';
 
 test('runAgentOnIssue rejects freshly fetched mutable content before a fake Codex executable starts', async () => {
@@ -59,36 +58,6 @@ test('runAgentOnIssue rejects freshly fetched mutable content before a fake Code
   } finally {
     rmSync(markerDirectory, { recursive: true, force: true });
   }
-});
-
-test('validation containers use a constrained workspace and a disabled network', () => {
-  const args = validationContainerRunArgs(
-    { validationContainer: { image: 'ralph-validation:test' } },
-    'npm test',
-    'C:\\workspace\\validation-snapshot',
-  );
-
-  assert.deepEqual(args.slice(0, 14), [
-    'run',
-    '--rm',
-    '--init',
-    '--network',
-    'none',
-    '--read-only',
-    '--cap-drop',
-    'ALL',
-    '--security-opt',
-    'no-new-privileges',
-    '--pids-limit',
-    '512',
-    '--user',
-    '65532:65532',
-  ]);
-  assert.ok(
-    args.includes('type=bind,source=C:\\workspace\\validation-snapshot,target=/source,readonly'),
-  );
-  assert.ok(args.includes('ralph-validation:test'));
-  assert.deepEqual(args.slice(-2), ['ralph-validation:test', 'npm test']);
 });
 
 test('child environments remove inherited credentials before untrusted work runs', async () => {

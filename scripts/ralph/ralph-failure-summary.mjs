@@ -101,39 +101,12 @@ function primaryErrorLine(lines) {
   );
 }
 
-/**
- * Вывод одной упавшей команды, а не всего набора.
- *
- * Entrypoint печатает маркер отдельной строкой перед каждой командой, а
- * `set -eu` останавливает цикл на первом сбое: всё до последнего маркера —
- * вывод уже прошедших проверок. Без отсечения excerpt показывает хвост
- * предыдущей, успешной команды: в сводке про упавший браузерный набор стоят
- * строки `PASS test/...` от API-набора.
- *
- * Разбор построчный: команда содержит пробелы, а перевод строки в ней запрещён
- * проверкой конфигурации.
- */
-const validationScriptMarkerLine = /^RALPH_VALIDATION_SCRIPT=(.+?)\s*$/gm;
-
-export function failingScriptOutput(rawOutput, script) {
-  // Маркер печатается контейнером и может прийти в escape-последовательностях,
-  // как и всё остальное; runner ищет его тоже по очищенному тексту.
-  const output = stripAnsi(rawOutput);
-  const markers = [...output.matchAll(validationScriptMarkerLine)];
-  const last = markers.at(-1);
-  // Сверка с именем, которое runner уже определил: если маркеры разъедутся с
-  // атрибуцией ошибки, лучше показать весь вывод, чем чужой кусок.
-  if (!last || (script && last[1] !== script)) return output;
-
-  return output.slice(last.index + last[0].length);
-}
-
 export function summarizeCommandFailure(error, options = {}) {
   const maxLines = options.maxLines ?? 20;
   const fullOutput =
     [error?.stdout, error?.stderr].filter(Boolean).join('\n').trim() ||
     stripAnsi(error?.message ?? '');
-  const output = failingScriptOutput(fullOutput, error?.script);
+  const output = stripAnsi(fullOutput);
   const lines = significantOutputLines(output);
   const { tests, omitted } = uniqueFailedTests(output);
   const primary = primaryErrorLine(lines) ?? String(error?.message ?? '').split(/\r?\n/)[0] ?? '';
