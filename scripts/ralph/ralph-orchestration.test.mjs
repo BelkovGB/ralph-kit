@@ -239,6 +239,9 @@ test('printCheck stays quiet about the budget while iterations remain', () => {
         maxTestFixAttempts: 3,
         developmentModel: 'gpt-5.6',
         rulesFile: '.agents/ralph-rules.md',
+        // Проверки заполнены: тест ловит любое ВНИМАНИЕ, а незаполненный список
+        // команд печатает своё собственное и предупреждение о бюджете спрячет.
+        validationScripts: ['npm test'],
         review: { enabled: false },
         milestoneReview: { enabled: false },
       },
@@ -898,6 +901,59 @@ test('printCheck предупреждает о журнале одобрений
 
   // Перенесённый журнал предупреждения не получает: ловушки больше нет.
   assert.doesNotMatch(check('.agents/approved-issues.json'), /журнал одобренных issues/u);
+});
+
+/**
+ * Пустой список проверок — самая дорогая незаполненная настройка: прогон дойдёт
+ * до коммита и ревью, ни разу не запустив тесты, а узнают об этом по чужому багу
+ * в pull request. --check обязан показывать команды и их порядок (проверки идут
+ * до первого отказа, поэтому порядок решает, какую ошибку увидит агент) и
+ * предупреждать, когда команд нет вовсе.
+ */
+test('printCheck печатает команды проверок и предупреждает о пустом списке', () => {
+  const baseConfig = {
+    maxIterations: 40,
+    maxTurns: 120,
+    maxTestFixAttempts: 3,
+    developmentModel: 'gpt-5.6',
+    rulesFile: '.agents/ralph-rules.md',
+    approvedIssueSnapshotsFile: '.agents/approved-issues.json',
+    review: { enabled: false },
+    milestoneReview: { enabled: false },
+  };
+  const check = (scripts) => {
+    const lines = [];
+    const originalLog = console.log;
+    console.log = (message) => lines.push(String(message));
+    try {
+      printCheck(
+        { ...baseConfig, ...scripts },
+        'owner/repository',
+        { title: 'Test milestone' },
+        { currentBranch: 'feature/test', clean: true },
+        [],
+        { used: 0, limit: 40, remaining: 40 },
+      );
+    } finally {
+      console.log = originalLog;
+    }
+    return lines.join('\n');
+  };
+
+  const filled = check({
+    preflightScripts: ['npm ci'],
+    validationScripts: ['npm run lint', 'npm test'],
+  });
+  assert.match(filled, /Команды подготовки:\n\s+1\. npm ci/u);
+  assert.match(filled, /Команды проверок:\n\s+1\. npm run lint\n\s+2\. npm test/u);
+  assert.doesNotMatch(filled, /команды проверок не заданы/u);
+
+  // Подготовка необязательна и пустой список нормален: своего блока она не
+  // получает. Пустые проверки — предупреждение.
+  const empty = check({ preflightScripts: [], validationScripts: [] });
+  assert.doesNotMatch(empty, /Команды подготовки/u);
+  assert.match(empty, /ВНИМАНИЕ: команды проверок не заданы/u);
+  assert.match(empty, /validationScripts/u);
 });
 
 /**

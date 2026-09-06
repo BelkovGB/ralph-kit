@@ -974,6 +974,15 @@ export function iterationBudget(config, stateStore) {
   return { used, limit, remaining: Math.max(0, limit - used) };
 }
 
+function printScriptList(label, scripts) {
+  const commands = scripts ?? [];
+  if (commands.length === 0) return;
+  console.log(`${label}:`);
+  commands.forEach((command, index) => {
+    console.log(`  ${index + 1}. ${command}`);
+  });
+}
+
 export function printCheck(
   config,
   repository,
@@ -996,6 +1005,11 @@ export function printCheck(
   console.log(`Лимит исправлений тестов: ${config.maxTestFixAttempts}`);
   console.log(`Модель разработки: ${config.developmentModel} (effort=${config.developmentEffort})`);
   console.log(`Правила сессии: ${config.rulesFile}`);
+  // Команды нумерованы, потому что порядок — часть настройки: прогон
+  // останавливается на первой упавшей команде, и агент получает сводку только по
+  // ней. Подготовка необязательна, её пустой список нормален и молчит.
+  printScriptList('Команды подготовки', config.preflightScripts);
+  printScriptList('Команды проверок', config.validationScripts);
   console.log(
     `Review issue: ${
       config.review.enabled ? `${config.review.model} (effort=${config.review.effort})` : 'выключен'
@@ -1024,6 +1038,17 @@ export function printCheck(
         'обновление набора перезаписывает целиком. Перенесите файл, например в ' +
         '.agents/approved-issues.json, поправьте "approvedIssueSnapshotsFile" и ' +
         'сумму в конфиге; порядок описан в INSTALL.md набора.',
+    );
+  }
+  // Пустой список проверок — самая дорогая незаполненная настройка: цикл дойдёт
+  // до коммита и ревью, ни разу не запустив тесты, и промолчит об этом.
+  if ((config.validationScripts ?? []).length === 0) {
+    console.log(
+      'ВНИМАНИЕ: команды проверок не заданы. Прогон дойдёт до коммита и ревью, ни разу ' +
+        `не запустив тесты и линтер: заполните "validationScripts" в ${path.relative(
+          projectRoot,
+          configPath,
+        )} или на вкладке «Проверки» пульта.`,
     );
   }
   if (budget.remaining === 0) {
