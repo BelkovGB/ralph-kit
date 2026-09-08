@@ -114,7 +114,7 @@ export function parseRun(text, file) {
   if (heading === -1) throw acceptanceError(`${file}: нет раздела «## Результаты».`);
   const { rows } = tableRows(lines, heading + 1);
   if (rows.length === 0) throw acceptanceError(`${file}: таблица результатов пуста.`);
-  return rows.map(({ cells, line }) => {
+  const results = rows.map(({ cells, line }) => {
     const [id = '', status = '', comment = ''] = cells;
     if (!caseIdPattern.test(id)) throw acceptanceError(`${file}:${line}: «${id}» не похоже на ID кейса.`);
     if (!acceptanceStatuses.includes(status)) {
@@ -124,6 +124,16 @@ export function parseRun(text, file) {
     }
     return { id, status, comment, line };
   });
+  // Повтор ID в одной таблице результатов даёт кейсу две записи в истории за
+  // один прогон, и «последние пять прогонов» перестают быть пятью прогонами.
+  const seen = new Set();
+  for (const result of results) {
+    if (seen.has(result.id)) {
+      throw acceptanceError(`${file}:${result.line}: кейс ${result.id} встречается в прогоне дважды.`);
+    }
+    seen.add(result.id);
+  }
+  return results;
 }
 
 export const historyLimit = 5;
@@ -137,6 +147,28 @@ const diskFiles = {
 
 function joinPath(...parts) {
   return parts.join('/');
+}
+
+// Второй прогон с тем же именем в тот же день получает суффикс `-2`, третий —
+// `-3` и так далее (конвенция набора). Простой `.sort()` по строке ставит
+// суффикс раньше расширения: «-» (0x2D) меньше «.» (0x2E) в ASCII, поэтому
+// «…-cart-2.md» встаёт перед «…-cart.md», а история кейса — задом наперёд.
+// Сортируем по основе имени без расширения и без хвоста повтора, а сам номер
+// повтора сравниваем как число, а не как строку — иначе «-10» встанет перед
+// «-2».
+const repeatSuffixPattern = /^(.*)-(\d+)$/u;
+
+function runSortKey(name) {
+  const stem = name.slice(0, -'.md'.length);
+  const match = repeatSuffixPattern.exec(stem);
+  return match ? { base: match[1], repeat: Number(match[2]) } : { base: stem, repeat: 1 };
+}
+
+function compareRunNames(a, b) {
+  const left = runSortKey(a);
+  const right = runSortKey(b);
+  if (left.base !== right.base) return left.base < right.base ? -1 : 1;
+  return left.repeat - right.repeat;
 }
 
 export function readAcceptance(directory, files = diskFiles) {
@@ -155,7 +187,7 @@ export function readAcceptance(directory, files = diskFiles) {
   const runs = files
     .readDirectory(runsDirectory)
     .filter((name) => name.endsWith('.md'))
-    .sort()
+    .sort(compareRunNames)
     .map((name) => ({ name, results: parseRun(files.readFile(joinPath(runsDirectory, name)), joinPath('runs', name)) }));
   return { directory, modules, runs };
 }

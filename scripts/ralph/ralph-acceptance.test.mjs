@@ -122,6 +122,11 @@ test('прогон: неизвестный статус, пустая табли
   assert.throws(() => parseRun('# Прогон', 'runs/r.md'), /Результаты/u);
 });
 
+test('прогон: повтор ID в таблице результатов останавливает с файлом и строкой повтора', () => {
+  const text = run(['| CART-001 | PASS | |', '| CART-007 | FAIL | |', '| CART-001 | PASS | |']);
+  assert.throws(() => parseRun(text, 'runs/r.md'), /runs\/r\.md:6.*CART-001.*дважды/u);
+});
+
 test('сводка: последний статус, прогон и история из пяти, свежий справа', () => {
   const files = memoryFiles({
     'docs/acceptance/modules.md': modulesText,
@@ -141,6 +146,25 @@ test('сводка: последний статус, прогон и истор�
     { id: 'CART-004', status: null, run: null, history: [] },
   ]);
   assert.deepEqual(status.counts, { total: 3, PASS: 2, FAIL: 0, BLOCKED: 0, SKIPPED: 0, never: 1 });
+});
+
+test('сводка: суффикс повтора «-2» и «-10» сортируется как число, а не как текст', () => {
+  const files = memoryFiles({
+    'docs/acceptance/modules.md': modulesText,
+    'docs/acceptance/cases/cart.md': cartCases,
+    'docs/acceptance/runs/2026-09-15-regress-cart.md': run(['| CART-001 | FAIL | |']),
+    'docs/acceptance/runs/2026-09-15-regress-cart-2.md': run(['| CART-001 | PASS | |']),
+    'docs/acceptance/runs/2026-09-15-regress-cart-10.md': run(['| CART-001 | BLOCKED | |']),
+  });
+  const status = buildStatus(readAcceptance('docs/acceptance', files));
+  const cart001 = status.modules.find((module) => module.name === 'cart').rows.find((row) => row.id === 'CART-001');
+  assert.deepEqual(cart001, {
+    id: 'CART-001',
+    title: 'Добавление товара',
+    status: 'BLOCKED',
+    run: 'runs/2026-09-15-regress-cart-10.md',
+    history: ['F', 'P', 'B'],
+  });
 });
 
 test('сводка: модуль без файла кейсов — не ошибка, а строка «кейсов нет»', () => {
