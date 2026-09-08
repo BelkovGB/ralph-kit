@@ -1,10 +1,14 @@
 import assert from 'node:assert/strict';
+import { existsSync, readFileSync } from 'node:fs';
+import path from 'node:path';
 import test from 'node:test';
 
 import {
   buildStatus,
   computeImpact,
   globToRegExp,
+  main,
+  parseArguments,
   parseCases,
   parseModules,
   parseRun,
@@ -12,6 +16,7 @@ import {
   renderImpact,
   renderStatus,
 } from './ralph-acceptance.mjs';
+import { temporaryProjectTree } from './ralph-test-support.mjs';
 
 // Каталог приёмки в памяти: файловая система подменяется картой путей, потому
 // что разбор не зависит от диска, а тест — от временных каталогов.
@@ -258,4 +263,67 @@ test('impact: снятые кейсы в счёт не идут, пустые с
   assert.deepEqual(result.withoutCases, [{ name: 'cart', paths: ['src/cart/a.ts'] }]);
   assert.match(renderImpact(result), /Задеты модули с кейсами:\n  нет/u);
   assert.match(renderImpact(result), /Пути вне реестра:\n  нет/u);
+});
+
+// CLI: захват log/warn вместо консоли, чтобы тест проверял ровно то, что печатает
+// команда человеку, а не подглядывал в console.log.
+function capture() {
+  const out = [];
+  const err = [];
+  return { out, err, log: (text) => out.push(String(text)), warn: (text) => err.push(String(text)) };
+}
+
+test('аргументы: две команды, --dir, всё остальное — подсказка с кодом 2', () => {
+  assert.deepEqual(parseArguments(['status']), { command: 'status', range: null, dir: 'docs/acceptance' });
+  assert.deepEqual(parseArguments(['impact', 'main...ralph/phase-3', '--dir', 'qa']), { command: 'impact', range: 'main...ralph/phase-3', dir: 'qa' });
+  for (const argv of [[], ['run'], ['impact'], ['status', '--dir'], ['status', 'лишнее']]) {
+    assert.throws(() => parseArguments(argv), (error) => error.exitCode === 2 && /status|impact/u.test(error.message));
+  }
+});
+
+test('status: пишет status.md в каталог приёмки и печатает счёт и путь', async () => {
+  const root = temporaryProjectTree({
+    'docs/acceptance/modules.md': modulesText,
+    'docs/acceptance/cases/cart.md': cartCases,
+    'docs/acceptance/runs/2026-09-01-phase-1.md': run(['| CART-001 | PASS | |', '| CART-999 | PASS | |']),
+  });
+  const output = capture();
+  await main(['status'], { projectRoot: root, log: output.log, warn: output.warn });
+  const written = readFileSync(path.join(root, 'docs', 'acceptance', 'status.md'), 'utf8');
+  assert.match(written, /CART-001 \| Добавление товара \| PASS/u);
+  assert.match(output.out.join('\n'), /Кейсов 3 · PASS 1/u);
+  assert.match(output.out.join('\n'), /docs\/acceptance\/status\.md/u);
+  assert.match(output.err.join('\n'), /CART-999/u);
+});
+
+test('impact: берёт пути из подменённого diff и ничего не пишет', async () => {
+  const root = temporaryProjectTree({
+    'docs/acceptance/modules.md': modulesText,
+    'docs/acceptance/cases/cart.md': cartCases,
+  });
+  const output = capture();
+  const ranges = [];
+  await main(['impact', 'main...ralph/phase-3'], {
+    projectRoot: root,
+    changedPaths: (range) => {
+      ranges.push(range);
+      return ['src/cart/a.ts', 'README.md'];
+    },
+    log: output.log,
+    warn: output.warn,
+  });
+  assert.deepEqual(ranges, ['main...ralph/phase-3']);
+  assert.match(output.out.join('\n'), /cart — 3 кейса; src\/cart\/a\.ts/u);
+  assert.match(output.out.join('\n'), /Пути вне реестра:\n  README\.md/u);
+  assert.equal(existsSync(path.join(root, 'docs', 'acceptance', 'status.md')), false);
+});
+
+test('без реестра обе команды останавливаются с кодом 1 и ожидаемым путём', async () => {
+  const root = temporaryProjectTree({});
+  for (const argv of [['status'], ['impact', 'a...b']]) {
+    await assert.rejects(
+      () => main(argv, { projectRoot: root, changedPaths: () => [], log() {}, warn() {} }),
+      (error) => error.exitCode === 1 && /docs\/acceptance\/modules\.md/u.test(error.message),
+    );
+  }
 });

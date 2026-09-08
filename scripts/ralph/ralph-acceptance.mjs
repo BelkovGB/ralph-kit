@@ -4,7 +4,12 @@
  * строгий: пропущенный кейс в сводке выглядит как «не гонялся», и это ложь.
  */
 
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
+import process from 'node:process';
+import { fileURLToPath } from 'node:url';
+
+import { run } from './ralph-process-runner.mjs';
 
 export const acceptanceStatuses = ['PASS', 'FAIL', 'BLOCKED', 'SKIPPED'];
 
@@ -318,4 +323,87 @@ export function renderStatus(status) {
     }
   }
   return `${lines.join('\n')}\n`;
+}
+
+// -----------------------------------------------------------------------------
+// CLI: две команды поверх разбора и сводки — `status` пишет файл и предупреждает
+// о повисших ID в прогонах, `impact` только печатает задетые модули по diff.
+// -----------------------------------------------------------------------------
+
+const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+const defaultDirectory = 'docs/acceptance';
+const usage = [
+  'Использование:',
+  '  node scripts/ralph/ralph-acceptance.mjs status [--dir docs/acceptance]',
+  '  node scripts/ralph/ralph-acceptance.mjs impact <диапазон git> [--dir docs/acceptance]',
+].join('\n');
+
+export function parseArguments(argv) {
+  const [command, ...rest] = argv;
+  if (command !== 'status' && command !== 'impact') throw acceptanceError(usage, 2);
+  let range = null;
+  let dir = defaultDirectory;
+  const positional = [];
+  for (let index = 0; index < rest.length; index += 1) {
+    if (rest[index] === '--dir') {
+      dir = rest[index + 1];
+      if (!dir) throw acceptanceError(`--dir без значения.\n${usage}`, 2);
+      index += 1;
+    } else {
+      positional.push(rest[index]);
+    }
+  }
+  if (command === 'impact') range = positional.shift() ?? null;
+  if (command === 'impact' && !range) throw acceptanceError(`impact ждёт диапазон git.\n${usage}`, 2);
+  if (positional.length > 0) throw acceptanceError(`Лишние аргументы: ${positional.join(' ')}.\n${usage}`, 2);
+  return { command, range, dir };
+}
+
+function changedPathsFromGit(range) {
+  const result = run('git', ['diff', '--name-only', range], { allowFailure: true });
+  if (result.status !== 0) throw acceptanceError(`git diff --name-only ${range} не удался: ${result.stderr.trim()}`);
+  return result.stdout.split(/\r?\n/u).filter(Boolean);
+}
+
+export async function main(argv = process.argv.slice(2), dependencies = {}) {
+  const root = dependencies.projectRoot ?? projectRoot;
+  const log = dependencies.log ?? console.log;
+  const warn = dependencies.warn ?? console.error;
+  const writeFile = dependencies.writeFile ?? ((file, text) => writeFileSync(file, text, 'utf8'));
+  const { command, range, dir } = parseArguments(argv);
+  // Каталог приёмки читается путём от корня набора: относительный вид в
+  // сообщениях и в status.md нужен человеку, абсолютный — только диску.
+  const directory = dir.replaceAll('\\', '/');
+  const files = {
+    exists: (file) => existsSync(path.join(root, file)),
+    readFile: (file) => readFileSync(path.join(root, file), 'utf8'),
+    readDirectory: (file) => (existsSync(path.join(root, file)) ? readdirSync(path.join(root, file)) : []),
+  };
+  const acceptance = readAcceptance(directory, files);
+  if (command === 'status') {
+    const status = buildStatus(acceptance);
+    for (const warning of status.warnings) warn(`ВНИМАНИЕ: ${warning}`);
+    const target = `${directory}/status.md`;
+    writeFile(path.join(root, target), renderStatus(status));
+    const { counts } = status;
+    log(`Кейсов ${counts.total} · PASS ${counts.PASS} · FAIL ${counts.FAIL} · BLOCKED ${counts.BLOCKED} · SKIPPED ${counts.SKIPPED} · не гонялся ${counts.never}`);
+    log(`Сводка записана: ${target}`);
+    return;
+  }
+  const changedPaths = (dependencies.changedPaths ?? changedPathsFromGit)(range).map((file) => file.replaceAll('\\', '/'));
+  log(renderImpact(computeImpact(acceptance, changedPaths)));
+}
+
+// Прямой запуск через node отличается от импорта модуля тестами: process.argv[1]
+// указывает на этот файл только в первом случае (тот же приём, что в ralph-loop.mjs).
+const isMainModule =
+  process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
+
+if (isMainModule) {
+  try {
+    await main();
+  } catch (error) {
+    console.error(error.message);
+    process.exitCode = error.exitCode ?? 1;
+  }
 }
