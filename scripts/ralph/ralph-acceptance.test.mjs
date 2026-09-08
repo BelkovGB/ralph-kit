@@ -1,7 +1,35 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { parseCases, parseModules, parseRun } from './ralph-acceptance.mjs';
+import { buildStatus, parseCases, parseModules, parseRun, readAcceptance, renderStatus } from './ralph-acceptance.mjs';
+
+// Каталог приёмки в памяти: файловая система подменяется картой путей, потому
+// что разбор не зависит от диска, а тест — от временных каталогов.
+function memoryFiles(files) {
+  const normalized = new Map(Object.entries(files).map(([key, value]) => [key.replaceAll('\\', '/'), value]));
+  return {
+    exists: (file) => normalized.has(file.replaceAll('\\', '/')),
+    readFile: (file) => {
+      const key = file.replaceAll('\\', '/');
+      if (!normalized.has(key)) throw new Error(`нет файла ${key}`);
+      return normalized.get(key);
+    },
+    readDirectory: (directory) => {
+      const prefix = `${directory.replaceAll('\\', '/')}/`;
+      return [...normalized.keys()].filter((key) => key.startsWith(prefix)).map((key) => key.slice(prefix.length));
+    },
+  };
+}
+
+const modulesText = ['| Модуль | Кейсы | Пути |', '| --- | --- | --- |', '| cart | cases/cart.md | src/cart/** |', '| search | cases/search.md | src/search/** |'].join('\n');
+const cartCases = [
+  '## CART-001. Добавление товара',
+  '## CART-002. Нулевой остаток',
+  '## CART-003. Снятый кейс',
+  '**Снят** 2026-10-01 — удалено',
+  '## CART-004. Ни разу не гонялся',
+].join('\n');
+const run = (rows) => ['## Результаты', '| Кейс | Статус | Комментарий |', '| --- | --- | --- |', ...rows].join('\n');
 
 test('реестр модулей: имя, файл кейсов и пути через запятую', () => {
   const text = [
@@ -92,4 +120,64 @@ test('прогон: неизвестный статус, пустая табли
   );
   assert.throws(() => parseRun(head.join('\n'), 'runs/r.md'), /пуста/u);
   assert.throws(() => parseRun('# Прогон', 'runs/r.md'), /Результаты/u);
+});
+
+test('сводка: последний статус, прогон и история из пяти, свежий справа', () => {
+  const files = memoryFiles({
+    'docs/acceptance/modules.md': modulesText,
+    'docs/acceptance/cases/cart.md': cartCases,
+    'docs/acceptance/runs/2026-09-01-phase-1.md': run(['| CART-001 | PASS | |', '| CART-002 | PASS | |']),
+    'docs/acceptance/runs/2026-09-02-regress-cart.md': run(['| CART-001 | FAIL | |']),
+    'docs/acceptance/runs/2026-09-03-regress-cart.md': run(['| CART-001 | PASS | |']),
+    'docs/acceptance/runs/2026-09-04-regress-cart.md': run(['| CART-001 | PASS | |']),
+    'docs/acceptance/runs/2026-09-05-regress-cart.md': run(['| CART-001 | BLOCKED | |']),
+    'docs/acceptance/runs/2026-09-06-regress-cart.md': run(['| CART-001 | PASS | |']),
+  });
+  const status = buildStatus(readAcceptance('docs/acceptance', files));
+  const cart = status.modules.find((module) => module.name === 'cart');
+  assert.deepEqual(cart.rows.map(({ id, status: value, run: file, history }) => ({ id, status: value, run: file, history })), [
+    { id: 'CART-001', status: 'PASS', run: 'runs/2026-09-06-regress-cart.md', history: ['F', 'P', 'P', 'B', 'P'] },
+    { id: 'CART-002', status: 'PASS', run: 'runs/2026-09-01-phase-1.md', history: ['P'] },
+    { id: 'CART-004', status: null, run: null, history: [] },
+  ]);
+  assert.deepEqual(status.counts, { total: 3, PASS: 2, FAIL: 0, BLOCKED: 0, SKIPPED: 0, never: 1 });
+});
+
+test('сводка: модуль без файла кейсов — не ошибка, а строка «кейсов нет»', () => {
+  const files = memoryFiles({
+    'docs/acceptance/modules.md': modulesText,
+    'docs/acceptance/cases/cart.md': cartCases,
+  });
+  const status = buildStatus(readAcceptance('docs/acceptance', files));
+  assert.deepEqual(status.modules.find((module) => module.name === 'search').rows, []);
+  assert.match(renderStatus(status), /## search — cases\/search\.md\n\nКейсов нет\./u);
+});
+
+test('сводка: прогон с ID без кейса даёт предупреждение, а не остановку', () => {
+  const files = memoryFiles({
+    'docs/acceptance/modules.md': modulesText,
+    'docs/acceptance/cases/cart.md': cartCases,
+    'docs/acceptance/runs/2026-09-01-phase-1.md': run(['| CART-999 | PASS | |']),
+  });
+  const status = buildStatus(readAcceptance('docs/acceptance', files));
+  assert.equal(status.warnings.length, 1);
+  assert.match(status.warnings[0], /2026-09-01-phase-1\.md.*CART-999.*снят/u);
+});
+
+test('сводка: без реестра — остановка с ожидаемым путём', () => {
+  assert.throws(() => readAcceptance('docs/acceptance', memoryFiles({})), /docs\/acceptance\/modules\.md/u);
+});
+
+test('сводка: текст держит счёт, заголовок о генерации и таблицу по модулям', () => {
+  const files = memoryFiles({
+    'docs/acceptance/modules.md': modulesText,
+    'docs/acceptance/cases/cart.md': cartCases,
+    'docs/acceptance/runs/2026-09-01-phase-1.md': run(['| CART-001 | FAIL | |']),
+  });
+  const text = renderStatus(buildStatus(readAcceptance('docs/acceptance', files)));
+  assert.match(text, /^# Сводка приёмки\n\n<!-- сгенерировано командой node scripts\/ralph\/ralph-acceptance\.mjs status; руками не править -->/u);
+  assert.match(text, /Кейсов 3 · PASS 0 · FAIL 1 · BLOCKED 0 · SKIPPED 0 · не гонялся 2/u);
+  assert.match(text, /\| CART-001 \| Добавление товара \| FAIL \| runs\/2026-09-01-phase-1\.md \| F \|/u);
+  assert.match(text, /\| CART-004 \| Ни разу не гонялся \| не гонялся \| — \| — \|/u);
+  assert.doesNotMatch(text, /CART-003/u);
 });

@@ -4,6 +4,8 @@
  * строгий: пропущенный кейс в сводке выглядит как «не гонялся», и это ложь.
  */
 
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+
 export const acceptanceStatuses = ['PASS', 'FAIL', 'BLOCKED', 'SKIPPED'];
 
 const moduleNamePattern = /^[a-z0-9-]+$/u;
@@ -122,4 +124,103 @@ export function parseRun(text, file) {
     }
     return { id, status, comment, line };
   });
+}
+
+export const historyLimit = 5;
+const statusLetter = { PASS: 'P', FAIL: 'F', BLOCKED: 'B', SKIPPED: 'S' };
+
+const diskFiles = {
+  exists: (file) => existsSync(file),
+  readFile: (file) => readFileSync(file, 'utf8'),
+  readDirectory: (directory) => (existsSync(directory) ? readdirSync(directory) : []),
+};
+
+function joinPath(...parts) {
+  return parts.join('/');
+}
+
+export function readAcceptance(directory, files = diskFiles) {
+  const modulesFile = joinPath(directory, 'modules.md');
+  if (!files.exists(modulesFile)) {
+    throw acceptanceError(`Нет реестра модулей: ожидался ${modulesFile}. Его ведёт проект, формат — в scripts/ralph/README.md.`);
+  }
+  const modules = parseModules(files.readFile(modulesFile), modulesFile).map((module) => {
+    const casesFile = joinPath(directory, module.casesFile);
+    // Модуль без файла кейсов — нормальное состояние до первой приёмки: он уже
+    // в реестре, чтобы impact знал его пути.
+    const cases = files.exists(casesFile) ? parseCases(files.readFile(casesFile), casesFile, module.name) : [];
+    return { ...module, cases };
+  });
+  const runsDirectory = joinPath(directory, 'runs');
+  const runs = files
+    .readDirectory(runsDirectory)
+    .filter((name) => name.endsWith('.md'))
+    .sort()
+    .map((name) => ({ name, results: parseRun(files.readFile(joinPath(runsDirectory, name)), joinPath('runs', name)) }));
+  return { directory, modules, runs };
+}
+
+export function buildStatus(acceptance) {
+  const known = new Map();
+  for (const module of acceptance.modules) {
+    for (const item of module.cases) known.set(item.id, { ...item, module: module.name, history: [] });
+  }
+  const warnings = [];
+  for (const run of acceptance.runs) {
+    for (const result of run.results) {
+      const item = known.get(result.id);
+      if (!item) {
+        warnings.push(`runs/${run.name}: кейс ${result.id} не найден ни в одном файле кейсов — его удалили вместо пометки «снят»?`);
+        continue;
+      }
+      item.history.push({ run: `runs/${run.name}`, status: result.status });
+    }
+  }
+  const counts = { total: 0, PASS: 0, FAIL: 0, BLOCKED: 0, SKIPPED: 0, never: 0 };
+  const modules = acceptance.modules.map((module) => ({
+    name: module.name,
+    casesFile: module.casesFile,
+    rows: module.cases
+      .filter((item) => !item.retired)
+      .map((item) => {
+        const history = known.get(item.id).history;
+        const last = history.at(-1) ?? null;
+        counts.total += 1;
+        if (last) counts[last.status] += 1;
+        else counts.never += 1;
+        return {
+          id: item.id,
+          title: item.title,
+          status: last?.status ?? null,
+          run: last?.run ?? null,
+          history: history.slice(-historyLimit).map((entry) => statusLetter[entry.status]),
+        };
+      }),
+  }));
+  return { counts, modules, warnings };
+}
+
+export function renderStatus(status) {
+  const { counts } = status;
+  const lines = [
+    '# Сводка приёмки',
+    '',
+    '<!-- сгенерировано командой node scripts/ralph/ralph-acceptance.mjs status; руками не править -->',
+    '',
+    `Кейсов ${counts.total} · PASS ${counts.PASS} · FAIL ${counts.FAIL} · BLOCKED ${counts.BLOCKED} · SKIPPED ${counts.SKIPPED} · не гонялся ${counts.never}`,
+  ];
+  for (const module of status.modules) {
+    lines.push('', `## ${module.name} — ${module.casesFile}`, '');
+    if (module.rows.length === 0) {
+      lines.push('Кейсов нет.');
+      continue;
+    }
+    lines.push('| Кейс | Название | Статус | Прогон | История |', '| ---- | -------- | ------ | ------ | ------- |');
+    for (const row of module.rows) {
+      lines.push(
+        `| ${row.id} | ${row.title} | ${row.status ?? 'не гонялся'} | ${row.run ?? '—'} | ${row.history.length ? row.history.join(' ') : '—'} |`,
+      );
+    }
+  }
+  return `${lines.join('\n')}\n`;
 }
