@@ -20,6 +20,7 @@ import {
   rotatePersistentLog,
   isTransientFailure,
   readJsonFile,
+  resolveRalphRuntimeDirectory,
   retryDelayMs,
   retryTransientOperation,
   writeJsonAtomic,
@@ -61,6 +62,26 @@ function withTemporaryDirectory(run) {
     rmSync(directory, { recursive: true, force: true });
   }
 }
+
+test('runtime Ralph lives inside the Git directory of a regular checkout', () => {
+  withTemporaryDirectory((directory) => {
+    mkdirSync(path.join(directory, '.git'));
+
+    assert.equal(
+      resolveRalphRuntimeDirectory(directory),
+      path.join(directory, '.git', 'ralph-loop'),
+    );
+  });
+});
+
+test('runtime Ralph follows the .git pointer in a linked worktree', () => {
+  withTemporaryDirectory((directory) => {
+    const gitDirectory = path.join(directory, 'git-data', 'worktrees', 'feature');
+    writeFileSync(path.join(directory, '.git'), 'gitdir: git-data/worktrees/feature\n', 'utf8');
+
+    assert.equal(resolveRalphRuntimeDirectory(directory), path.join(gitDirectory, 'ralph-loop'));
+  });
+});
 
 test('configured GitHub account supplies a token only to gh environment', (t) => {
   applyGitHubAccount('codex-ai-Goo');

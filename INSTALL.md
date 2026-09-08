@@ -176,6 +176,7 @@ node --test --test-concurrency=1 "scripts/ralph/*.test.mjs"
 
 Удалите `scripts/ralph/`, `.agents/RALPH.md`, `.agents/ralph-rules.md`,
 `.agents/review.schema.json`, `.agents/ralph.config.json`, `.agents/skills/`,
-`.claude/skills/`, `.claude/agents/`, журнал одобренных issues и каталог
-`.git/ralph-loop/` с состоянием прогонов. Снимите добавленные строки из
+`.claude/skills/`, `.claude/agents/`, журнал одобренных issues и каталог с
+состоянием прогонов. Его путь показывает
+`git rev-parse --git-path ralph-loop`. Снимите добавленные строки из
 `.gitattributes` и `.gitignore`. `AGENTS.md` и `CLAUDE.md` останутся вашими.

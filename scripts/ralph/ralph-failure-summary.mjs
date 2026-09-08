@@ -142,7 +142,9 @@ export function formatFailureSummary(summary, maxChars = 2_000) {
   if (summary.artifacts.length > 0) {
     parts.push(`Артефакты: ${summary.artifacts.join(', ')}`);
   }
-  parts.push('Полный вывод сохранён в .git/ralph-loop/run.log.');
+  parts.push(
+    'Полный вывод сохранён в run.log внутри каталога из `git rev-parse --git-path ralph-loop`.',
+  );
   const text = parts.join('\n');
   return text.length > maxChars
     ? `${text.slice(0, maxChars)}\n… сводка усечена; полный вывод в run.log.`

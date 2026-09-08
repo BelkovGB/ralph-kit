@@ -328,9 +328,9 @@ test('Ralph configuration pins approved AFK inputs before starting an agent sess
   // берётся из конфигурации оператора: она может быть переключена на claude.
   const config = { ...loadConfig(), agentCli: 'codex' };
 
-  assert.match(
+  assert.equal(
     config.approvedIssueSnapshotsPath,
-    /[\\/]scripts[\\/]ralph[\\/]approved-issues\.json$/,
+    path.resolve(process.cwd(), config.approvedIssueSnapshotsFile),
   );
   const expectedControlFiles = [
     '.agents/ralph.config.json',
@@ -407,7 +407,7 @@ test('every Ralph module imports the cross-module functions it calls', () => {
 });
 
 test('Ralph rejects a modified approved snapshot ledger before an AFK session starts', () => {
-  const ledgerPath = new URL('./approved-issues.json', import.meta.url);
+  const ledgerPath = loadConfig().approvedIssueSnapshotsPath;
   const originalLedger = readFileSync(ledgerPath, 'utf8');
 
   try {

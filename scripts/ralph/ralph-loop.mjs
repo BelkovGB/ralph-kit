@@ -5,7 +5,12 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
-import { acquireRunLock, initializePersistentLog, readJsonFile } from './ralph-runtime.mjs';
+import {
+  acquireRunLock,
+  initializePersistentLog,
+  readJsonFile,
+  resolveRalphRuntimeDirectory,
+} from './ralph-runtime.mjs';
 
 import {
   applySeverityFloor,
@@ -128,7 +133,7 @@ import {
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const mode = process.argv[2] ?? '--check';
 const supportedModes = new Set(['--check', '--run']);
-const runtimeDirectory = path.join(projectRoot, '.git', 'ralph-loop');
+const runtimeDirectory = resolveRalphRuntimeDirectory(projectRoot);
 const runtimeLockPath = path.join(runtimeDirectory, 'run.lock');
 const runtimeLogPath = path.join(runtimeDirectory, 'run.log');
 
