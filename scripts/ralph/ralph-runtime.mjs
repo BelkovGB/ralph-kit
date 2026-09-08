@@ -9,12 +9,35 @@ import {
   readFileSync,
   readdirSync,
   renameSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { format } from 'node:util';
+
+/**
+ * Ralph stores mutable runtime data in the Git service directory. In a linked
+ * worktree `.git` is a pointer file, so writing below the checkout path fails.
+ */
+export function resolveGitDirectory(projectRoot) {
+  const gitPath = path.join(path.resolve(projectRoot), '.git');
+  const gitEntry = statSync(gitPath, { throwIfNoEntry: false });
+
+  if (!gitEntry?.isFile()) return gitPath;
+
+  const pointer = readFileSync(gitPath, 'utf8').trim();
+  const match = /^gitdir:\s*(.+)$/u.exec(pointer);
+  if (!match) {
+    throw new Error(`Файл ${gitPath} не содержит указатель gitdir.`);
+  }
+  return path.resolve(path.dirname(gitPath), match[1]);
+}
+
+export function resolveRalphRuntimeDirectory(projectRoot) {
+  return path.join(resolveGitDirectory(projectRoot), 'ralph-loop');
+}
 
 function waitSync(milliseconds) {
   if (milliseconds <= 0) return;

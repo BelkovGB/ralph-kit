@@ -3,7 +3,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { describeOutcome } from './ralph-run-metrics.mjs';
-import { isProcessAlive, readJsonFile } from './ralph-runtime.mjs';
+import {
+  isProcessAlive,
+  readJsonFile,
+  resolveRalphRuntimeDirectory,
+} from './ralph-runtime.mjs';
 
 /**
  * Чтение рантайма Ralph для GUI: состояние прогона и расход по задачам.
@@ -16,7 +20,7 @@ import { isProcessAlive, readJsonFile } from './ralph-runtime.mjs';
 // Путь выводится так же, как в `ralph-state-store.mjs` и `ralph-run-metrics.mjs`.
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
-export const runtimeDirectory = path.join(projectRoot, '.git', 'ralph-loop');
+export const runtimeDirectory = resolveRalphRuntimeDirectory(projectRoot);
 
 // Лимит итераций живёт не в state, а в конфиге; путь тот же, что и в
 // `ralph-config.mjs`. Файл читается сырым: проверка конфига — дело GUI-полей,

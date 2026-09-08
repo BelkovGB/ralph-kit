@@ -2,7 +2,12 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { readJsonFile, removeFileIfExists, writeJsonAtomic } from './ralph-runtime.mjs';
+import {
+  readJsonFile,
+  removeFileIfExists,
+  resolveRalphRuntimeDirectory,
+  writeJsonAtomic,
+} from './ralph-runtime.mjs';
 import { fail } from './ralph-scope.mjs';
 
 /**
@@ -12,7 +17,7 @@ import { fail } from './ralph-scope.mjs';
 // Пути выводятся здесь заново, как в `ralph-process-runner.mjs`.
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
-export const runtimeStatePath = path.join(projectRoot, '.git', 'ralph-loop', 'state.json');
+export const runtimeStatePath = path.join(resolveRalphRuntimeDirectory(projectRoot), 'state.json');
 
 // Активный state store читается как значение параметра по умолчанию, то есть в
 // момент вызова. Функция сохраняет этот момент: импортированную переменную

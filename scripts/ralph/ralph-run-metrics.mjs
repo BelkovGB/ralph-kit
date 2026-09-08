@@ -1,7 +1,11 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { readJsonFile, writeJsonAtomic } from './ralph-runtime.mjs';
+import {
+  readJsonFile,
+  resolveRalphRuntimeDirectory,
+  writeJsonAtomic,
+} from './ralph-runtime.mjs';
 
 /**
  * Стоимость одной issue: время по стадиям и телеметрия сессий агента.
@@ -10,9 +14,8 @@ import { readJsonFile, writeJsonAtomic } from './ralph-runtime.mjs';
  * целиком, то есть метрики исчезали бы ровно на успешном завершении — в том
  * единственном случае, ради которого их и собирают.
  *
- * Каталог `.git/ralph-loop` выбран потому, что он невидим для
- * `git status --porcelain`: запись метрик не может изменить проверяемое
- * дерево и не может остановить проверки как его правка.
+ * Каталог `ralph-loop` внутри служебного каталога Git невидим для
+ * `git status --porcelain`: запись метрик не меняет проверяемое дерево.
  */
 
 const metricsProjectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -20,9 +23,7 @@ const metricsProjectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.u
 // Имя не должно начинаться с `run-` и заканчиваться на `.log`: ретенция журнала
 // прогонов удаляет такие файлы по маске, оставляя пять последних.
 export const issueMetricsPath = path.join(
-  metricsProjectRoot,
-  '.git',
-  'ralph-loop',
+  resolveRalphRuntimeDirectory(metricsProjectRoot),
   'issue-metrics.json',
 );
 

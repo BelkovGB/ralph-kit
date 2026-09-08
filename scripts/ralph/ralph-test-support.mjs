@@ -5,7 +5,6 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
-  statSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -13,6 +12,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { loadConfig, prepareConfig, trustedFileHash } from './ralph-config.mjs';
+import { resolveGitDirectory } from './ralph-runtime.mjs';
 
 /**
  * Общие фикстуры тестов Ralph: те, которыми пользуется больше одного файла.
@@ -27,14 +27,7 @@ import { loadConfig, prepareConfig, trustedFileHash } from './ralph-config.mjs';
  * `git ls-files`, как и обычный `.git`. Когда `.git` нет вовсе, возвращается
  * путь для создания.
  */
-export function repositoryGitDirectory(root) {
-  const dotGit = path.join(root, '.git');
-  const stats = statSync(dotGit, { throwIfNoEntry: false });
-  if (!stats?.isFile()) return dotGit;
-  const pointer = /^gitdir: (.+)$/m.exec(readFileSync(dotGit, 'utf8'));
-
-  return pointer ? path.resolve(root, pointer[1].trim()) : dotGit;
-}
+export const repositoryGitDirectory = resolveGitDirectory;
 
 // Fake executables live under `.git`: it exists in every clone, `git ls-files`
 // never lists it, and a temp directory on a noexec mount could not run them.
