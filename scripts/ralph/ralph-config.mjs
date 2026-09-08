@@ -925,6 +925,7 @@ function collectTrustedControlFileHashes(config) {
     // Модули перечислены поимённо, а не сканированием каталога: сканирование
     // приняло бы в доверенный набор любой подложенный файл. Тест требует, чтобы
     // каждый .mjs из scripts/ralph был в этом списке.
+    path.join(scriptDirectory, 'ralph-acceptance.mjs'),
     path.join(scriptDirectory, 'ralph-agent-backends.mjs'),
     path.join(scriptDirectory, 'ralph-agent-session.mjs'),
     path.join(scriptDirectory, 'ralph-claude-session.mjs'),
