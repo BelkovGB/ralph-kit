@@ -11,6 +11,7 @@ import {
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import {
   acquireRunLock,
@@ -20,6 +21,7 @@ import {
   rotatePersistentLog,
   isTransientFailure,
   readJsonFile,
+  resolveGitDirectory,
   resolveRalphRuntimeDirectory,
   retryDelayMs,
   retryTransientOperation,
@@ -28,6 +30,7 @@ import {
 import {
   applyGitHubAccount,
   commandSpec,
+  run,
   githubAccountEnvironment,
   githubGitEnvironment,
   removeTemporaryDirectory,
@@ -62,6 +65,37 @@ function withTemporaryDirectory(run) {
     rmSync(directory, { recursive: true, force: true });
   }
 }
+
+const kitRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+
+// Ответ самого git — единственный эталон, не повторяющий вычисление резолвера.
+// Git может быть не установлен, а копия набора — лежать вне репозитория: тогда
+// эталона нет и проверять нечего.
+const gitDirectoryOfKit = (() => {
+  try {
+    const result = run('git', ['rev-parse', '--absolute-git-dir'], { allowFailure: true });
+    return result.status === 0 && result.stdout ? result.stdout : null;
+  } catch {
+    return null;
+  }
+})();
+
+// Разделители и регистр буквы диска на Windows приходят разными от git и от
+// path: сравнение идёт по приведённому виду, иначе тест падал бы на совпадении.
+function samePath(actual, expected) {
+  const normalize = (value) => path.resolve(value).replaceAll('\\', '/').toLowerCase();
+  assert.equal(normalize(actual), normalize(expected));
+}
+
+test(
+  'resolveGitDirectory names the same directory as git itself',
+  // Возврат к склейке `<root>/.git` этот эталон ловит: в linked worktree,
+  // где набор и проверяют, ответ git с ней расходится.
+  { skip: gitDirectoryOfKit === null ? 'git недоступен или каталог не репозиторий' : false },
+  () => {
+    samePath(resolveGitDirectory(kitRoot), gitDirectoryOfKit);
+  },
+);
 
 test('runtime Ralph lives inside the Git directory of a regular checkout', () => {
   withTemporaryDirectory((directory) => {

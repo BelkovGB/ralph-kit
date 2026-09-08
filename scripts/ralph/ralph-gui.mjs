@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import {
   copyFileSync,
   existsSync,
@@ -28,8 +28,11 @@ import { renderPage } from './ralph-gui-page.mjs';
  *
  * Единственный файл, который сервер меняет, — сам конфиг. Резервная копия
  * лежит в служебном каталоге Git. Временный файл записи создаётся рядом с
- * конфигом, чтобы атомарное переименование работало и между разными томами.
- * Состояние прогона — `state.json` и лок — сервер только читает.
+ * конфигом, чтобы атомарное переименование работало и между разными томами, а
+ * переживший крах огрызок закрыт строкой `.gitignore`: иначе он остался бы
+ * неотслеживаемым мусором и следующий прогон отказался бы стартовать с
+ * «Рабочее дерево не чистое». Состояние прогона — `state.json` и лок — сервер
+ * только читает.
  */
 
 // -----------------------------------------------------------------------------
@@ -250,12 +253,17 @@ function readConfigOrExplain(response) {
  * Запись через временный файл: прерванный процесс оставляет прошлый конфиг
  * целым, а не его половину, которую следующий прогон не разберёт. Временный
  * файл лежит рядом с конфигом, поэтому `renameSync` остаётся атомарным даже
- * когда checkout и служебный каталог Git находятся на разных томах.
+ * когда checkout и служебный каталог Git находятся на разных томах. Плата за
+ * это — огрызок в рабочем дереве после жёсткого завершения, и он закрыт
+ * строкой `.agents/.ralph.config.json.*.tmp` в `.gitignore`.
+ *
+ * Имя случайное, а не по одному лишь pid: предсказуемое имя рядом с доверенным
+ * конфигом можно занять заранее, и запись ушла бы в подставленный файл.
  */
 function writeConfigAtomic(config) {
   const temporaryPath = path.join(
     path.dirname(configPath),
-    `.ralph.config.json.${process.pid}.tmp`,
+    `.ralph.config.json.${process.pid}.${randomUUID()}.tmp`,
   );
   try {
     writeFileSync(temporaryPath, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
@@ -355,8 +363,9 @@ async function handleConfigWrite(request, response) {
     return;
   }
 
-  // Копия прошлого конфига — тоже в `.git/ralph-loop`: рядом с конфигом она
-  // осталась бы в рабочем дереве и заблокировала бы следующий прогон.
+  // Копия прошлого конфига лежит в служебном каталоге Git: переименования тут
+  // нет, общий том с конфигом ей не нужен, а в рабочем дереве она не мозолит
+  // глаза ни `git status`, ни человеку.
   if (existsSync(configPath)) {
     mkdirSync(runtimeDirectory, { recursive: true });
     copyFileSync(configPath, path.join(runtimeDirectory, 'ralph.config.json.bak'));

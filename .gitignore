@@ -3,6 +3,10 @@
 .agents/last-review.json
 .agents/last-milestone-review.json
 
+# Огрызок записи конфига из пульта: жёсткое завершение между записью и
+# переименованием оставляет временный файл рядом с конфигом.
+.agents/.ralph.config.json.*.tmp
+
 # Файлы, которые инструмент пишет сам под конкретную машину.
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
