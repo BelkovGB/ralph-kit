@@ -5,6 +5,7 @@ import test from 'node:test';
 
 import {
   buildStatus,
+  changedPathsFromGit,
   computeImpact,
   globToRegExp,
   main,
@@ -69,6 +70,25 @@ test('реестр модулей: имя не по формату остана�
   assert.throws(() => parseModules(text, 'modules.md'), /modules\.md:3.*Cart/u);
 });
 
+test('реестр модулей: повтор имени, пустая колонка кейсов и отсутствие таблицы останавливают', () => {
+  const header = ['| Модуль | Кейсы | Пути |', '| --- | --- | --- |'];
+  assert.throws(
+    () => parseModules([...header, '| cart | cases/cart.md | src/cart/** |', '| cart | cases/cart-2.md | src/api/** |'].join('\n'), 'modules.md'),
+    /modules\.md:4.*cart.*дважды/u,
+  );
+  assert.throws(() => parseModules([...header, '| cart |  | src/cart/** |'].join('\n'), 'modules.md'), /modules\.md:3.*cart.*не назван файл кейсов/u);
+  assert.throws(() => parseModules('# Модули\n\nТаблицы нет.', 'modules.md'), /modules\.md: нет таблицы модулей/u);
+});
+
+test('таблица без строки-разделителя разбирается с первой строки, а не теряет её', () => {
+  const withoutHeader = ['| cart | cases/cart.md | src/cart/** |', '| search | cases/search.md | src/search/** |'].join('\n');
+  assert.deepEqual(parseModules(withoutHeader, 'modules.md').map(({ name }) => name), ['cart', 'search']);
+  const resultsWithoutHeader = ['## Результаты', '| CART-001 | PASS | |', '| CART-007 | FAIL | |'].join('\n');
+  assert.deepEqual(parseRun(resultsWithoutHeader, 'runs/r.md').map(({ id }) => id), ['CART-001', 'CART-007']);
+  // Шапка, под которой стоит разделитель, по-прежнему в данные не идёт.
+  assert.deepEqual(parseRun(run(['| CART-001 | PASS | |']), 'runs/r.md').map(({ id }) => id), ['CART-001']);
+});
+
 test('кейсы: ID с дефисом в имени модуля и пометка «снят»', () => {
   const text = [
     '# Кейсы: order-history',
@@ -99,6 +119,11 @@ test('кейсы: заголовок не по формату и чужой мо
     () => parseCases('## CHECKOUT-001. Чужой', 'cases/cart.md', 'cart'),
     /cases\/cart\.md:1.*CHECKOUT-001/u,
   );
+});
+
+test('кейсы: повтор ID в файле кейсов останавливает с файлом и строкой повтора', () => {
+  const text = ['## CART-001. Добавление товара', '', '## CART-002. Нулевой остаток', '', '## CART-001. Снова добавление'].join('\n');
+  assert.throws(() => parseCases(text, 'cases/cart.md', 'cart'), /cases\/cart\.md:5.*CART-001.*дважды/u);
 });
 
 test('прогон: строки таблицы после «Результаты», остальное — текст', () => {
@@ -190,6 +215,16 @@ test('сводка: модуль без файла кейсов — не оши�
   const status = buildStatus(readAcceptance('docs/acceptance', files));
   assert.deepEqual(status.modules.find((module) => module.name === 'search').rows, []);
   assert.match(renderStatus(status), /## search — cases\/search\.md\n\nКейсов нет\./u);
+});
+
+test('сводка: модуль, где все кейсы сняты, отличается от модуля без кейсов', () => {
+  const files = memoryFiles({
+    'docs/acceptance/modules.md': modulesText,
+    'docs/acceptance/cases/cart.md': '## CART-001. Снятый\n**Снят** 2026-01-01 — нет',
+  });
+  const text = renderStatus(buildStatus(readAcceptance('docs/acceptance', files)));
+  assert.match(text, /## cart — cases\/cart\.md\n\nЖивых кейсов нет: все кейсы модуля сняты\./u);
+  assert.match(text, /## search — cases\/search\.md\n\nКейсов нет\./u);
 });
 
 test('сводка: прогон с ID без кейса даёт предупреждение, а не остановку', () => {
@@ -370,4 +405,50 @@ test('--dir с завершающим слэшем не даёт двойной 
   await main(['status', '--dir', 'docs/acceptance/'], { projectRoot: root, log: output.log, warn: output.warn });
   assert.match(output.out.join('\n'), /Сводка записана: docs\/acceptance\/status\.md/u);
   assert.doesNotMatch(output.out.join('\n'), /acceptance\/\/status/u);
+});
+
+test('--dir абсолютным путём внутрь набора работает так же, как относительный', async () => {
+  const root = temporaryProjectTree({
+    'qa/nested/modules.md': modulesText,
+    'qa/nested/cases/cart.md': cartCases,
+  });
+  const output = capture();
+  await main(['status', '--dir', path.join(root, 'qa', 'nested')], { projectRoot: root, log: output.log, warn: output.warn });
+  assert.equal(existsSync(path.join(root, 'qa', 'nested', 'status.md')), true);
+  assert.equal(output.out.at(-1), 'Сводка записана: qa/nested/status.md');
+});
+
+test('--dir из одних слэшей означает корень набора и не даёт ведущего слэша', async () => {
+  const root = temporaryProjectTree({ 'modules.md': modulesText, 'cases/cart.md': cartCases });
+  const output = capture();
+  await main(['status', '--dir', '//'], { projectRoot: root, log: output.log, warn: output.warn });
+  assert.equal(existsSync(path.join(root, 'status.md')), true);
+  assert.equal(output.out.at(-1), 'Сводка записана: status.md');
+});
+
+test('файл кейсов из реестра за пределами набора останавливает обе команды', async () => {
+  const root = temporaryProjectTree({
+    'docs/acceptance/modules.md': ['| Модуль | Кейсы | Пути |', '| --- | --- | --- |', '| cart | ../../../secret.md | src/cart/** |'].join('\n'),
+  });
+  for (const argv of [['status'], ['impact', 'a...b']]) {
+    await assert.rejects(
+      () => main(argv, { projectRoot: root, changedPaths: () => [], log() {}, warn() {} }),
+      (error) => /«cart»/u.test(error.message) && /secret\.md/u.test(error.message) && /корня репозитория/u.test(error.message),
+    );
+  }
+  // Остановка стоит до чтения и до записи: сводка не появляется.
+  assert.equal(existsSync(path.join(root, 'docs', 'acceptance', 'status.md')), false);
+});
+
+test('impact: git зовётся с -z, пути разбираются по нулевому байту', () => {
+  const calls = [];
+  const paths = changedPathsFromGit('main...ralph/phase-3', {
+    run: (command, args) => {
+      calls.push([command, ...args]);
+      return { status: 0, stdout: 'src/корзина/итог.ts\u0000README.md\u0000', stderr: '' };
+    },
+  });
+  // Без `-z` git берёт путь с кириллицей в кавычки и восьмеричные escape.
+  assert.deepEqual(calls, [['git', 'diff', '--name-only', '-z', 'main...ralph/phase-3']]);
+  assert.deepEqual(paths, ['src/корзина/итог.ts', 'README.md']);
 });

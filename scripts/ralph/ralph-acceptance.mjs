@@ -39,20 +39,21 @@ function isSeparatorRow(line) {
   return /^\|\s*:?-+/u.test(line);
 }
 
-// Строки таблицы, начиная с указанной: шапка и разделитель пропускаются,
-// разбор останавливается на первой строке, которая не начинается с `|`.
+// Строки таблицы, начиная с указанной: разбор останавливается на первой строке,
+// которая не начинается с `|`. Шапкой считается первая строка, только когда под
+// ней стоит разделитель: у таблицы без шапки безусловный пропуск первой строки
+// молча терял бы кейс или модуль, а молчаливый пропуск — ложь в сводке.
 function tableRows(lines, startIndex) {
   const rows = [];
   let index = startIndex;
   while (index < lines.length && lines[index].trim() === '') index += 1;
-  if (!lines[index]?.startsWith('|')) return { rows, next: index };
-  index += 1; // шапка
-  if (isSeparatorRow(lines[index] ?? '')) index += 1;
+  if (!lines[index]?.startsWith('|')) return { rows };
+  if (isSeparatorRow(lines[index + 1] ?? '')) index += 2;
   while (index < lines.length && lines[index].startsWith('|')) {
     rows.push({ cells: tableCells(lines[index]), line: index + 1 });
     index += 1;
   }
-  return { rows, next: index };
+  return { rows };
 }
 
 export function parseModules(text, file) {
@@ -144,14 +145,31 @@ export function parseRun(text, file) {
 export const historyLimit = 5;
 const statusLetter = { PASS: 'P', FAIL: 'F', BLOCKED: 'B', SKIPPED: 'S' };
 
+const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+
 const diskFiles = {
   exists: (file) => existsSync(file),
   readFile: (file) => readFileSync(file, 'utf8'),
   readDirectory: (directory) => (existsSync(directory) ? readdirSync(directory) : []),
 };
 
+// Пустая часть выбрасывается: каталог приёмки, равный корню репозитория, даёт
+// пустую строку, а `'' + '/' + 'modules.md'` — ведущий слэш в сообщениях.
 function joinPath(...parts) {
-  return parts.join('/');
+  return parts.filter((part) => part !== '').join('/');
+}
+
+// Сверка границы для путей, которые называет человек или проект, а не набор:
+// собранный путь обязан остаться внутри корня репозитория, иначе «..» тихо
+// читает файл снаружи (тот же риск и то же решение, что у
+// validationArtifactPaths в ralph-validation-runner.mjs — resolve и сверка до
+// первого обращения к диску). Возвращает путь относительно корня прямыми
+// слэшами; пустая строка — сам корень, уход за корень — null.
+function pathInsideRoot(root, ...parts) {
+  const resolvedRoot = path.resolve(root);
+  const target = path.resolve(resolvedRoot, ...parts.map((part) => part.replaceAll('\\', '/')));
+  if (target !== resolvedRoot && !target.startsWith(resolvedRoot + path.sep)) return null;
+  return path.relative(resolvedRoot, target).replaceAll('\\', '/');
 }
 
 // Второй прогон с тем же именем в тот же день получает суффикс `-2`, третий —
@@ -176,13 +194,20 @@ function compareRunNames(a, b) {
   return left.repeat - right.repeat;
 }
 
-export function readAcceptance(directory, files = diskFiles) {
+export function readAcceptance(directory, files = diskFiles, root = projectRoot) {
   const modulesFile = joinPath(directory, 'modules.md');
   if (!files.exists(modulesFile)) {
     throw acceptanceError(`Нет реестра модулей: ожидался ${modulesFile}. Его ведёт проект, формат — в scripts/ralph/README.md.`);
   }
   const modules = parseModules(files.readFile(modulesFile), modulesFile).map((module) => {
-    const casesFile = joinPath(directory, module.casesFile);
+    // Колонку «Кейсы» пишет проект, поэтому её сверяют с корнем так же, как
+    // `--dir`: иначе «../../secret.md» читается снаружи репозитория.
+    const casesFile = pathInsideRoot(root, directory, module.casesFile);
+    if (casesFile === null) {
+      throw acceptanceError(
+        `${modulesFile}:${module.line}: файл кейсов «${module.casesFile}» модуля «${module.name}» выходит за пределы набора: путь обязан остаться внутри корня репозитория.`,
+      );
+    }
     // Модуль без файла кейсов — нормальное состояние до первой приёмки: он уже
     // в реестре, чтобы impact знал его пути.
     const cases = files.exists(casesFile) ? parseCases(files.readFile(casesFile), casesFile, module.name) : [];
@@ -200,23 +225,27 @@ export function readAcceptance(directory, files = diskFiles) {
 export function buildStatus(acceptance) {
   const known = new Map();
   for (const module of acceptance.modules) {
-    for (const item of module.cases) known.set(item.id, { ...item, module: module.name, history: [] });
+    for (const item of module.cases) known.set(item.id, { ...item, history: [] });
   }
   const warnings = [];
-  for (const run of acceptance.runs) {
-    for (const result of run.results) {
+  for (const runFile of acceptance.runs) {
+    for (const result of runFile.results) {
       const item = known.get(result.id);
       if (!item) {
-        warnings.push(`runs/${run.name}: кейс ${result.id} не найден ни в одном файле кейсов — его удалили вместо пометки «снят»?`);
+        warnings.push(`runs/${runFile.name}: кейс ${result.id} не найден ни в одном файле кейсов — его удалили вместо пометки «снят»?`);
         continue;
       }
-      item.history.push({ run: `runs/${run.name}`, status: result.status });
+      item.history.push({ run: `runs/${runFile.name}`, status: result.status });
     }
   }
   const counts = { total: 0, PASS: 0, FAIL: 0, BLOCKED: 0, SKIPPED: 0, never: 0 };
   const modules = acceptance.modules.map((module) => ({
     name: module.name,
     casesFile: module.casesFile,
+    // Модуль, где все кейсы сняты, отличается от модуля без кейсов: в сводке у
+    // них разные строки, иначе снятие последнего кейса выглядит как «кейсов не
+    // писали».
+    allRetired: module.cases.length > 0 && module.cases.every((item) => item.retired),
     rows: module.cases
       .filter((item) => !item.retired)
       .map((item) => {
@@ -289,14 +318,16 @@ export function computeImpact(acceptance, changedPaths) {
 }
 
 export function renderImpact(result) {
-  const list = (items) => (items.length ? items : ['нет']);
+  // Плейсхолдер приходит с тем же отступом, что и строки списка: пустой список
+  // печатается так же, как непустой.
+  const list = (items) => (items.length ? items : ['  нет']);
   return [
     'Задеты модули с кейсами:',
-    ...list(result.withCases.map((module) => `  ${module.name} — ${countByRussianCases(module.count)}; ${module.paths.join(', ')}`)).map((line) => (line === 'нет' ? '  нет' : line)),
+    ...list(result.withCases.map((module) => `  ${module.name} — ${countByRussianCases(module.count)}; ${module.paths.join(', ')}`)),
     'Задеты модули без кейсов:',
-    ...list(result.withoutCases.map((module) => `  ${module.name} — ${module.paths.join(', ')}`)).map((line) => (line === 'нет' ? '  нет' : line)),
+    ...list(result.withoutCases.map((module) => `  ${module.name} — ${module.paths.join(', ')}`)),
     'Пути вне реестра:',
-    ...list(result.uncovered.map((file) => `  ${file}`)).map((line) => (line === 'нет' ? '  нет' : line)),
+    ...list(result.uncovered.map((file) => `  ${file}`)),
   ].join('\n');
 }
 
@@ -312,7 +343,7 @@ export function renderStatus(status) {
   for (const module of status.modules) {
     lines.push('', `## ${module.name} — ${module.casesFile}`, '');
     if (module.rows.length === 0) {
-      lines.push('Кейсов нет.');
+      lines.push(module.allRetired ? 'Живых кейсов нет: все кейсы модуля сняты.' : 'Кейсов нет.');
       continue;
     }
     lines.push('| Кейс | Название | Статус | Прогон | История |', '| ---- | -------- | ------ | ------ | ------- |');
@@ -330,7 +361,6 @@ export function renderStatus(status) {
 // о повисших ID в прогонах, `impact` только печатает задетые модули по diff.
 // -----------------------------------------------------------------------------
 
-const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const defaultDirectory = 'docs/acceptance';
 const usage = [
   'Использование:',
@@ -359,29 +389,29 @@ export function parseArguments(argv) {
   return { command, range, dir };
 }
 
-function changedPathsFromGit(range) {
-  const result = run('git', ['diff', '--name-only', range], { allowFailure: true });
+// `-z` обязателен: при умолчании `core.quotepath` git печатает путь с не-ASCII
+// символами в кавычках и восьмеричных escape-последовательностях, и такой путь
+// не совпадает ни с одним шаблоном модуля (тот же приём, что в
+// hostWorkingTreeEntries из ralph-validation-runner.mjs).
+export function changedPathsFromGit(range, dependencies = {}) {
+  const execute = dependencies.run ?? run;
+  const result = execute('git', ['diff', '--name-only', '-z', range], { allowFailure: true });
   if (result.status !== 0) throw acceptanceError(`git diff --name-only ${range} не удался: ${result.stderr.trim()}`);
-  return result.stdout.split(/\r?\n/u).filter(Boolean);
+  return result.stdout.split(String.fromCharCode(0)).filter(Boolean);
 }
 
-// Каталог `--dir` — единственный путь в CLI, который называет человек, а не
-// набор: опечатка с «..» иначе тихо читает и пишет за пределами репозитория
-// (тот же риск и то же решение, что у validationArtifactPaths в
-// ralph-validation-runner.mjs — resolve и сверка с корнем до первого обращения
-// к диску). Заодно снимаются завершающие слэши: без этого «--dir a/» даёт
-// «a//status.md» в сообщениях и в status.md.
+// Каталог `--dir` — путь, который называет человек: опечатка с «..» иначе тихо
+// читает и пишет за пределами репозитория. Завершающие слэши снимаются до
+// сверки, чтобы «--dir /» означал корень набора, а не корень диска.
 function resolveAcceptanceDirectory(root, dir) {
-  const normalized = dir.replaceAll('\\', '/').replace(/\/+$/u, '');
-  const resolvedRoot = path.resolve(root);
-  const target = path.resolve(resolvedRoot, normalized);
-  if (target !== resolvedRoot && !target.startsWith(resolvedRoot + path.sep)) {
+  const directory = pathInsideRoot(root, dir.replaceAll('\\', '/').replace(/\/+$/u, ''));
+  if (directory === null) {
     throw acceptanceError(
       `--dir «${dir}» выходит за пределы набора: путь обязан остаться внутри корня репозитория.`,
       2,
     );
   }
-  return normalized;
+  return directory;
 }
 
 export async function main(argv = process.argv.slice(2), dependencies = {}) {
@@ -399,11 +429,11 @@ export async function main(argv = process.argv.slice(2), dependencies = {}) {
     readFile: (file) => readFileSync(path.join(root, file), 'utf8'),
     readDirectory: (file) => (existsSync(path.join(root, file)) ? readdirSync(path.join(root, file)) : []),
   };
-  const acceptance = readAcceptance(directory, files);
+  const acceptance = readAcceptance(directory, files, root);
   if (command === 'status') {
     const status = buildStatus(acceptance);
     for (const warning of status.warnings) warn(`ВНИМАНИЕ: ${warning}`);
-    const target = `${directory}/status.md`;
+    const target = joinPath(directory, 'status.md');
     writeFile(path.join(root, target), renderStatus(status));
     const { counts } = status;
     log(`Кейсов ${counts.total} · PASS ${counts.PASS} · FAIL ${counts.FAIL} · BLOCKED ${counts.BLOCKED} · SKIPPED ${counts.SKIPPED} · не гонялся ${counts.never}`);
