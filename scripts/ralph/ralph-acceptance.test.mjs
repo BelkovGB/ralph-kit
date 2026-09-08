@@ -327,3 +327,47 @@ test('без реестра обе команды останавливаются
     );
   }
 });
+
+test('--dir с «..» или абсолютным путём наружу останавливает команду до чтения и записи', async () => {
+  const root = temporaryProjectTree({
+    'docs/acceptance/modules.md': modulesText,
+    'docs/acceptance/cases/cart.md': cartCases,
+  });
+  const outsideTarget = path.join(path.dirname(root), 'outside-acceptance');
+  const attempts = [
+    ['status', '--dir', '../outside-acceptance'], // .. в начале пути
+    ['status', '--dir', 'docs/../../outside-acceptance'], // .. в середине пути
+    ['status', '--dir', outsideTarget], // абсолютный путь наружу
+    ['impact', 'a...b', '--dir', '../outside-acceptance'],
+  ];
+  for (const argv of attempts) {
+    await assert.rejects(
+      () => main(argv, { projectRoot: root, changedPaths: () => [], log() {}, warn() {} }),
+      (error) => error.exitCode === 2 && /outside-acceptance/u.test(error.message) && /корня репозитория/u.test(error.message),
+    );
+  }
+  // Проверка стоит до записи: опечатка не должна успеть создать каталог снаружи.
+  assert.equal(existsSync(outsideTarget), false);
+});
+
+test('--dir во вложенный каталог внутри набора по-прежнему работает', async () => {
+  const root = temporaryProjectTree({
+    'qa/nested/modules.md': modulesText,
+    'qa/nested/cases/cart.md': cartCases,
+  });
+  const output = capture();
+  await main(['status', '--dir', 'qa/nested'], { projectRoot: root, log: output.log, warn: output.warn });
+  assert.equal(existsSync(path.join(root, 'qa', 'nested', 'status.md')), true);
+  assert.match(output.out.join('\n'), /Сводка записана: qa\/nested\/status\.md/u);
+});
+
+test('--dir с завершающим слэшем не даёт двойной слэш в пути status.md', async () => {
+  const root = temporaryProjectTree({
+    'docs/acceptance/modules.md': modulesText,
+    'docs/acceptance/cases/cart.md': cartCases,
+  });
+  const output = capture();
+  await main(['status', '--dir', 'docs/acceptance/'], { projectRoot: root, log: output.log, warn: output.warn });
+  assert.match(output.out.join('\n'), /Сводка записана: docs\/acceptance\/status\.md/u);
+  assert.doesNotMatch(output.out.join('\n'), /acceptance\/\/status/u);
+});

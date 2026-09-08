@@ -365,15 +365,35 @@ function changedPathsFromGit(range) {
   return result.stdout.split(/\r?\n/u).filter(Boolean);
 }
 
+// Каталог `--dir` — единственный путь в CLI, который называет человек, а не
+// набор: опечатка с «..» иначе тихо читает и пишет за пределами репозитория
+// (тот же риск и то же решение, что у validationArtifactPaths в
+// ralph-validation-runner.mjs — resolve и сверка с корнем до первого обращения
+// к диску). Заодно снимаются завершающие слэши: без этого «--dir a/» даёт
+// «a//status.md» в сообщениях и в status.md.
+function resolveAcceptanceDirectory(root, dir) {
+  const normalized = dir.replaceAll('\\', '/').replace(/\/+$/u, '');
+  const resolvedRoot = path.resolve(root);
+  const target = path.resolve(resolvedRoot, normalized);
+  if (target !== resolvedRoot && !target.startsWith(resolvedRoot + path.sep)) {
+    throw acceptanceError(
+      `--dir «${dir}» выходит за пределы набора: путь обязан остаться внутри корня репозитория.`,
+      2,
+    );
+  }
+  return normalized;
+}
+
 export async function main(argv = process.argv.slice(2), dependencies = {}) {
   const root = dependencies.projectRoot ?? projectRoot;
   const log = dependencies.log ?? console.log;
   const warn = dependencies.warn ?? console.error;
   const writeFile = dependencies.writeFile ?? ((file, text) => writeFileSync(file, text, 'utf8'));
   const { command, range, dir } = parseArguments(argv);
-  // Каталог приёмки читается путём от корня набора: относительный вид в
-  // сообщениях и в status.md нужен человеку, абсолютный — только диску.
-  const directory = dir.replaceAll('\\', '/');
+  // Каталог приёмки остаётся относительным: этот вид нужен человеку в
+  // сообщениях и в status.md, абсолютный — только для проверки границы и для
+  // диска.
+  const directory = resolveAcceptanceDirectory(root, dir);
   const files = {
     exists: (file) => existsSync(path.join(root, file)),
     readFile: (file) => readFileSync(path.join(root, file), 'utf8'),
