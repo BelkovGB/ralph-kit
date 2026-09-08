@@ -1,7 +1,17 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { buildStatus, parseCases, parseModules, parseRun, readAcceptance, renderStatus } from './ralph-acceptance.mjs';
+import {
+  buildStatus,
+  computeImpact,
+  globToRegExp,
+  parseCases,
+  parseModules,
+  parseRun,
+  readAcceptance,
+  renderImpact,
+  renderStatus,
+} from './ralph-acceptance.mjs';
 
 // Каталог приёмки в памяти: файловая система подменяется картой путей, потому
 // что разбор не зависит от диска, а тест — от временных каталогов.
@@ -204,4 +214,48 @@ test('сводка: текст держит счёт, заголовок о ге
   assert.match(text, /\| CART-001 \| Добавление товара \| FAIL \| runs\/2026-09-01-phase-1\.md \| F \|/u);
   assert.match(text, /\| CART-004 \| Ни разу не гонялся \| не гонялся \| — \| — \|/u);
   assert.doesNotMatch(text, /CART-003/u);
+});
+
+test('шаблоны путей: ** любая глубина, **/ ноль и более каталогов, * внутри сегмента', () => {
+  assert.equal(globToRegExp('src/cart/**').test('src/cart/a/b.ts'), true);
+  assert.equal(globToRegExp('src/cart/**').test('src/cartel/a.ts'), false);
+  assert.equal(globToRegExp('**/*.test.mjs').test('a.test.mjs'), true);
+  assert.equal(globToRegExp('**/*.test.mjs').test('x/y/a.test.mjs'), true);
+  assert.equal(globToRegExp('src/*.ts').test('src/a.ts'), true);
+  assert.equal(globToRegExp('src/*.ts').test('src/a/b.ts'), false);
+  assert.equal(globToRegExp('src/(cart)/a.ts').test('src/(cart)/a.ts'), true);
+});
+
+test('impact: модули с кейсами, без кейсов и пути вне реестра', () => {
+  const files = memoryFiles({
+    'docs/acceptance/modules.md': modulesText,
+    'docs/acceptance/cases/cart.md': cartCases,
+  });
+  const result = computeImpact(readAcceptance('docs/acceptance', files), [
+    'src/cart/add.ts',
+    'src/cart/total.ts',
+    'src/search/index.ts',
+    'src/utils/date.ts',
+  ]);
+  assert.deepEqual(result, {
+    withCases: [{ name: 'cart', count: 3, paths: ['src/cart/add.ts', 'src/cart/total.ts'] }],
+    withoutCases: [{ name: 'search', paths: ['src/search/index.ts'] }],
+    uncovered: ['src/utils/date.ts'],
+  });
+  const text = renderImpact(result);
+  assert.match(text, /Задеты модули с кейсами:\n  cart — 3 кейса; src\/cart\/add\.ts, src\/cart\/total\.ts/u);
+  assert.match(text, /Задеты модули без кейсов:\n  search — src\/search\/index\.ts/u);
+  assert.match(text, /Пути вне реестра:\n  src\/utils\/date\.ts/u);
+});
+
+test('impact: снятые кейсы в счёт не идут, пустые списки названы словами', () => {
+  const files = memoryFiles({
+    'docs/acceptance/modules.md': modulesText,
+    'docs/acceptance/cases/cart.md': '## CART-001. Снятый\n**Снят** 2026-01-01 — нет',
+  });
+  const result = computeImpact(readAcceptance('docs/acceptance', files), ['src/cart/a.ts']);
+  assert.deepEqual(result.withCases, []);
+  assert.deepEqual(result.withoutCases, [{ name: 'cart', paths: ['src/cart/a.ts'] }]);
+  assert.match(renderImpact(result), /Задеты модули с кейсами:\n  нет/u);
+  assert.match(renderImpact(result), /Пути вне реестра:\n  нет/u);
 });

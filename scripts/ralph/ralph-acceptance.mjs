@@ -232,6 +232,69 @@ export function buildStatus(acceptance) {
   return { counts, modules, warnings };
 }
 
+// Диалект глоба набора: `**/` — ноль и более каталогов, `**` — любая глубина
+// (в том числе внутри сегмента), одиночная `*` не перескакивает через `/`.
+// Остальные символы экранируются, иначе путь со скобками или точкой в имени
+// модуля даёт неверное совпадение через спецсимволы регулярных выражений.
+export function globToRegExp(glob) {
+  let source = '';
+  for (let index = 0; index < glob.length; index += 1) {
+    if (glob.startsWith('**/', index)) {
+      source += '(?:.*/)?';
+      index += 2;
+    } else if (glob.startsWith('**', index)) {
+      source += '.*';
+      index += 1;
+    } else if (glob[index] === '*') {
+      source += '[^/]*';
+    } else {
+      source += glob[index].replace(/[.+?^${}()|[\]\\]/gu, '\\$&');
+    }
+  }
+  return new RegExp(`^${source}$`, 'u');
+}
+
+// Русское склонение слова «кейс» при числе: 1 кейс, 2-4 кейса, 5-20 кейсов —
+// с исключением для «11-14», которые не подчиняются правилу «2-4».
+function countByRussianCases(count) {
+  const tail = count % 10;
+  const teen = count % 100 >= 11 && count % 100 <= 14;
+  if (tail === 1 && !teen) return `${count} кейс`;
+  if (tail >= 2 && tail <= 4 && !teen) return `${count} кейса`;
+  return `${count} кейсов`;
+}
+
+// Задетые модули по diff: модуль считается задетым, если хоть один изменённый
+// путь совпал с одним из его шаблонов. Снятые кейсы не считаются кейсами
+// модуля — задетый ими модуль попадает в «без кейсов», а не в «с кейсами».
+export function computeImpact(acceptance, changedPaths) {
+  const covered = new Set();
+  const withCases = [];
+  const withoutCases = [];
+  for (const module of acceptance.modules) {
+    const patterns = module.paths.map(globToRegExp);
+    const paths = changedPaths.filter((file) => patterns.some((pattern) => pattern.test(file)));
+    if (paths.length === 0) continue;
+    paths.forEach((file) => covered.add(file));
+    const count = module.cases.filter((item) => !item.retired).length;
+    if (count > 0) withCases.push({ name: module.name, count, paths });
+    else withoutCases.push({ name: module.name, paths });
+  }
+  return { withCases, withoutCases, uncovered: changedPaths.filter((file) => !covered.has(file)) };
+}
+
+export function renderImpact(result) {
+  const list = (items) => (items.length ? items : ['нет']);
+  return [
+    'Задеты модули с кейсами:',
+    ...list(result.withCases.map((module) => `  ${module.name} — ${countByRussianCases(module.count)}; ${module.paths.join(', ')}`)).map((line) => (line === 'нет' ? '  нет' : line)),
+    'Задеты модули без кейсов:',
+    ...list(result.withoutCases.map((module) => `  ${module.name} — ${module.paths.join(', ')}`)).map((line) => (line === 'нет' ? '  нет' : line)),
+    'Пути вне реестра:',
+    ...list(result.uncovered.map((file) => `  ${file}`)).map((line) => (line === 'нет' ? '  нет' : line)),
+  ].join('\n');
+}
+
 export function renderStatus(status) {
   const { counts } = status;
   const lines = [
