@@ -328,9 +328,14 @@ test('Ralph configuration pins approved AFK inputs before starting an agent sess
   // берётся из конфигурации оператора: она может быть переключена на claude.
   const config = { ...loadConfig(), agentCli: 'codex' };
 
+  // Журнал одобренных issues обязан входить в границу подделки: тело issue в
+  // prompt берётся из него, и незамеченная правка журнала подменила бы задание
+  // AFK-сессии. Утверждение о принадлежности границе переживает перенос журнала
+  // в другой каталог, а сверка пути с его же вычислением — нет.
   assert.equal(
-    config.approvedIssueSnapshotsPath,
-    path.resolve(process.cwd(), config.approvedIssueSnapshotsFile),
+    config.trustedControlFileHashes.has(config.approvedIssueSnapshotsPath),
+    true,
+    'журнал одобренных issues вне границы подделки',
   );
   const expectedControlFiles = [
     '.agents/ralph.config.json',
