@@ -43,6 +43,7 @@ let settings = { ...defaultRuntimeSettings };
 let configuredGitHubAccount = null;
 let configuredGitHubToken = null;
 let disabledGitHooksDirectory = null;
+let githubHttp1Fallback = false;
 
 export function applyRuntimeSettings(runtime) {
   settings = { ...runtime };
@@ -427,13 +428,32 @@ export function run(name, args, options = {}) {
   };
 }
 
+function ghHttp1Options(options) {
+  const source = options.env ?? process.env;
+  const goDebug = String(source.GODEBUG ?? '')
+    .split(',')
+    .filter((entry) => entry !== '' && !entry.startsWith('http2client='));
+  goDebug.push('http2client=0');
+  return {
+    ...options,
+    env: { ...source, GODEBUG: goDebug.join(',') },
+  };
+}
+
 export function runNetwork(name, args, options = {}) {
-  return retryTransientOperation(() => run(name, args, options), {
+  let attemptOptions = name === 'gh' && githubHttp1Fallback ? ghHttp1Options(options) : options;
+  return retryTransientOperation(() => run(name, args, attemptOptions), {
     attempts: settings.networkRetryAttempts,
     baseDelayMs: settings.networkRetryBaseDelayMs,
-    onRetry: (error, attempt, delay) =>
+    onRetry: (error, attempt, delay) => {
+      if (name === 'gh' && /tls handshake timeout/i.test(error.message)) {
+        githubHttp1Fallback = true;
+        attemptOptions = ghHttp1Options(attemptOptions);
+        console.error('gh: после TLS handshake timeout следующий запрос пойдёт через HTTP/1.1.');
+      }
       console.error(
         `Временная ошибка ${name} (попытка ${attempt}): ${error.message}. Повтор через ${delay} ms.`,
-      ),
+      );
+    },
   });
 }
