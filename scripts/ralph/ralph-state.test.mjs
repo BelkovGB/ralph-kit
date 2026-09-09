@@ -334,3 +334,39 @@ test('остановка host-проверки не мешает продолж�
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+/**
+ * `beginIssue` переводит в `agent-running` не только новую запись, но и
+ * сохранённую: новая сессия агента уже идёт, и прежняя фаза описывала бы
+ * прошлый круг. На этом инварианте держится порядок в `runAgentOnIssue`, где
+ * recovery-prompt собирают до `beginIssue`, — без теста строку легко удалить
+ * как дублирование умолчания в самом объекте.
+ */
+test('beginIssue переводит сохранённую issue из review-failed в agent-running', () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'ralph-state-begin-'));
+  const statePath = path.join(directory, 'state.json');
+  const config = { branch: 'feature/begin', baseBranch: 'main', milestone: 'Begin phase' };
+  const issue = {
+    number: 12,
+    title: 'Begin',
+    body: 'Body',
+    url: 'https://example.test/issues/12',
+  };
+
+  try {
+    const store = createStateStore(config, '--run', statePath);
+    store.reserveIteration();
+    store.beginIssue(issue, 'a'.repeat(40));
+    store.updateIssue({ phase: 'review-failed', commit: 'b'.repeat(40), reviewFindings: 'P1' });
+
+    const stored = store.beginIssue(issue, 'a'.repeat(40));
+
+    assert.equal(stored.phase, 'agent-running');
+    // Остальное продолжение переживает: сессия чинит тот же commit по тем же
+    // замечаниям, и заново заводить запись было бы потерей круга.
+    assert.equal(stored.commit, 'b'.repeat(40));
+    assert.equal(stored.reviewFindings, 'P1');
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
