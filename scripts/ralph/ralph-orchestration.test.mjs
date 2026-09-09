@@ -419,6 +419,7 @@ test('continuous loop fixes new review issues even while GitHub list remains sta
   const pullRequests = [];
   const testActions = actions({
     openIssues: () => [],
+    issueState: () => 'OPEN',
     createPullRequest: () => {
       const pullRequest = { number: 61, headRefOid: `head-${completed.length}` };
       pullRequests.push(pullRequest.headRefOid);
@@ -456,6 +457,68 @@ test('continuous loop fixes new review issues even while GitHub list remains sta
   assert.equal(reviewRuns, 2);
 });
 
+test('continuous loop retains known open issues when GitHub briefly returns an empty list', async () => {
+  let issueReads = 0;
+  let reviewRuns = 0;
+  const completed = [];
+
+  const result = await runContinuousLoop(
+    context(),
+    actions({
+      openIssues: () => {
+        issueReads += 1;
+        return issueReads === 1
+          ? [
+              { number: 11, title: 'First issue' },
+              { number: 12, title: 'Second issue' },
+            ]
+          : [];
+      },
+      issueState: () => 'OPEN',
+      runAgentOnIssue: async (_config, _repository, issue) => {
+        completed.push(issue.number);
+        return { completed: true };
+      },
+      runMilestoneReview: async () => {
+        reviewRuns += 1;
+        return { verdict: 'pass', summary: 'clean', findings: [] };
+      },
+    }),
+  );
+
+  assert.equal(result.verdict, 'pass');
+  assert.deepEqual(completed, [11, 12]);
+  assert.equal(reviewRuns, 1);
+});
+
+test('continuous loop drops a known issue after GitHub confirms it was closed externally', async () => {
+  let issueReads = 0;
+  const completed = [];
+
+  const result = await runContinuousLoop(
+    context(),
+    actions({
+      openIssues: () => {
+        issueReads += 1;
+        return issueReads === 1
+          ? [
+              { number: 11, title: 'First issue' },
+              { number: 12, title: 'Second issue' },
+            ]
+          : [];
+      },
+      issueState: (_repository, issueNumber) => (issueNumber === 12 ? 'CLOSED' : 'OPEN'),
+      runAgentOnIssue: async (_config, _repository, issue) => {
+        completed.push(issue.number);
+        return { completed: true };
+      },
+    }),
+  );
+
+  assert.equal(result.verdict, 'pass');
+  assert.deepEqual(completed, [11]);
+});
+
 test('continuous loop closes the milestone only after a clean PASS review', async () => {
   let milestoneCloses = 0;
 
@@ -480,6 +543,7 @@ test('continuous loop treats PASS with findings as recovery work', async () => {
     context(),
     actions({
       openIssues: () => [],
+      issueState: () => 'OPEN',
       runMilestoneReview: async () => {
         reviewRuns += 1;
         return reviewRuns === 1
@@ -841,6 +905,7 @@ test('пульт читает номер итерации и очередь из
             { number: 13, title: 'Вторая' },
           ];
         },
+        issueState: () => 'OPEN',
         runAgentOnIssue: async () => ({ completed: true }),
       }),
     );
@@ -851,9 +916,9 @@ test('пульт читает номер итерации и очередь из
   try {
     const progress = readRunProgress({ logPath });
 
-    assert.equal(progress.iteration, 1);
+    assert.equal(progress.iteration, 2);
     assert.equal(progress.maxIterations, 5);
-    assert.equal(progress.issuesRemaining, 2);
+    assert.equal(progress.issuesRemaining, 1);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
