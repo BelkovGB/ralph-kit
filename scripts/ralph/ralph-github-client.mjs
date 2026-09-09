@@ -170,6 +170,9 @@ export function refreshIssue(repository, issueNumber) {
     body: issue.body ?? '',
     url: issue.html_url,
     state: issue.state?.toUpperCase(),
+    // Номер milestone отличает вынутую из фазы задачу от закрытой: обе пропадают
+    // из списка фазы, но вынутая остаётся открытой.
+    milestone: issue.milestone?.number ?? null,
     updatedAt: issue.updated_at,
     authorLogin: issue.user?.login ?? null,
     authorAssociation: issue.author_association ?? null,

@@ -8,6 +8,7 @@ import {
   closeMilestone,
   ensurePullRequestForBranch,
   existingPullRequest,
+  refreshIssue,
   verifyPullRequestTarget,
 } from './ralph-github-client.mjs';
 import { run } from './ralph-process-runner.mjs';
@@ -93,6 +94,32 @@ test('existingPullRequest возвращает первый открытый PR 
   await withScriptedGh([{ pattern: '^pr list', body: '[]' }], async () => {
     assert.equal(existingPullRequest(config, 'owner/repository'), null);
   });
+});
+
+test('refreshIssue отдаёт номер milestone и null для задачи вне milestone', async () => {
+  await withScriptedGh(
+    [
+      {
+        pattern: 'issues/11$',
+        body: JSON.stringify({ number: 11, title: 'В фазе', state: 'open', milestone: { number: 7 } }),
+      },
+    ],
+    async () => {
+      assert.equal(refreshIssue('owner/repository', 11).milestone, 7);
+    },
+  );
+
+  await withScriptedGh(
+    [
+      {
+        pattern: 'issues/12$',
+        body: JSON.stringify({ number: 12, title: 'Вынута из фазы', state: 'open' }),
+      },
+    ],
+    async () => {
+      assert.equal(refreshIssue('owner/repository', 12).milestone, null);
+    },
+  );
 });
 
 test('verifyPullRequestTarget принимает совпавший PR и называет каждое расхождение', async () => {

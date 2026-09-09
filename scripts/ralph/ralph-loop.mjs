@@ -1120,12 +1120,35 @@ export async function runContinuousLoop(context, actions) {
       }
     }
     const listedIssueNumbers = new Set(listedIssues.map((issue) => issue.number));
-    for (const [issueNumber] of pendingIssues) {
-      if (
-        !listedIssueNumbers.has(issueNumber) &&
-        actions.issueState(repository, issueNumber) !== 'OPEN'
-      ) {
+    for (const [issueNumber, pendingIssue] of pendingIssues) {
+      if (listedIssueNumbers.has(issueNumber)) continue;
+      // Пропасть из списка фазы задача может тремя способами, и все три —
+      // решение оператора снять её с цикла: её закрыли, вынули из milestone или
+      // пометили служебной. Один GET отвечает на все три вопроса сразу.
+      let confirmed;
+      try {
+        confirmed = actions.refreshIssue(repository, issueNumber, pendingIssue);
+      } catch (error) {
+        // Отказ проверки — не ответ GitHub о задаче: 404 на удалённую задачу и
+        // 5xx после повторов выглядят одинаково, поэтому очередь не меняем и
+        // прогон не роняем в самом частом месте цикла.
+        console.error(
+          `Состояние issue #${issueNumber} подтвердить не удалось: ${error.message}. ` +
+            'Задача осталась в очереди.',
+        );
+        continue;
+      }
+      const removalReason =
+        confirmed.state !== 'OPEN'
+          ? 'закрыта'
+          : confirmed.milestone !== milestone.number
+            ? 'вынута из milestone'
+            : isRalphInfrastructureIssue(confirmed)
+              ? 'помечена служебной'
+              : null;
+      if (removalReason !== null) {
         pendingIssues.delete(issueNumber);
+        console.log(`Issue #${issueNumber} убрана из очереди прогона: ${removalReason}.`);
       }
     }
     const issuesByNumber = new Map();
@@ -1140,6 +1163,9 @@ export async function runContinuousLoop(context, actions) {
           continue;
         }
         completedIssueNumbers.delete(issue.number);
+        // Переоткрытую задачу возвращаем в очередь: без этого она живёт одну
+        // итерацию и теряется на первом же пустом ответе GitHub.
+        pendingIssues.set(issue.number, issue);
       }
       issuesByNumber.set(issue.number, issue);
     }

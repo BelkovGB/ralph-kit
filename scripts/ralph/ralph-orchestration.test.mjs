@@ -17,6 +17,7 @@ import {
   actions,
   context,
   temporaryProjectTree,
+  testMilestone,
   withFakeCodex,
   withFakeGh,
 } from './ralph-test-support.mjs';
@@ -541,6 +542,119 @@ test('continuous loop retains known open issues when GitHub briefly returns an e
 test('continuous loop drops a known issue after GitHub confirms it was closed externally', async () => {
   let issueReads = 0;
   const completed = [];
+  const confirmed = [];
+
+  const result = await runContinuousLoop(
+    context(),
+    actions({
+      openIssues: () => {
+        issueReads += 1;
+        return issueReads === 1
+          ? [
+              { number: 11, title: 'First issue' },
+              { number: 12, title: 'Closed elsewhere' },
+              { number: 13, title: 'Still open' },
+            ]
+          : [];
+      },
+      refreshIssue: (_repository, issueNumber, issue) => {
+        confirmed.push(issueNumber);
+        return {
+          ...issue,
+          milestone: testMilestone.number,
+          state: issueNumber === 12 ? 'CLOSED' : 'OPEN',
+        };
+      },
+      runAgentOnIssue: async (_config, _repository, issue) => {
+        completed.push(issue.number);
+        return { completed: true };
+      },
+    }),
+  );
+
+  assert.equal(result.verdict, 'pass');
+  // Подтверждение спросили ровно про пропавшую задачу — один раз, а не про всю
+  // очередь; оставшаяся #13 после подтверждения дошла до агента.
+  assert.deepEqual(
+    confirmed.filter((issueNumber) => issueNumber === 12),
+    [12],
+  );
+  assert.deepEqual(completed, [11, 13]);
+});
+
+test('continuous loop drops an open issue taken out of the milestone', async () => {
+  let issueReads = 0;
+  const completed = [];
+
+  const result = await runContinuousLoop(
+    context(),
+    actions({
+      openIssues: () => {
+        issueReads += 1;
+        return issueReads === 1
+          ? [
+              { number: 11, title: 'First issue' },
+              { number: 12, title: 'Moved out of the milestone' },
+            ]
+          : [];
+      },
+      // Задача осталась открытой: снятие работы с цикла видно только по
+      // milestone, и состояние issue об этом ничего не говорит.
+      issueState: () => 'OPEN',
+      refreshIssue: (_repository, issueNumber, issue) => ({
+        ...issue,
+        state: 'OPEN',
+        milestone: issueNumber === 12 ? null : testMilestone.number,
+      }),
+      runAgentOnIssue: async (_config, _repository, issue) => {
+        completed.push(issue.number);
+        return { completed: true };
+      },
+    }),
+  );
+
+  assert.equal(result.verdict, 'pass');
+  assert.deepEqual(completed, [11]);
+});
+
+test('continuous loop drops a queued issue labelled ralph-infrastructure', async () => {
+  let issueReads = 0;
+  const completed = [];
+
+  const result = await runContinuousLoop(
+    context(),
+    actions({
+      openIssues: () => {
+        issueReads += 1;
+        return issueReads === 1
+          ? [
+              { number: 11, title: 'First issue' },
+              { number: 12, title: 'Marked as Ralph infrastructure later' },
+            ]
+          : [];
+      },
+      issueState: () => 'OPEN',
+      refreshIssue: (_repository, issueNumber, issue) => ({
+        ...issue,
+        state: 'OPEN',
+        milestone: testMilestone.number,
+        labels: issueNumber === 12 ? [{ name: 'ralph-infrastructure' }] : [],
+      }),
+      runAgentOnIssue: async (_config, _repository, issue) => {
+        completed.push(issue.number);
+        return { completed: true };
+      },
+    }),
+  );
+
+  assert.equal(result.verdict, 'pass');
+  assert.deepEqual(completed, [11]);
+});
+
+test('continuous loop keeps a queued issue when the confirming request fails', async () => {
+  let issueReads = 0;
+  let issueRefreshes = 0;
+  const completed = [];
 
   const result = await runContinuousLoop(
     context(),
@@ -554,7 +668,16 @@ test('continuous loop drops a known issue after GitHub confirms it was closed ex
             ]
           : [];
       },
-      issueState: (_repository, issueNumber) => (issueNumber === 12 ? 'CLOSED' : 'OPEN'),
+      issueState: () => 'OPEN',
+      refreshIssue: (_repository, issueNumber, issue) => {
+        // Первый запрос про #12 — подтверждение пропажи из списка; он отказывает,
+        // дальше GitHub отвечает как обычно.
+        if (issueNumber === 12) {
+          issueRefreshes += 1;
+          if (issueRefreshes === 1) throw new Error('GitHub ответил 503');
+        }
+        return { ...issue, state: 'OPEN', milestone: testMilestone.number };
+      },
       runAgentOnIssue: async (_config, _repository, issue) => {
         completed.push(issue.number);
         return { completed: true };
@@ -563,7 +686,39 @@ test('continuous loop drops a known issue after GitHub confirms it was closed ex
   );
 
   assert.equal(result.verdict, 'pass');
-  assert.deepEqual(completed, [11]);
+  assert.deepEqual(completed, [11, 12]);
+});
+
+test('continuous loop keeps a reopened issue after GitHub stops listing it', async () => {
+  let issueReads = 0;
+  const completed = [];
+
+  const result = await runContinuousLoop(
+    context(),
+    actions({
+      openIssues: () => {
+        issueReads += 1;
+        if (issueReads === 1) return [{ number: 21, title: 'Reopened later' }];
+        // Второй ответ содержит переоткрытую #21 рядом с новой #11, третий —
+        // пустой: очередь обязана пережить его вместе с #21.
+        if (issueReads === 2) {
+          return [
+            { number: 11, title: 'Newer work' },
+            { number: 21, title: 'Reopened later' },
+          ];
+        }
+        return [];
+      },
+      issueState: () => 'OPEN',
+      runAgentOnIssue: async (_config, _repository, issue) => {
+        completed.push(issue.number);
+        return { completed: true };
+      },
+    }),
+  );
+
+  assert.equal(result.verdict, 'pass');
+  assert.deepEqual(completed, [21, 11, 21]);
 });
 
 test('continuous loop closes the milestone only after a clean PASS review', async () => {
