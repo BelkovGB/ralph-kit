@@ -1,14 +1,25 @@
 import assert from 'node:assert/strict';
-import { rmSync } from 'node:fs';
+import { readFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 
 import { executeMode, iterationBudget, printCheck, runContinuousLoop } from './ralph-loop.mjs';
 import { runCodexWithTurnLimit } from './ralph-codex-session.mjs';
 import { readRunProgress } from './ralph-gui-data.mjs';
-import { run } from './ralph-process-runner.mjs';
+import {
+  applyRuntimeSettings,
+  defaultRuntimeSettings,
+  run,
+  runNetwork,
+} from './ralph-process-runner.mjs';
 import { initializePersistentLog } from './ralph-runtime.mjs';
-import { actions, context, temporaryProjectTree, withFakeCodex } from './ralph-test-support.mjs';
+import {
+  actions,
+  context,
+  temporaryProjectTree,
+  withFakeCodex,
+  withFakeGh,
+} from './ralph-test-support.mjs';
 
 function persistentState({ iterationsUsed = 0, issue = null } = {}) {
   let used = iterationsUsed;
@@ -53,6 +64,42 @@ test('sync command runner enforces its wall-clock timeout', { concurrency: false
   );
 
   assert.ok(Date.now() - startedAt < 5_000, 'hung command must be terminated promptly');
+});
+
+test('gh retries a TLS handshake timeout over HTTP/1.1', { concurrency: false }, async () => {
+  applyRuntimeSettings({
+    ...defaultRuntimeSettings,
+    networkRetryAttempts: 2,
+    networkRetryBaseDelayMs: 1,
+  });
+
+  try {
+    await withFakeGh(
+      `
+require('node:fs').appendFileSync(
+  require('node:path').join(__dirname, 'calls.log'),
+  JSON.stringify(process.env.GODEBUG ?? '') + '\\n',
+);
+if (!(process.env.GODEBUG ?? '').split(',').includes('http2client=0')) {
+  console.error('Get "https://api.github.com/user": net/http: TLS handshake timeout');
+  process.exit(1);
+}
+process.stdout.write('ready');
+`,
+      ({ directory }) => {
+        const options = { env: { ...process.env, GODEBUG: '' } };
+        assert.equal(runNetwork('gh', ['api', 'user'], options).stdout, 'ready');
+        assert.equal(runNetwork('gh', ['api', 'user'], options).stdout, 'ready');
+        const attempts = readFileSync(path.join(directory, 'calls.log'), 'utf8')
+          .trim()
+          .split('\n')
+          .map((line) => JSON.parse(line));
+        assert.deepEqual(attempts, ['', 'http2client=0', 'http2client=0']);
+      },
+    );
+  } finally {
+    applyRuntimeSettings(defaultRuntimeSettings);
+  }
 });
 
 test(
