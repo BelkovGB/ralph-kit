@@ -47,6 +47,9 @@ let githubHttp1Fallback = false;
 
 export function applyRuntimeSettings(runtime) {
   settings = { ...runtime };
+  // Обход HTTP/2 описывает один прогон: без сброса он переживает загрузку новой
+  // конфигурации и перетекает между тестами в одном процессе.
+  githubHttp1Fallback = false;
 }
 
 export function runtimeSettings() {
@@ -325,7 +328,7 @@ process.once('exit', () => {
 
 const authenticatedGitCommands = new Set(['fetch', 'ls-remote', 'push']);
 
-export function run(name, args, options = {}) {
+function runCommand(name, args, options = {}) {
   const commandTarget = commandSpec(name, args);
   const useCommandRunner = process.platform === 'win32';
   const command = useCommandRunner ? process.execPath : commandTarget.command;
@@ -440,20 +443,42 @@ function ghHttp1Options(options) {
   };
 }
 
+function isGhHttp2Failure(error) {
+  // Отказ рукопожатия виден не только в сообщении: зависший gh снимает
+  // собственный таймаут Ralph, и его текст остаётся в потоках вывода.
+  return /tls handshake timeout/i.test(
+    [error?.message, error?.stderr, error?.stdout].filter(Boolean).join('\n'),
+  );
+}
+
+/**
+ * Локальный сбой HTTP/2 не проходит сам, поэтому увиденный отказ рукопожатия
+ * переводит все оставшиеся вызовы `gh` на HTTP/1.1 до конца прогона.
+ *
+ * Решение живёт здесь, а не в колбэке повтора: часть вызовов `gh` идёт без
+ * `runNetwork` вовсе, а последняя попытка повтора бросает ошибку, ни разу не
+ * дойдя до колбэка.
+ */
+export function run(name, args, options = {}) {
+  if (name !== 'gh') return runCommand(name, args, options);
+  try {
+    return runCommand(name, args, githubHttp1Fallback ? ghHttp1Options(options) : options);
+  } catch (error) {
+    if (!githubHttp1Fallback && isGhHttp2Failure(error)) {
+      githubHttp1Fallback = true;
+      console.error('gh: после TLS handshake timeout остальные запросы идут через HTTP/1.1.');
+    }
+    throw error;
+  }
+}
+
 export function runNetwork(name, args, options = {}) {
-  let attemptOptions = name === 'gh' && githubHttp1Fallback ? ghHttp1Options(options) : options;
-  return retryTransientOperation(() => run(name, args, attemptOptions), {
+  return retryTransientOperation(() => run(name, args, options), {
     attempts: settings.networkRetryAttempts,
     baseDelayMs: settings.networkRetryBaseDelayMs,
-    onRetry: (error, attempt, delay) => {
-      if (name === 'gh' && /tls handshake timeout/i.test(error.message)) {
-        githubHttp1Fallback = true;
-        attemptOptions = ghHttp1Options(attemptOptions);
-        console.error('gh: после TLS handshake timeout следующий запрос пойдёт через HTTP/1.1.');
-      }
+    onRetry: (error, attempt, delay) =>
       console.error(
         `Временная ошибка ${name} (попытка ${attempt}): ${error.message}. Повтор через ${delay} ms.`,
-      );
-    },
+      ),
   });
 }

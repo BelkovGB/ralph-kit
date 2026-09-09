@@ -67,16 +67,9 @@ test('sync command runner enforces its wall-clock timeout', { concurrency: false
   assert.ok(Date.now() - startedAt < 5_000, 'hung command must be terminated promptly');
 });
 
-test('gh retries a TLS handshake timeout over HTTP/1.1', { concurrency: false }, async () => {
-  applyRuntimeSettings({
-    ...defaultRuntimeSettings,
-    networkRetryAttempts: 2,
-    networkRetryBaseDelayMs: 1,
-  });
-
-  try {
-    await withFakeGh(
-      `
+// Поддельный gh дописывает свой GODEBUG в журнал и отказывает рукопожатием,
+// пока обход не выключит HTTP/2 у Go. По журналу видно окружение каждого вызова.
+const ghTlsHandshakeLogic = `
 require('node:fs').appendFileSync(
   require('node:path').join(__dirname, 'calls.log'),
   JSON.stringify(process.env.GODEBUG ?? '') + '\\n',
@@ -86,18 +79,139 @@ if (!(process.env.GODEBUG ?? '').split(',').includes('http2client=0')) {
   process.exit(1);
 }
 process.stdout.write('ready');
-`,
-      ({ directory }) => {
-        const options = { env: { ...process.env, GODEBUG: '' } };
-        assert.equal(runNetwork('gh', ['api', 'user'], options).stdout, 'ready');
-        assert.equal(runNetwork('gh', ['api', 'user'], options).stdout, 'ready');
-        const attempts = readFileSync(path.join(directory, 'calls.log'), 'utf8')
-          .trim()
-          .split('\n')
-          .map((line) => JSON.parse(line));
-        assert.deepEqual(attempts, ['', 'http2client=0', 'http2client=0']);
-      },
-    );
+`;
+
+// Тот же отказ, но gh на нём зависает: его снимает таймаут Ralph, и признак
+// остаётся только в stderr — в сообщение об ошибке таймаута вывод не попадает.
+const ghHangingHandshakeLogic = `
+const fs = require('node:fs');
+fs.appendFileSync(
+  require('node:path').join(__dirname, 'calls.log'),
+  JSON.stringify(process.env.GODEBUG ?? '') + '\\n',
+);
+if (!(process.env.GODEBUG ?? '').split(',').includes('http2client=0')) {
+  // writeSync, а не console.error: процесс снимут снаружи, и асинхронная запись
+  // в канал до родителя не дойдёт.
+  fs.writeSync(2, 'net/http: TLS handshake timeout\\n');
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30000);
+}
+process.stdout.write('ready');
+`;
+
+const ghNotFoundLogic = `
+require('node:fs').appendFileSync(
+  require('node:path').join(__dirname, 'calls.log'),
+  JSON.stringify(process.env.GODEBUG ?? '') + '\\n',
+);
+console.error('gh: Not Found (HTTP 404)');
+process.exit(1);
+`;
+
+function ghGoDebugCalls(directory) {
+  return readFileSync(path.join(directory, 'calls.log'), 'utf8')
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line));
+}
+
+test('gh retries a TLS handshake timeout over HTTP/1.1', { concurrency: false }, async () => {
+  applyRuntimeSettings({
+    ...defaultRuntimeSettings,
+    networkRetryAttempts: 2,
+    networkRetryBaseDelayMs: 1,
+  });
+
+  try {
+    await withFakeGh(ghTlsHandshakeLogic, ({ directory }) => {
+      const options = { env: { ...process.env, GODEBUG: '' } };
+      assert.equal(runNetwork('gh', ['api', 'user'], options).stdout, 'ready');
+      assert.equal(runNetwork('gh', ['api', 'user'], options).stdout, 'ready');
+      assert.deepEqual(ghGoDebugCalls(directory), ['', 'http2client=0', 'http2client=0']);
+    });
+  } finally {
+    applyRuntimeSettings(defaultRuntimeSettings);
+  }
+});
+
+test('обход HTTP/1.1 включается при единственной сетевой попытке', { concurrency: false }, async () => {
+  // networkRetryAttempts: 1 — разрешённое значение конфига, и повтора, внутри
+  // которого решение принималось раньше, при нём не бывает вовсе.
+  applyRuntimeSettings({ ...defaultRuntimeSettings, networkRetryAttempts: 1 });
+
+  try {
+    await withFakeGh(ghTlsHandshakeLogic, ({ directory }) => {
+      const options = { env: { ...process.env, GODEBUG: '' } };
+      assert.throws(() => runNetwork('gh', ['api', 'user'], options), /TLS handshake timeout/u);
+      assert.equal(runNetwork('gh', ['api', 'user'], options).stdout, 'ready');
+      assert.deepEqual(ghGoDebugCalls(directory), ['', 'http2client=0']);
+    });
+  } finally {
+    applyRuntimeSettings(defaultRuntimeSettings);
+  }
+});
+
+test('прямой вызов gh после взведённого обхода идёт через HTTP/1.1', { concurrency: false }, async () => {
+  applyRuntimeSettings({ ...defaultRuntimeSettings, networkRetryAttempts: 1 });
+
+  try {
+    await withFakeGh(ghTlsHandshakeLogic, ({ directory }) => {
+      const options = { env: { ...process.env, GODEBUG: '' } };
+      assert.throws(() => runNetwork('gh', ['api', 'user'], options), /TLS handshake timeout/u);
+      // Задачи по замечаниям ревью создаются прямым `run`, мимо `runNetwork`:
+      // обход обязан дойти и до них.
+      assert.equal(run('gh', ['api', 'user'], options).stdout, 'ready');
+      assert.deepEqual(ghGoDebugCalls(directory), ['', 'http2client=0']);
+    });
+  } finally {
+    applyRuntimeSettings(defaultRuntimeSettings);
+  }
+});
+
+test('gh, снятый таймаутом на рукопожатии, включает обход по stderr', { concurrency: false }, async () => {
+  applyRuntimeSettings({ ...defaultRuntimeSettings, networkRetryAttempts: 1 });
+
+  try {
+    await withFakeGh(ghHangingHandshakeLogic, ({ directory }) => {
+      const options = { env: { ...process.env, GODEBUG: '' }, timeoutMs: 2_000 };
+      assert.throws(() => run('gh', ['api', 'user'], options), /wall-clock timeout/u);
+      assert.equal(run('gh', ['api', 'user'], options).stdout, 'ready');
+      assert.deepEqual(ghGoDebugCalls(directory), ['', 'http2client=0']);
+    });
+  } finally {
+    applyRuntimeSettings(defaultRuntimeSettings);
+  }
+});
+
+test('отказ gh не про TLS оставляет HTTP/2 включённым', { concurrency: false }, async () => {
+  applyRuntimeSettings({ ...defaultRuntimeSettings, networkRetryAttempts: 1 });
+
+  try {
+    await withFakeGh(ghNotFoundLogic, ({ directory }) => {
+      const options = { env: { ...process.env, GODEBUG: '' } };
+      assert.throws(() => run('gh', ['api', 'user'], options), /Not Found/u);
+      assert.throws(() => run('gh', ['api', 'user'], options), /Not Found/u);
+      assert.deepEqual(ghGoDebugCalls(directory), ['', '']);
+    });
+  } finally {
+    applyRuntimeSettings(defaultRuntimeSettings);
+  }
+});
+
+test('обход HTTP/1.1 сохраняет GODEBUG оператора и не задваивает http2client', { concurrency: false }, async () => {
+  applyRuntimeSettings({ ...defaultRuntimeSettings, networkRetryAttempts: 1 });
+
+  try {
+    await withFakeGh(ghTlsHandshakeLogic, ({ directory }) => {
+      const options = { env: { ...process.env, GODEBUG: 'madvdontneed=1,http2client=1' } };
+      assert.throws(() => runNetwork('gh', ['api', 'user'], options), /TLS handshake timeout/u);
+      assert.equal(run('gh', ['api', 'user'], options).stdout, 'ready');
+      assert.equal(run('gh', ['api', 'user'], options).stdout, 'ready');
+      assert.deepEqual(ghGoDebugCalls(directory), [
+        'madvdontneed=1,http2client=1',
+        'madvdontneed=1,http2client=0',
+        'madvdontneed=1,http2client=0',
+      ]);
+    });
   } finally {
     applyRuntimeSettings(defaultRuntimeSettings);
   }
