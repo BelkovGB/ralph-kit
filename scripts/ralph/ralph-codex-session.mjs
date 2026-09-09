@@ -44,10 +44,17 @@ export function createSandboxedCodexEnvironment(source = process.env, options = 
       const sandboxedAuthenticationFile = path.join(codexHome, 'auth.json');
       copyFileSync(authenticationFile, sandboxedAuthenticationFile);
       chmodSync(sandboxedAuthenticationFile, 0o600);
-      writeFileSync(path.join(codexHome, 'config.toml'), 'cli_auth_credentials_store = "file"\n', {
-        encoding: 'utf8',
-        mode: 0o600,
-      });
+      const platform = options.platform ?? process.platform;
+      const windowsSandbox =
+        platform === 'win32' ? '\n[windows]\nsandbox = "unelevated"\n' : '';
+      writeFileSync(
+        path.join(codexHome, 'config.toml'),
+        `cli_auth_credentials_store = "file"\n${windowsSandbox}`,
+        {
+          encoding: 'utf8',
+          mode: 0o600,
+        },
+      );
     } catch (error) {
       sandbox.cleanup();
       throw error;
