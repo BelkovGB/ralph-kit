@@ -166,7 +166,7 @@ test('sandboxed Codex receives an isolated login cache without the user configur
 
   const sandbox = createSandboxedCodexEnvironment(
     { PATH: process.env.PATH ?? '', CODEX_HOME: sourceDirectory },
-    { authenticationFile },
+    { authenticationFile, platform: 'win32' },
   );
   try {
     assert.notEqual(sandbox.env.CODEX_HOME, sourceDirectory);
@@ -174,6 +174,26 @@ test('sandboxed Codex receives an isolated login cache without the user configur
       readFileSync(path.join(sandbox.env.CODEX_HOME, 'auth.json'), 'utf8'),
       '{"auth":"test-only"}\n',
     );
+    assert.equal(
+      readFileSync(path.join(sandbox.env.CODEX_HOME, 'config.toml'), 'utf8'),
+      'cli_auth_credentials_store = "file"\n\n[windows]\nsandbox = "unelevated"\n',
+    );
+  } finally {
+    rmSync(sandbox.root, { recursive: true, force: true });
+    rmSync(sourceDirectory, { recursive: true, force: true });
+  }
+});
+
+test('sandboxed Codex omits Windows sandbox settings on other platforms', () => {
+  const sourceDirectory = mkdtempSync(path.join(tmpdir(), 'ralph-auth-source-'));
+  const authenticationFile = path.join(sourceDirectory, 'auth.json');
+  writeFileSync(authenticationFile, '{"auth":"test-only"}\n', 'utf8');
+
+  const sandbox = createSandboxedCodexEnvironment(
+    { PATH: process.env.PATH ?? '', CODEX_HOME: sourceDirectory },
+    { authenticationFile, platform: 'linux' },
+  );
+  try {
     assert.equal(
       readFileSync(path.join(sandbox.env.CODEX_HOME, 'config.toml'), 'utf8'),
       'cli_auth_credentials_store = "file"\n',
