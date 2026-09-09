@@ -1107,6 +1107,27 @@ export async function runContinuousLoop(context, actions) {
     const listedIssues = actions
       .openIssues(repository, milestone)
       .filter((issue) => !isRalphInfrastructureIssue(issue));
+    // GitHub может кратко вернуть пустую страницу сразу после закрытия issue.
+    // Держим уже увиденные открытые задачи в локальной очереди, но прямым GET
+    // подтверждаем состояние каждой пропавшей задачи.
+    for (const issue of listedIssues) {
+      if (
+        !completedIssueNumbers.has(issue.number) &&
+        !parkedIssueNumbers.has(issue.number) &&
+        !pendingIssues.has(issue.number)
+      ) {
+        pendingIssues.set(issue.number, issue);
+      }
+    }
+    const listedIssueNumbers = new Set(listedIssues.map((issue) => issue.number));
+    for (const [issueNumber] of pendingIssues) {
+      if (
+        !listedIssueNumbers.has(issueNumber) &&
+        actions.issueState(repository, issueNumber) !== 'OPEN'
+      ) {
+        pendingIssues.delete(issueNumber);
+      }
+    }
     const issuesByNumber = new Map();
     // Сначала добавляем ответ GitHub, затем локальную очередь: локальная копия
     // содержит самый свежий body после review и должна победить устаревший REST-ответ.
