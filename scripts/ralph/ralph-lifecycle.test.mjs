@@ -149,6 +149,7 @@ function recordingStateStore(initialIssue = null) {
         phase: 'agent-running',
         validationFixAttempts: 0,
       };
+      record.issue.phase = 'agent-running';
       return record.issue;
     },
     updateIssue(values) {
@@ -169,7 +170,7 @@ function recordingStateStore(initialIssue = null) {
  */
 function codexSource(reviewOutputPath, verdictJson, commit) {
   return `
-import { appendFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 const reviewOutputPath = ${JSON.stringify(reviewOutputPath)};
 appendFileSync(reviewOutputPath + '.invocations', process.argv.includes(reviewOutputPath) ? 'review\\n' : 'development\\n', 'utf8');
 const message = (text) =>
@@ -178,6 +179,7 @@ if (process.argv.includes(reviewOutputPath)) {
   writeFileSync(reviewOutputPath, ${JSON.stringify(verdictJson)}, 'utf8');
   message('Review recorded.');
 } else {
+  writeFileSync(reviewOutputPath + '.development-prompt', readFileSync(0, 'utf8'), 'utf8');
   message('ALREADY_FIXED: ${commit}');
 }
 `;
@@ -340,6 +342,10 @@ test('отказ ревью возвращает issue агенту, повто�
       'development',
       'review',
     ]);
+    assert.match(
+      readFileSync(`${stand.reviewOutputPath}.development-prompt`, 'utf8'),
+      /Broken invariant/u,
+    );
   });
 });
 

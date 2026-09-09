@@ -838,6 +838,9 @@ export async function runAgentOnIssue(config, repository, issue, rules) {
 
   const currentHead = run('git', ['rev-parse', 'HEAD']).stdout;
   const continuation = Boolean(storedIssue);
+  // beginIssue переводит сохранённую issue в agent-running. Recovery-prompt
+  // нужно собрать раньше, пока в состоянии ещё видна причина продолжения.
+  const continuationPrompt = continuation ? recoveryPrompt(storedIssue) : '';
   // База уже сдвинута в начале фазы, до проверки рабочего дерева; здесь
   // остаётся простое сравнение.
   const startingCommit = storedIssue?.startingCommit ?? currentHead;
@@ -868,7 +871,7 @@ export async function runAgentOnIssue(config, repository, issue, rules) {
   const endImplementation = startStage('implementation');
   try {
     codexResult = await runDevelopmentSession(config, {
-      input: renderPrompt(config, issue, rules) + (continuation ? recoveryPrompt(storedIssue) : ''),
+      input: renderPrompt(config, issue, rules) + continuationPrompt,
       maxTurns: config.maxTurns,
       timeoutMs: config.runtime.agentTimeoutMs,
       label: `${config.agentCli} issue #${issue.number}`,
