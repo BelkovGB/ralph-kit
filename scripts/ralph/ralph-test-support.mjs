@@ -170,6 +170,11 @@ export function configTrustingOnly(trustedFiles, overrides = {}) {
   };
 }
 
+// Milestone тестового стенда назван один раз: `refreshIssue` подтверждает
+// принадлежность задачи фазе по этому номеру, и разъехавшиеся копии выкидывали
+// бы из очереди каждую задачу.
+export const testMilestone = Object.freeze({ number: 7, title: 'Test milestone' });
+
 export function context(overrides = {}) {
   const { config: configOverrides, ...rest } = overrides;
   return {
@@ -183,7 +188,7 @@ export function context(overrides = {}) {
       ...configOverrides,
     },
     repository: 'owner/repository',
-    milestone: { number: 7, title: 'Test milestone' },
+    milestone: testMilestone,
     repositoryState: { currentBranch: 'feature/test', clean: true },
     rules: 'test rules',
     ...rest,
@@ -197,6 +202,7 @@ export function actions(overrides = {}) {
     issueState: () => 'CLOSED',
     openIssues: () => [],
     refreshIssue: (_repository, _issueNumber, issue) => ({
+      milestone: testMilestone.number,
       ...issue,
       state: 'OPEN',
     }),
