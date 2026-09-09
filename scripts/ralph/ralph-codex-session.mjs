@@ -85,9 +85,10 @@ export function developmentCodexArguments(config) {
     '--json',
     // Полный доступ к файловой системе: с ограниченной песочницей сессия
     // падает на записи вне рабочего дерева, и цикл уходит в бесконечный повтор
-    // одной issue. Изоляцию даёт временный HOME, а не флаг.
-    '--sandbox',
-    'danger-full-access',
+    // одной issue. Используем новый единый профиль разрешений: проектный
+    // `default_permissions` нельзя сочетать с устаревшим `sandbox_mode`.
+    '-c',
+    'default_permissions=":danger-full-access"',
     '--model',
     config.developmentModel,
     ...reasoningEffortArguments(config.developmentEffort),
@@ -100,8 +101,10 @@ export function developmentCodexArguments(config) {
 export function reviewCodexArguments(role) {
   return [
     'exec',
-    '--sandbox',
-    'read-only',
+    // CLI override сохраняет read-only независимо от профиля проекта и не
+    // смешивает `default_permissions` с несовместимым `sandbox_mode`.
+    '-c',
+    'default_permissions=":read-only"',
     // Ralph уже запускает отдельную review-сессию с готовым diff и контрактом.
     // Субагенты умножают чтение и вместе расходуют один лимит шагов.
     '--disable',
@@ -114,6 +117,10 @@ export function reviewCodexArguments(role) {
     role.schemaPath,
     '--output-last-message',
     role.outputPath,
+    // `cwd` процесса недостаточно для разрешения project-local профилей на
+    // Windows: Codex должен получить рабочий корень явно.
+    '-C',
+    agentProjectRoot,
     '-',
   ];
 }

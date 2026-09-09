@@ -704,9 +704,9 @@ test('development codex arguments carry an explicit reasoning effort', () => {
     developmentModel: 'gpt-5.6-terra',
     developmentEffort: 'medium',
   });
-  const effortIndex = args.indexOf('-c');
+  const effortIndex = args.indexOf('model_reasoning_effort="medium"');
   assert.notEqual(effortIndex, -1);
-  assert.equal(args[effortIndex + 1], 'model_reasoning_effort="medium"');
+  assert.equal(args[effortIndex - 1], '-c');
   assert.ok(effortIndex > args.indexOf('--model'));
   assert.equal(args.at(-1), '-');
 });

@@ -210,8 +210,13 @@ test('Codex authentication preflight uses the isolated login cache', () => {
 
 test('development Codex has unrestricted repository write access', () => {
   const args = developmentCodexArguments({ developmentModel: 'gpt-5.6-terra' });
-  assert.deepEqual(args.slice(0, 4), ['exec', '--json', '--sandbox', 'danger-full-access']);
-  assert.ok(!args.includes('workspace-write'));
+  assert.deepEqual(args.slice(0, 4), [
+    'exec',
+    '--json',
+    '-c',
+    'default_permissions=":danger-full-access"',
+  ]);
+  assert.ok(!args.includes('--sandbox'));
 });
 
 test('Codex review sessions stay within one agent', () => {
@@ -224,12 +229,14 @@ test('Codex review sessions stay within one agent', () => {
 
   assert.deepEqual(args.slice(0, 6), [
     'exec',
-    '--sandbox',
-    'read-only',
+    '-c',
+    'default_permissions=":read-only"',
     '--disable',
     'multi_agent',
     '--json',
   ]);
+  assert.deepEqual(args.slice(-3), ['-C', path.resolve('.'), '-']);
+  assert.ok(!args.includes('--sandbox'));
 });
 
 test('Codex turn.completed раскладывает usage на непересекающиеся категории', () => {
