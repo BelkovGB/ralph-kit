@@ -1379,6 +1379,32 @@ test('the recovery prompt carries the summary and tells the agent to rerun only 
   assert.equal(/Сначала повтори только упавшие проверки/.test(withoutFailure), false);
 });
 
+/**
+ * Замечания ревью переживают смену фазы. Сессия исправления замечаний может
+ * свалить проверки, и тогда issue продолжается уже из `working-tree`: ветка
+ * ревью не срабатывает, а незакрытые замечания остаются в состоянии. Без этого
+ * блока агент чинит тесты и уходит на ревью с тем же нарушением, круг
+ * повторяется до парковки issue.
+ */
+test('продолжение после сбоя проверок несёт незакрытые замечания ревьюера', () => {
+  const prompt = recoveryPrompt({
+    phase: 'working-tree',
+    commit: 'a'.repeat(40),
+    lastFailure: 'npm test завершился с кодом 1',
+    reviewFindings: 'P1 [src/cart.ts:42] Нарушен инвариант остатка',
+  });
+
+  assert.match(prompt, /## AFK recovery/);
+  assert.match(prompt, /npm test завершился с кодом 1/);
+  assert.match(prompt, /Незакрытые замечания ревьюера/);
+  assert.match(prompt, /Нарушен инвариант остатка/);
+  // Ветка ревью обещает пройденные проверки; здесь они как раз упали.
+  assert.equal(/validationScripts на этом дереве прошёл/.test(prompt), false);
+
+  const withoutFindings = recoveryPrompt({ phase: 'working-tree', lastFailure: 'сбой' });
+  assert.equal(/Незакрытые замечания/.test(withoutFindings), false);
+});
+
 test('потерянный комментарий не роняет цикл, а незакрытая issue роняет', () => {
   const failing = () => {
     const error = new Error('gh api: HTTP 503');
