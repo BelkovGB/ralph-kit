@@ -288,64 +288,83 @@ test(
     const fakeSource = 'setInterval(() => {}, 1_000);\n';
     const firstEventTimeoutMs = 100;
 
-    await withFakeCodex(fakeSource, async () => {
-      await assert.rejects(
-        runCodexWithTurnLimit(['exec', '--json', '-'], {
-          input: 'test prompt',
-          label: 'Silent fake Codex',
-          maxTurns: 50,
-          timeoutMs: 5_000,
-          firstEventTimeoutMs,
-          idleTimeoutMs: 5_000,
-          authenticationFile: null,
-        }),
-        (error) => {
-          assert.equal(error.code, 'RALPH_AGENT_IDLE_TIMEOUT');
-          assert.equal(error.timeoutMs, firstEventTimeoutMs);
-          assert.equal(error.idlePhase, 'first-event');
-          assert.equal(error.turns, 0);
-          assert.match(error.message, /первое событие.*100 ms/u);
-          return true;
-        },
-      );
+    applyRuntimeSettings({
+      ...defaultRuntimeSettings,
+      agentFirstEventTimeoutMs: firstEventTimeoutMs,
+      agentIdleTimeoutMs: 5_000,
     });
+
+    try {
+      await withFakeCodex(fakeSource, async () => {
+        await assert.rejects(
+          runCodexWithTurnLimit(['exec', '--json', '-'], {
+            input: 'test prompt',
+            label: 'Silent fake Codex',
+            maxTurns: 50,
+            timeoutMs: 5_000,
+            authenticationFile: null,
+          }),
+          (error) => {
+            assert.equal(error.code, 'RALPH_AGENT_IDLE_TIMEOUT');
+            assert.equal(error.timeoutMs, firstEventTimeoutMs);
+            assert.equal(error.idlePhase, 'first-event');
+            assert.equal(error.turns, 0);
+            assert.match(error.message, /первое событие.*100 ms/u);
+            return true;
+          },
+        );
+      });
+    } finally {
+      applyRuntimeSettings(defaultRuntimeSettings);
+    }
   },
 );
 
 test(
-  'Codex idle watchdog resets after an event and stops a stalled stream',
+  'Codex idle watchdog resets after every event and stops after the last one',
   { concurrency: false },
   async () => {
     const fakeSource = `
-process.stdout.write(JSON.stringify({
+const emit = (id) => process.stdout.write(JSON.stringify({
   type: "item.completed",
-  item: { id: "step-1", type: "agent_message", text: "started" },
+  item: { id, type: "agent_message", text: id },
 }) + "\\n");
+emit("step-1");
+setTimeout(() => emit("step-2"), 200);
+setTimeout(() => emit("step-3"), 400);
 setInterval(() => {}, 1_000);
 `;
-    const idleTimeoutMs = 100;
+    const idleTimeoutMs = 350;
 
-    await withFakeCodex(fakeSource, async () => {
-      await assert.rejects(
-        runCodexWithTurnLimit(['exec', '--json', '-'], {
-          input: 'test prompt',
-          label: 'Stalled fake Codex',
-          maxTurns: 50,
-          timeoutMs: 5_000,
-          firstEventTimeoutMs: 1_000,
-          idleTimeoutMs,
-          authenticationFile: null,
-        }),
-        (error) => {
-          assert.equal(error.code, 'RALPH_AGENT_IDLE_TIMEOUT');
-          assert.equal(error.timeoutMs, idleTimeoutMs);
-          assert.equal(error.idlePhase, 'between-events');
-          assert.equal(error.turns, 1);
-          assert.match(error.message, /не присылал события 100 ms/u);
-          return true;
-        },
-      );
+    applyRuntimeSettings({
+      ...defaultRuntimeSettings,
+      agentFirstEventTimeoutMs: 1_000,
+      agentIdleTimeoutMs: idleTimeoutMs,
     });
+
+    try {
+      await withFakeCodex(fakeSource, async () => {
+        await assert.rejects(
+          runCodexWithTurnLimit(['exec', '--json', '-'], {
+            input: 'test prompt',
+            label: 'Stalled fake Codex',
+            maxTurns: 50,
+            timeoutMs: 5_000,
+            authenticationFile: null,
+          }),
+          (error) => {
+            assert.equal(error.code, 'RALPH_AGENT_IDLE_TIMEOUT');
+            assert.equal(error.timeoutMs, idleTimeoutMs);
+            assert.equal(error.idlePhase, 'between-events');
+            assert.equal(error.turns, 3);
+            assert.match(error.message, /не присылал события 350 ms/u);
+            return true;
+          },
+        );
+      });
+    } finally {
+      applyRuntimeSettings(defaultRuntimeSettings);
+    }
   },
 );
 
