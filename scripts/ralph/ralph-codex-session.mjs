@@ -94,6 +94,12 @@ export function developmentCodexArguments(config) {
     // падает на записи вне рабочего дерева, и цикл уходит в бесконечный повтор
     // одной issue. Используем новый единый профиль разрешений: проектный
     // `default_permissions` нельзя сочетать с устаревшим `sandbox_mode`.
+    //
+    // `--strict-config` обязателен рядом с ним: незнакомый ключ Codex принимает
+    // молча, и на CLI без `default_permissions` сессия пошла бы с правами по
+    // умолчанию вместо заказанных. Строгий режим превращает такой отказ из
+    // тихого в громкий — проверено на codex-cli 0.153.4.
+    '--strict-config',
     '-c',
     'default_permissions=":danger-full-access"',
     '--model',
@@ -110,6 +116,12 @@ export function reviewCodexArguments(role) {
     'exec',
     // CLI override сохраняет read-only независимо от профиля проекта и не
     // смешивает `default_permissions` с несовместимым `sandbox_mode`.
+    //
+    // Без `--strict-config` роль ревью отказывала бы небезопасно: незнакомый
+    // ключ Codex принимает молча, и на CLI без `default_permissions` ревьюер
+    // пошёл бы с правами по умолчанию вместо чтения. Здесь это дороже, чем у
+    // разработки: read-only — вся гарантия роли.
+    '--strict-config',
     '-c',
     'default_permissions=":read-only"',
     // Ralph уже запускает отдельную review-сессию с готовым diff и контрактом.
@@ -235,8 +247,13 @@ export function verifyCodexAuthentication(dependencies = {}) {
       timeoutMs: runtimeSettings().commandTimeoutMs,
     });
   } catch (cause) {
+    // Отказ команды печатается вместе с сообщением: `codex login status` падает
+    // не только на отсутствии входа, но и на конфиге, который эта версия CLI не
+    // принимает, — а верхний обработчик показывает только `message`, и без
+    // хвоста оператор чинил бы вход вместо настоящей причины.
     const error = new Error(
-      'Изолированный Codex не авторизован. Выполните `codex login` и повторите запуск Ralph.',
+      'Изолированный Codex не авторизован. Выполните `codex login` и повторите запуск Ralph. ' +
+        `Отказ команды: ${cause.message}`,
       { cause },
     );
     error.code = 'RALPH_AGENT_AUTH';

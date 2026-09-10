@@ -131,8 +131,8 @@ export function developmentClaudeArguments(config) {
     config.developmentEffort,
     '--disallowedTools',
     deniedDevelopmentTools.join(','),
-    // Аналог `--sandbox danger-full-access` у Codex: сессия не должна ждать
-    // подтверждения, которое в AFK-режиме некому дать.
+    // Аналог профиля `default_permissions=":danger-full-access"` у Codex:
+    // сессия не должна ждать подтверждения, которое в AFK-режиме некому дать.
     '--permission-mode',
     'bypassPermissions',
   ];
