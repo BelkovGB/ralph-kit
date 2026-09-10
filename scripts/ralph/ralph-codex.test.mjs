@@ -14,6 +14,7 @@ import {
   runCodexWithTurnLimit,
   verifyCodexAuthentication,
 } from './ralph-codex-session.mjs';
+import { agentProjectRoot } from './ralph-agent-session.mjs';
 import {
   credentialFreeEnvironment,
   credentialFreeEnvironmentVariables,
@@ -230,9 +231,10 @@ test('Codex authentication preflight uses the isolated login cache', () => {
 
 test('development Codex has unrestricted repository write access', () => {
   const args = developmentCodexArguments({ developmentModel: 'gpt-5.6-terra' });
-  assert.deepEqual(args.slice(0, 4), [
+  assert.deepEqual(args.slice(0, 5), [
     'exec',
     '--json',
+    '--strict-config',
     '-c',
     'default_permissions=":danger-full-access"',
   ]);
@@ -247,15 +249,16 @@ test('Codex review sessions stay within one agent', () => {
     outputPath: 'last-review.json',
   });
 
-  assert.deepEqual(args.slice(0, 6), [
+  assert.deepEqual(args.slice(0, 7), [
     'exec',
+    '--strict-config',
     '-c',
     'default_permissions=":read-only"',
     '--disable',
     'multi_agent',
     '--json',
   ]);
-  assert.deepEqual(args.slice(-3), ['-C', path.resolve('.'), '-']);
+  assert.deepEqual(args.slice(-3), ['-C', agentProjectRoot, '-']);
   assert.ok(!args.includes('--sandbox'));
 });
 
