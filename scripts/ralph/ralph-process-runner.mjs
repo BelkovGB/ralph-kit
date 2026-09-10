@@ -33,6 +33,8 @@ export const defaultRuntimeSettings = Object.freeze({
   validationTimeoutMs: 1_800_000,
   validationRunTimeoutMs: 3_600_000,
   agentTimeoutMs: 5_400_000,
+  agentFirstEventTimeoutMs: 300_000,
+  agentIdleTimeoutMs: 600_000,
   networkRetryAttempts: 3,
   networkRetryBaseDelayMs: 2_000,
   maxPages: 20,

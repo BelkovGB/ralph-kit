@@ -281,6 +281,74 @@ test(
   },
 );
 
+test(
+  'Codex first-event watchdog stops a process that never starts its event stream',
+  { concurrency: false },
+  async () => {
+    const fakeSource = 'setInterval(() => {}, 1_000);\n';
+    const firstEventTimeoutMs = 100;
+
+    await withFakeCodex(fakeSource, async () => {
+      await assert.rejects(
+        runCodexWithTurnLimit(['exec', '--json', '-'], {
+          input: 'test prompt',
+          label: 'Silent fake Codex',
+          maxTurns: 50,
+          timeoutMs: 5_000,
+          firstEventTimeoutMs,
+          idleTimeoutMs: 5_000,
+          authenticationFile: null,
+        }),
+        (error) => {
+          assert.equal(error.code, 'RALPH_AGENT_IDLE_TIMEOUT');
+          assert.equal(error.timeoutMs, firstEventTimeoutMs);
+          assert.equal(error.idlePhase, 'first-event');
+          assert.equal(error.turns, 0);
+          assert.match(error.message, /первое событие.*100 ms/u);
+          return true;
+        },
+      );
+    });
+  },
+);
+
+test(
+  'Codex idle watchdog resets after an event and stops a stalled stream',
+  { concurrency: false },
+  async () => {
+    const fakeSource = `
+process.stdout.write(JSON.stringify({
+  type: "item.completed",
+  item: { id: "step-1", type: "agent_message", text: "started" },
+}) + "\\n");
+setInterval(() => {}, 1_000);
+`;
+    const idleTimeoutMs = 100;
+
+    await withFakeCodex(fakeSource, async () => {
+      await assert.rejects(
+        runCodexWithTurnLimit(['exec', '--json', '-'], {
+          input: 'test prompt',
+          label: 'Stalled fake Codex',
+          maxTurns: 50,
+          timeoutMs: 5_000,
+          firstEventTimeoutMs: 1_000,
+          idleTimeoutMs,
+          authenticationFile: null,
+        }),
+        (error) => {
+          assert.equal(error.code, 'RALPH_AGENT_IDLE_TIMEOUT');
+          assert.equal(error.timeoutMs, idleTimeoutMs);
+          assert.equal(error.idlePhase, 'between-events');
+          assert.equal(error.turns, 1);
+          assert.match(error.message, /не присылал события 100 ms/u);
+          return true;
+        },
+      );
+    });
+  },
+);
+
 test('Codex 401 is classified as an authentication infrastructure failure', async () => {
   await withFakeCodex(
     `

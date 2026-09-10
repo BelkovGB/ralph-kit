@@ -593,6 +593,25 @@ test('a review is not retried when the failure cannot change between attempts', 
   );
   assert.equal(result, 'ok');
   assert.equal(attempts, 3);
+
+  // Тишина в потоке похожа на зависшее сетевое соединение: следующая сессия
+  // может пройти с тем же prompt и состоянием репозитория.
+  let idleAttempts = 0;
+  const idleResult = await runReviewWithRetries(
+    config,
+    () => {
+      idleAttempts += 1;
+      if (idleAttempts < 2) {
+        const error = new Error('agent event stream stalled');
+        error.code = 'RALPH_AGENT_IDLE_TIMEOUT';
+        throw error;
+      }
+      return 'ok after idle';
+    },
+    'review',
+  );
+  assert.equal(idleResult, 'ok after idle');
+  assert.equal(idleAttempts, 2);
 });
 
 test(

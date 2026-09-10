@@ -725,6 +725,8 @@ function validateRuntimeSettings(config) {
     'validationTimeoutMs',
     'validationRunTimeoutMs',
     'agentTimeoutMs',
+    'agentFirstEventTimeoutMs',
+    'agentIdleTimeoutMs',
     'networkRetryBaseDelayMs',
   ]) {
     if (!Number.isInteger(config.runtime[field]) || config.runtime[field] < 1) {

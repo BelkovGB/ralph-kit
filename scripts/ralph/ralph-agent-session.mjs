@@ -173,6 +173,7 @@ export async function runAgentSession(backend, args, options) {
   let turns = 0;
   let limitReached = false;
   let wallTimeoutReached = false;
+  let idleTimeoutReached = null;
   // Claude CLI завершается кодом 0 и при отказе авторизации, и при собственном
   // лимите шагов: единственный признак отказа приходит в потоке событий.
   let streamError = null;
@@ -180,12 +181,16 @@ export async function runAgentSession(backend, args, options) {
   let accumulatedUsage = null;
   let toolResults = 0;
   let resolveTurnLimit;
+  let resolveIdleTimeout;
+  let idleTimer;
+  let sessionSettled = false;
+  let hasAgentEvent = false;
   const seenStepIds = new Set();
   // Считается один раз на сообщение: одно сообщение — один запрос к API, и
   // повторное событие с тем же id удвоило бы его расход.
   const countedUsageIds = new Set();
 
-  // Сводка снимается в момент выхода, а выходов у сессии шесть, включая четыре
+  // Сводка снимается в момент выхода, а выходов у сессии семь, включая пять
   // аварийных. Дороже всех именно они: оборванная по лимиту сессия успевает
   // потратить весь бюджет, и без её цены сводка прогона занижена.
   //
@@ -203,6 +208,31 @@ export async function runAgentSession(backend, args, options) {
     ...reportedFields(backendTelemetry),
   });
 
+  const firstEventTimeoutMs =
+    options.firstEventTimeoutMs ?? runtimeSettings().agentFirstEventTimeoutMs;
+  const idleTimeoutMs = options.idleTimeoutMs ?? runtimeSettings().agentIdleTimeoutMs;
+  const idleTimeoutResult = new Promise((resolve) => {
+    resolveIdleTimeout = resolve;
+  });
+  const armIdleWatchdog = (phase, timeoutMs) => {
+    if (sessionSettled) return;
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      idleTimeoutReached = { phase, timeoutMs };
+      const reason =
+        phase === 'first-event'
+          ? `не прислал первое событие за ${timeoutMs} ms`
+          : `не присылал события ${timeoutMs} ms`;
+      console.error(`\nCircuit breaker: ${options.label} ${reason}.`);
+      terminateProcessTree(child);
+      resolveIdleTimeout({ code: null, signal: 'RALPH_AGENT_IDLE_TIMEOUT' });
+    }, timeoutMs);
+  };
+  const markAgentActivity = () => {
+    hasAgentEvent = true;
+    armIdleWatchdog('between-events', idleTimeoutMs);
+  };
+
   const handleLine = (line) => {
     if (line.trim() === '') {
       return;
@@ -217,6 +247,8 @@ export async function runAgentSession(backend, args, options) {
       console.log(`[${backend.label}] неразобранная строка: ${outputTail(line)}`);
       return;
     }
+
+    markAgentActivity();
 
     if (event.agentMessage) lastAgentMessage = event.agentMessage;
     if (event.error) streamError ??= event.error;
@@ -283,6 +315,9 @@ export async function runAgentSession(backend, args, options) {
   });
 
   child.stdin.end(options.input);
+  if (!hasAgentEvent) {
+    armIdleWatchdog('first-event', firstEventTimeoutMs);
+  }
   const timeoutMs = options.timeoutMs ?? runtimeSettings().agentTimeoutMs;
   let wallTimer;
   const wallTimeout = new Promise((resolve) => {
@@ -295,11 +330,18 @@ export async function runAgentSession(backend, args, options) {
   });
   let result;
   try {
-    result = await Promise.race([childResult, wallTimeout, turnLimitResult]);
+    result = await Promise.race([
+      childResult,
+      wallTimeout,
+      turnLimitResult,
+      idleTimeoutResult,
+    ]);
   } finally {
+    sessionSettled = true;
     clearTimeout(wallTimer);
+    clearTimeout(idleTimer);
   }
-  if (limitReached || wallTimeoutReached) {
+  if (limitReached || wallTimeoutReached || idleTimeoutReached) {
     await waitForChildTermination(child, childResult, 10_000);
   }
   if (stdoutBuffer.trim() !== '') {
@@ -319,6 +361,20 @@ export async function runAgentSession(backend, args, options) {
     error.code = 'RALPH_AGENT_TIMEOUT';
     error.turns = turns;
     error.timeoutMs = timeoutMs;
+    error.telemetry = sessionTelemetry();
+    throw error;
+  }
+
+  if (idleTimeoutReached) {
+    const reason =
+      idleTimeoutReached.phase === 'first-event'
+        ? `не прислал первое событие за ${idleTimeoutReached.timeoutMs} ms`
+        : `не присылал события ${idleTimeoutReached.timeoutMs} ms`;
+    const error = new Error(`${options.label} ${reason}.`);
+    error.code = 'RALPH_AGENT_IDLE_TIMEOUT';
+    error.turns = turns;
+    error.timeoutMs = idleTimeoutReached.timeoutMs;
+    error.idlePhase = idleTimeoutReached.phase;
     error.telemetry = sessionTelemetry();
     throw error;
   }

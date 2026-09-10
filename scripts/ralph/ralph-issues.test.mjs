@@ -605,9 +605,13 @@ test(
       .flatMap((group) => group.items)
       .map((item) => /^\/([\w-]+)/.exec(item.command)?.[1])
       .filter(Boolean);
+    const internalSkills = new Set(
+      JSON.parse(readFileSync(ralphConfigPath, 'utf8')).developmentSkills ?? [],
+    );
     const bodies = agentSkillFiles()
       .filter((file) => file.split(path.sep).includes('.agents'))
-      .map((file) => path.basename(path.dirname(file)));
+      .map((file) => path.basename(path.dirname(file)))
+      .filter((skill) => !internalSkills.has(skill));
 
     assert.deepEqual(listed.sort(), bodies.sort());
   },
@@ -1520,6 +1524,29 @@ test('пределы повторов разведены по цене одно�
       }),
     /от 1 до 5/,
   );
+});
+
+test('тайм-ауты тишины агента имеют умолчания и принимают только положительные числа', () => {
+  const original = JSON.parse(readFileSync(ralphConfigPath, 'utf8'));
+  delete original.runtime.agentFirstEventTimeoutMs;
+  delete original.runtime.agentIdleTimeoutMs;
+
+  withPatchedRalphConfig(original, (config) => {
+    assert.equal(config.runtime.agentFirstEventTimeoutMs, 300_000);
+    assert.equal(config.runtime.agentIdleTimeoutMs, 600_000);
+  });
+
+  for (const field of ['agentFirstEventTimeoutMs', 'agentIdleTimeoutMs']) {
+    const invalid = JSON.parse(readFileSync(ralphConfigPath, 'utf8'));
+    invalid.runtime[field] = 0;
+    assert.throws(
+      () =>
+        withPatchedRalphConfig(invalid, () => {
+          throw new Error('loadConfig должен был отказать');
+        }),
+      new RegExp(`runtime\\.${field}.*больше 0`, 'u'),
+    );
+  }
 });
 
 test('повторное создание задачи не заводит дубликат после дошедшего запроса', () => {

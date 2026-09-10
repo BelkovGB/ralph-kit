@@ -21,6 +21,8 @@
     "validationTimeoutMs": 1800000,
     "validationRunTimeoutMs": 3600000,
     "agentTimeoutMs": 5400000,
+    "agentFirstEventTimeoutMs": 300000,
+    "agentIdleTimeoutMs": 600000,
     "networkRetryAttempts": 3,
     "networkRetryBaseDelayMs": 2000,
     "maxPages": 20,
