@@ -281,6 +281,93 @@ test(
   },
 );
 
+test(
+  'Codex first-event watchdog stops a process that never starts its event stream',
+  { concurrency: false },
+  async () => {
+    const fakeSource = 'setInterval(() => {}, 1_000);\n';
+    const firstEventTimeoutMs = 100;
+
+    applyRuntimeSettings({
+      ...defaultRuntimeSettings,
+      agentFirstEventTimeoutMs: firstEventTimeoutMs,
+      agentIdleTimeoutMs: 5_000,
+    });
+
+    try {
+      await withFakeCodex(fakeSource, async () => {
+        await assert.rejects(
+          runCodexWithTurnLimit(['exec', '--json', '-'], {
+            input: 'test prompt',
+            label: 'Silent fake Codex',
+            maxTurns: 50,
+            timeoutMs: 5_000,
+            authenticationFile: null,
+          }),
+          (error) => {
+            assert.equal(error.code, 'RALPH_AGENT_IDLE_TIMEOUT');
+            assert.equal(error.timeoutMs, firstEventTimeoutMs);
+            assert.equal(error.idlePhase, 'first-event');
+            assert.equal(error.turns, 0);
+            assert.match(error.message, /первое событие.*100 ms/u);
+            return true;
+          },
+        );
+      });
+    } finally {
+      applyRuntimeSettings(defaultRuntimeSettings);
+    }
+  },
+);
+
+test(
+  'Codex idle watchdog resets after every event and stops after the last one',
+  { concurrency: false },
+  async () => {
+    const fakeSource = `
+const emit = (id) => process.stdout.write(JSON.stringify({
+  type: "item.completed",
+  item: { id, type: "agent_message", text: id },
+}) + "\\n");
+emit("step-1");
+setTimeout(() => emit("step-2"), 200);
+setTimeout(() => emit("step-3"), 400);
+setInterval(() => {}, 1_000);
+`;
+    const idleTimeoutMs = 350;
+
+    applyRuntimeSettings({
+      ...defaultRuntimeSettings,
+      agentFirstEventTimeoutMs: 1_000,
+      agentIdleTimeoutMs: idleTimeoutMs,
+    });
+
+    try {
+      await withFakeCodex(fakeSource, async () => {
+        await assert.rejects(
+          runCodexWithTurnLimit(['exec', '--json', '-'], {
+            input: 'test prompt',
+            label: 'Stalled fake Codex',
+            maxTurns: 50,
+            timeoutMs: 5_000,
+            authenticationFile: null,
+          }),
+          (error) => {
+            assert.equal(error.code, 'RALPH_AGENT_IDLE_TIMEOUT');
+            assert.equal(error.timeoutMs, idleTimeoutMs);
+            assert.equal(error.idlePhase, 'between-events');
+            assert.equal(error.turns, 3);
+            assert.match(error.message, /не присылал события 350 ms/u);
+            return true;
+          },
+        );
+      });
+    } finally {
+      applyRuntimeSettings(defaultRuntimeSettings);
+    }
+  },
+);
+
 test('Codex 401 is classified as an authentication infrastructure failure', async () => {
   await withFakeCodex(
     `
