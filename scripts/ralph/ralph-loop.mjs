@@ -119,6 +119,8 @@ import {
 import { buildIndependentReviewPrompt, renderPrompt } from './ralph-prompts.mjs';
 
 import { KIT_VERSION } from './ralph-version.mjs';
+import { createTerminal, parseUiOption, terminalSnapshot } from './ralph-terminal.mjs';
+import { currentIssueMetrics } from './ralph-run-metrics.mjs';
 
 import {
   createOrReopenReviewIssues,
@@ -1488,6 +1490,7 @@ export async function runPhasePlan(config, stateStore, runPhase) {
 }
 
 async function main() {
+  const ui = parseUiOption(mode, process.argv.slice(3));
   // Проверяем, что передан поддерживаемый режим запуска.
   if (!supportedModes.has(mode)) {
     fail(`Неизвестный режим ${mode}. Используйте --check или --run.`);
@@ -1502,14 +1505,19 @@ async function main() {
 
   const firstPhaseIndex = initialPhaseIndex(config);
   const firstPhaseConfig = configForPhase(config, firstPhaseIndex);
-  const restoreConsole = initializePersistentLog(runtimeLogPath, {
-    mode,
-    branch: firstPhaseConfig.branch,
-    milestone: firstPhaseConfig.milestone,
-    phase: `${firstPhaseIndex + 1}/${config.phases.length}`,
-  });
+  const startedMs = Date.now();
+  const terminal = ui === 'split' ? createTerminal({
+    snapshot: () => terminalSnapshot(activeStateStore(), currentIssueMetrics(), startedMs),
+  }) : null;
+  let restoreConsole;
   let releaseLock;
   try {
+    restoreConsole = initializePersistentLog(runtimeLogPath, {
+      mode,
+      branch: firstPhaseConfig.branch,
+      milestone: firstPhaseConfig.milestone,
+      phase: `${firstPhaseIndex + 1}/${config.phases.length}`,
+    }, terminal);
     releaseLock = acquireRunLock(runtimeLockPath, {
       mode,
       projectRoot,
@@ -1591,7 +1599,11 @@ async function main() {
     try {
       releaseLock?.();
     } finally {
-      restoreConsole();
+      try {
+        restoreConsole?.();
+      } finally {
+        terminal?.close();
+      }
     }
   }
 }

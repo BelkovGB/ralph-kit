@@ -276,7 +276,13 @@ export function logDetailError(...args) {
   else console.error(...args);
 }
 
-function initializePersistentLog(logPath, metadata = {}) {
+let terminalSink = null;
+
+export function hasTerminalSink() {
+  return terminalSink !== null;
+}
+
+function initializePersistentLog(logPath, metadata = {}, sink = null) {
   mkdirSync(path.dirname(logPath), { recursive: true });
   rotatePersistentLog(logPath, new Date().toISOString());
   appendFileSync(
@@ -285,6 +291,7 @@ function initializePersistentLog(logPath, metadata = {}) {
     'utf8',
   );
   const original = { log: console.log, error: console.error };
+  terminalSink = sink;
   const firstSeen = new Map();
   const append = (level, args) => {
     const stamp = new Date().toISOString();
@@ -299,17 +306,20 @@ function initializePersistentLog(logPath, metadata = {}) {
   };
   detailAppend = append;
   console.log = (...args) => {
-    original.log(...args);
     append('INFO', args);
+    if (sink) sink.log('INFO', format(...args));
+    else original.log(...args);
   };
   console.error = (...args) => {
-    original.error(...args);
     append('ERROR', args);
+    if (sink) sink.log('ERROR', format(...args));
+    else original.error(...args);
   };
   return () => {
     console.log = original.log;
     console.error = original.error;
     detailAppend = null;
+    terminalSink = null;
   };
 }
 
