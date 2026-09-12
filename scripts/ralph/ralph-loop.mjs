@@ -119,8 +119,9 @@ import {
 import { buildIndependentReviewPrompt, renderPrompt } from './ralph-prompts.mjs';
 
 import { KIT_VERSION } from './ralph-version.mjs';
-import { createTerminal, parseUiOption, terminalSnapshot } from './ralph-terminal.mjs';
-import { publishLiveStatus, readLiveStatus, resetLiveStatus, subscribeLiveStatus } from './ralph-live-status.mjs';
+import { parseUiOption } from './ralph-terminal.mjs';
+import { createTerminalHost } from './ralph-terminal-host.mjs';
+import { publishLiveStatus, readLiveStatus, reportActivity, resetLiveStatus, subscribeLiveStatus } from './ralph-live-status.mjs';
 import { currentIssueMetrics } from './ralph-run-metrics.mjs';
 
 import {
@@ -1113,6 +1114,7 @@ export async function runContinuousLoop(context, actions) {
   });
 
   while (true) {
+    reportActivity('queue', 'Обновление очереди задач в GitHub');
     const listedIssues = actions
       .openIssues(repository, milestone)
       .filter((issue) => !isRalphInfrastructureIssue(issue));
@@ -1232,6 +1234,7 @@ export async function runContinuousLoop(context, actions) {
         stateStore?.finish();
         return { mode: 'run', completed: 0 };
       }
+      reportActivity('pull-request', 'Подготовка pull request фазы');
       const pullRequest = actions.createPullRequest(config, repository);
       // Телеметрия роли `milestone-review` снимается только внутри активной
       // записи, а между задачами её нет: без отдельной записи самая дорогая
@@ -1241,6 +1244,7 @@ export async function runContinuousLoop(context, actions) {
       actions.beginIssueMetrics?.(issueMetricsContext(config, null, iteration));
       let review;
       try {
+        reportActivity('milestone-review', `Ревью фазы: PR #${pullRequest.number}`);
         review = await actions.runMilestoneReview(config, repository, milestone, pullRequest);
       } catch (error) {
         actions.reportIssueMetrics?.({
@@ -1254,6 +1258,7 @@ export async function runContinuousLoop(context, actions) {
         reason: `вердикт ${review.verdict}, замечаний ${review.findings.length}`,
       });
       if (review.verdict === 'pass' && review.findings.length === 0) {
+        reportActivity('queue', 'Проверка новых задач после ревью фазы');
         const appearedIssues = actions
           .openIssues(repository, milestone)
           // Отложенная issue открыта и здесь бы вернулась в очередь, а фильтр
@@ -1269,6 +1274,7 @@ export async function runContinuousLoop(context, actions) {
           );
           continue;
         }
+        reportActivity('pull-request', `Проверка PR #${pullRequest.number} после ревью`);
         actions.verifyReviewedPullRequestHead(config, repository, pullRequest);
         // Отложенная issue открыта и невыполнена: закрывать milestone под неё
         // значило бы объявить фазу законченной, когда работа осталась.
@@ -1290,10 +1296,12 @@ export async function runContinuousLoop(context, actions) {
             parkedIssues: [...parkedIssueNumbers],
           };
         }
+        reportActivity('milestone-close', 'Закрытие завершённой фазы в GitHub');
         actions.closeMilestone(repository, milestone);
         return { verdict: 'pass', iterations: iteration, pullRequest };
       }
 
+      reportActivity('review-results', `Создание задач по замечаниям к PR #${pullRequest.number}`);
       const reviewIssues = actions.createOrReopenReviewIssues(
         config,
         repository,
@@ -1320,6 +1328,7 @@ export async function runContinuousLoop(context, actions) {
     }
 
     let currentIssue = issues[0];
+    reportActivity('issue-preparation', `Подготовка задачи #${currentIssue.number}`);
     const refreshedIssue = actions.refreshIssue(repository, currentIssue.number, currentIssue);
     if (refreshedIssue.state !== 'OPEN') {
       if (stateStore?.issue?.number === currentIssue.number) {
@@ -1371,6 +1380,7 @@ export async function runContinuousLoop(context, actions) {
     let result;
     actions.beginIssueMetrics?.(issueMetricsContext(config, currentIssue, iteration));
     try {
+      reportActivity('issue', `Работа над задачей #${currentIssue.number}`);
       result = await actions.runAgentOnIssue(config, repository, currentIssue, rules);
     } catch (error) {
       actions.reportIssueMetrics?.({
@@ -1493,6 +1503,7 @@ export async function runPhasePlan(config, stateStore, runPhase) {
     }
 
     const nextConfig = configForPhase(config, phaseIndex + 1);
+    reportActivity('phase-transition', `Переход к фазе ${phaseIndex + 2}/${config.phases.length}: ${nextConfig.milestone}`);
     stateStore?.advancePhase(nextConfig);
     console.log(
       `Фаза ${phaseIndex + 1} завершена. Следующая: ${nextConfig.milestone} (${nextConfig.branch}).`,
@@ -1529,8 +1540,22 @@ async function main() {
   resetLiveStatus();
   publishPhaseConfig(firstPhaseConfig);
   const startedMs = Date.now();
-  const terminal = ui === 'split' ? createTerminal({
-    snapshot: () => terminalSnapshot(activeStateStore(), currentIssueMetrics(), startedMs, Date.now(), readLiveStatus()),
+  const terminal = ui === 'split' ? await createTerminalHost({
+    snapshot: () => {
+      const store = activeStateStore();
+      const state = store?.state;
+      const issue = store?.issue;
+      const metrics = currentIssueMetrics();
+      // Экрану не нужны тела issues, одобрения, prompts и телеметрия сессий.
+      return {
+        store: store ? { phaseIndex: store.phaseIndex, phaseCount: store.phaseCount,
+          state: state ? { phaseIndex: state.phaseIndex, milestone: state.milestone, iterationsUsed: state.iterationsUsed } : null,
+          issue: issue ? { number: issue.number, title: issue.title, phase: issue.phase,
+            validationFixAttempts: issue.validationFixAttempts, reviewFixAttempts: issue.reviewFixAttempts } : null } : null,
+        metrics: metrics ? { issue: metrics.issue, issueTitle: metrics.issueTitle, startedMs: metrics.startedMs } : null,
+        startedMs, live: readLiveStatus(),
+      };
+    },
   }) : null;
   const unsubscribeTerminal = terminal ? subscribeLiveStatus(() => terminal.refresh()) : () => {};
   let restoreConsole;
@@ -1549,6 +1574,7 @@ async function main() {
     });
     setActiveStateStore(createStateStore(firstPhaseConfig, mode));
     Object.assign(config.approvedIssueSnapshots, activeStateStore().approvedIssueSnapshots);
+    reportActivity('startup', 'Проверка инструментов и настроек запуска');
     const rules = loadRalphRules(config);
     verifyTools(config);
     verifyAgentSkills();
@@ -1560,11 +1586,13 @@ async function main() {
       run('git', ['check-ref-format', '--branch', phase.baseBranch]);
     }
     const repository = repositoryName();
+    reportActivity('startup', 'Проверка доступа к GitHub и фаз проекта');
     verifyRepositoryWriteAccess(repository);
     const milestones = config.phases.map((phase) => verifyMilestone(repository, phase.milestone));
     const actions = defaultActions();
     const runPhase = async (phaseConfig) => {
       publishPhaseConfig(phaseConfig);
+      reportActivity('phase-preparation', `Подготовка ветки фазы: ${phaseConfig.branch}`);
       // Примирение с реальным HEAD идёт до проверки дерева: `verifyRepository`
       // разрешает грязное дерево только через `allowsDirtyRecovery`, а тот
       // требует точного совпадения HEAD с сохранённым startingCommit. Пока база
@@ -1613,11 +1641,13 @@ async function main() {
       );
     };
 
-    if (mode === '--run') {
-      return await runPhasePlan(config, activeStateStore(), runPhase);
-    }
-    return await runPhase(firstPhaseConfig);
+    const result = mode === '--run'
+      ? await runPhasePlan(config, activeStateStore(), runPhase)
+      : await runPhase(firstPhaseConfig);
+    reportActivity('finished', 'Прогон завершён');
+    return result;
   } catch (error) {
+    reportActivity('failed', 'Прогон остановлен с ошибкой');
     console.error(`AFK pipeline error: ${error.message}`);
     throw error;
   } finally {
@@ -1628,7 +1658,7 @@ async function main() {
         restoreConsole?.();
       } finally {
         unsubscribeTerminal();
-        terminal?.close();
+        await terminal?.close();
       }
     }
   }

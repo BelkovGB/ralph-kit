@@ -27,6 +27,40 @@ test('UI option is explicit and restricted to run', () => {
   assert.throws(() => parseUiOption('--run', ['--ui=splt']));
 });
 
+test('milestone review is named while waiting for an agent with only service events', () => {
+  const store = { phaseIndex: 0, phaseCount: 4, state: { iterationsUsed: 20 }, issue: null };
+  const live = { activity: { kind: 'milestone-review', label: 'Ревью фазы: PR #227', startedMs: 0 },
+    session: { startedMs: 1000, lastEventMs: 18000, active: true, turns: 0, toolResults: 0,
+      maxTurns: 100, timeoutMs: 5400000, firstEventTimeoutMs: 300000, idleTimeoutMs: 600000 } };
+  const snapshot = terminalSnapshot(store, { issue: null, startedMs: 0 }, 0, 223000, live);
+  assert.equal(snapshot.issue, 'Ревью фазы: PR #227');
+  assert.equal(snapshot.status, 'Ожидание агента');
+  assert.match(snapshot.stage, /первый рабочий шаг/);
+  assert.ok(snapshot.counters.some(line => line.includes('До остановки: 0:06:35')));
+  assert.equal(snapshot.issueTime, '0:03:43');
+  live.session.lastEventMs = null;
+  assert.match(terminalSnapshot(store, { issue: null, startedMs: 0 }, 0, 2000, live).stage, /первое событие/);
+});
+
+test('between tasks shows live command purpose and elapsed time instead of missing issue', () => {
+  const live = { activity: { kind: 'queue', label: 'Обновление очереди задач в GitHub', startedMs: 1000 },
+    operation: { label: 'gh api', active: true, startedMs: 2000, timeoutMs: 300000 } };
+  const snapshot = terminalSnapshot(null, null, 0, 12000, live);
+  assert.equal(snapshot.issue, live.activity.label);
+  assert.match(snapshot.stage, /Запрос GitHub/);
+  assert.ok(snapshot.counters.some(line => line.includes('gh api')));
+  assert.equal(snapshot.issueTime, '0:00:11');
+});
+
+test('preparing the next issue hides the previous issue and agent session', () => {
+  const live = { activity: { kind: 'issue-preparation', label: 'Подготовка задачи #43', startedMs: 10000 },
+    session: { startedMs: 1000, active: false, endedMs: 2000 } };
+  const snapshot = terminalSnapshot({ state: {}, issue: { number: 42, title: 'Старая задача' } },
+    { issue: 42, startedMs: 500 }, 0, 12000, live);
+  assert.equal(snapshot.issue, 'Подготовка задачи #43');
+  assert.equal(snapshot.counters.some(line => line.startsWith('Агент:')), false);
+});
+
 test('live counters show actual session limits, phase limits and distinct attempt budgets', () => {
   const store = { phaseIndex: 0, phaseCount: 2, state: { iterationsUsed: 3 },
     issue: { number: 42, title: 'Тест', phase: 'agent-running', validationFixAttempts: 1, reviewFixAttempts: 2 } };

@@ -15,16 +15,36 @@ function duration(ms) {
 export function terminalSnapshot(store, metrics, startedMs, now = Date.now(), live = {}) {
   const state = store?.state;
   const issue = store?.issue;
+  const activity = live.activity;
+  const phaseActivity = activity && activity.kind !== 'issue';
   const config = live.phaseConfig ?? {};
-  const session = live.session && metrics && live.session.startedMs >= metrics.startedMs ? live.session : null;
+  const session = live.session && metrics && live.session.startedMs >= metrics.startedMs
+    && (!activity || live.session.startedMs >= activity.startedMs) ? live.session : null;
+  const operation = live.operation?.active ? live.operation : null;
+  const commandPurpose = {
+    'gh api': 'Запрос GitHub', 'git status': 'Проверка рабочего дерева',
+    'git diff': 'Чтение изменений', 'git log': 'Чтение истории коммитов',
+    'git merge-base': 'Проверка базового коммита', 'git rev-list': 'Проверка истории ветки',
+    'git fetch': 'Обновление веток', 'git push': 'Отправка изменений',
+    'git switch': 'Переключение ветки',
+  };
+  let stage = issue ? (stages[issue.phase] ?? issue.phase) : 'Подготовка';
+  if (phaseActivity) stage = 'Выполняется';
+  if (session?.active) stage = session.lastEventMs === null ? 'Ждём первое событие агента'
+    : session.turns === 0 && session.toolResults === 0 ? 'Ждём первый рабочий шаг'
+      : 'Ждём следующее событие агента';
+  if (operation) stage = commandPurpose[operation.label] ?? `Выполняется ${operation.label}`;
+  const issueWait = session?.active && issue && !phaseActivity && !operation ? stage : null;
+  if (issueWait) stage = stages[issue.phase] ?? issue.phase;
   const pair = (value, limit) => `${value ?? '—'}/${limit ?? '—'}`;
   const counters = [];
+  if (issueWait) counters.push(issueWait);
   if (live.queueProgress) {
     const { completedInRun, remaining, parked } = live.queueProgress;
     counters.push(`Сделано в прогоне фазы: ${completedInRun}`, `В очереди: ${remaining} · отложено: ${parked}`);
   }
-  counters.push(`Итерации: ${pair(state?.iterationsUsed, config.maxIterations)}`,
-    `Исправления тестов: ${pair(issue?.validationFixAttempts, config.maxTestFixAttempts)}`,
+  counters.push(`Итерации: ${pair(state?.iterationsUsed, config.maxIterations)}`);
+  if (!phaseActivity) counters.push(`Исправления тестов: ${pair(issue?.validationFixAttempts, config.maxTestFixAttempts)}`,
     `Отказы ревью: ${pair(issue ? (issue.reviewFixAttempts ?? 0) : null, config.maxReviewFixAttempts)}`);
   if (session) {
     const end = session.active ? now : session.endedMs;
@@ -34,25 +54,34 @@ export function terminalSnapshot(store, metrics, startedMs, now = Date.now(), li
     if (session.active) counters.push(session.lastEventMs === null
       ? `Первый ответ: ${duration(now - session.startedMs)} / ${duration(session.firstEventTimeoutMs)}`
       : `Без событий: ${duration(now - session.lastEventMs)} / ${duration(session.idleTimeoutMs)}`);
+    if (session.active) {
+      const idleRemaining = session.lastEventMs === null
+        ? session.firstEventTimeoutMs - (now - session.startedMs)
+        : session.idleTimeoutMs - (now - session.lastEventMs);
+      counters.push(`До остановки: ${duration(Math.min(idleRemaining, session.timeoutMs - (now - session.startedMs)))}`);
+    }
   }
   if (live.network) counters.push(`Сеть${live.network.active ? '' : ', последняя'}: ${pair(live.network.attempt, live.network.attempts)}`);
   if (live.review && metrics && live.review.startedMs >= metrics.startedMs) {
     counters.push(`Запуск ревью${live.review.active ? '' : ', последний'}: ${pair(live.review.attempt, live.review.attempts)}`);
   }
-  if (live.operation?.active) counters.push(`Команда: ${duration(now - live.operation.startedMs)} / ${duration(live.operation.timeoutMs)}`);
+  if (operation) counters.push(`Команда: ${operation.label}`, `Время команды: ${duration(now - operation.startedMs)} / ${duration(operation.timeoutMs)}`);
   return {
     issueKey: issue || metrics?.issue != null ? `${state?.phaseIndex ?? 0}:${issue?.number ?? metrics.issue}`
       : metrics ? `stage:${metrics.startedMs}` : null,
     counters,
-    status: store && !state ? 'Завершён' : 'Работает',
+    status: activity?.kind === 'failed' ? 'Остановлен' : activity?.kind === 'finished' || (store && !state)
+      ? 'Завершён' : session?.active && !operation ? 'Ожидание агента' : 'Работает',
     phase: state ? `${store.phaseIndex + 1}/${store.phaseCount}` : '—',
     milestone: state?.milestone,
-    issue: issue ? `#${issue.number} ${issue.title}`
+    issue: phaseActivity ? activity.label : issue ? `#${issue.number} ${issue.title}`
       : metrics?.issue != null ? `#${metrics.issue} ${metrics.issueTitle ?? ''}` : undefined,
-    stage: issue ? (stages[issue.phase] ?? issue.phase) : 'Между задачами / подготовка',
+    stage,
     iteration: state?.iterationsUsed,
     fixes: issue?.validationFixAttempts,
-    issueTime: metrics && issue?.number === metrics.issue ? duration(now - metrics.startedMs) : undefined,
+    timeLabel: phaseActivity ? 'Время этапа' : 'Сессия задачи',
+    issueTime: phaseActivity ? duration(now - activity.startedMs)
+      : metrics && issue?.number === metrics.issue ? duration(now - metrics.startedMs) : undefined,
     runTime: duration(now - startedMs),
   };
 }
@@ -86,10 +115,10 @@ export function renderTerminal(snapshot, events, columns, rows) {
     `Фаза ${snapshot.phase ?? '—'}`,
     `Milestone: ${snapshot.milestone ?? '—'}`,
     '',
-    snapshot.issue ?? 'Задача ещё не выбрана',
+    snapshot.issue ?? 'Подготовка запуска',
     `Этап: ${snapshot.stage ?? 'Подготовка'}`,
     ...(snapshot.counters ?? [`Итерация фазы: ${snapshot.iteration ?? '—'}`, `Исправлений тестов: ${snapshot.fixes ?? '—'}`]),
-    `Сессия задачи: ${snapshot.issueTime ?? '—'}`,
+    `${snapshot.timeLabel ?? 'Сессия задачи'}: ${snapshot.issueTime ?? '—'}`,
     `Прогон: ${snapshot.runTime ?? '—'}`,
   ];
   const footer = 'Tab лог · Ctrl+C остановить · run.log';
