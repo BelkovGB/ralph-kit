@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   commandTimeoutError,
+  hasTerminalSink,
   logDetail,
   logDetailError,
   retryTransientOperation,
@@ -335,7 +336,8 @@ function runCommand(name, args, options = {}) {
   const useCommandRunner = process.platform === 'win32';
   const command = useCommandRunner ? process.execPath : commandTarget.command;
   const commandArgs = useCommandRunner ? [commandRunnerPath] : commandTarget.commandArgs;
-  const stdio = options.inherit ? ['pipe', 'inherit', 'inherit'] : 'pipe';
+  const captureTerminal = options.inherit && hasTerminalSink();
+  const stdio = options.inherit && !captureTerminal ? ['pipe', 'inherit', 'inherit'] : 'pipe';
   // Когда окружение не задано, дочерний процесс наследует окружение вызывающего.
   // Защита от подмены батника обязана попасть в оба случая, поэтому окружение
   // здесь всегда выписывается явно.
@@ -420,7 +422,7 @@ function runCommand(name, args, options = {}) {
   // spawnSync отдаёт его целиком по завершении, то есть набор проверок
   // выплеснул бы в консоль десятки тысяч строк разом, и ход прогона в ней
   // потерялся бы. В `run.log` вывод сохраняется полностью.
-  if (options.echoOutput) {
+  if (options.echoOutput || captureTerminal) {
     if (result.stdout?.trim()) logDetail(outputTail(result.stdout, 100_000));
     if (result.stderr?.trim()) logDetailError(outputTail(result.stderr, 100_000));
   }

@@ -378,6 +378,27 @@ test('writeJsonAtomic создаёт и атомарно обновляет JSON
   });
 });
 
+test('split sink receives events while full details stay in persistent log', () => {
+  withTemporaryDirectory((directory) => {
+    const logPath = path.join(directory, 'run.log');
+    const events = [];
+    const restore = initializePersistentLog(logPath, {}, { log: (...args) => events.push(args) });
+    try {
+      console.log('Issue #%d', 42);
+      console.error('Review failed');
+      logDetail('Full agent output');
+      run('node', ['-e', 'console.log("inherited child output")'], { inherit: true });
+    } finally {
+      restore();
+    }
+    assert.deepEqual(events.slice(0, 2), [['INFO', 'Issue #42'], ['ERROR', 'Review failed']]);
+    assert.ok(events.every(([, text]) => !text.includes('Full agent output') && !text.includes('inherited child output')));
+    const log = readFileSync(logPath, 'utf8');
+    for (const text of ['Issue #42', 'Review failed', 'Full agent output', 'inherited child output']) assert.ok(log.includes(text));
+    assert.equal(log.includes('\x1b'), false);
+  });
+});
+
 test('initializePersistentLog отделяет журнал прогона и восстанавливает console', () => {
   withTemporaryDirectory((directory) => {
     const logPath = path.join(directory, 'run.log');
