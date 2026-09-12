@@ -5,7 +5,10 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
-import { retryDelayMs, terminateProcessTreeByPid, waitSync } from './ralph-runtime.mjs';
+import {
+  logDetail, logDetailError, retryDelayMs, terminateProcessTreeByPid, waitSync,
+} from './ralph-runtime.mjs';
+import { publishLiveStatus } from './ralph-live-status.mjs';
 import {
   commandSpec,
   credentialFreeEnvironment,
@@ -143,6 +146,21 @@ export function addUsage(total, usage) {
  */
 export async function runAgentSession(backend, args, options) {
   const sessionStartedMs = Date.now();
+  publishLiveStatus({
+    type: 'session-start', label: options.label, startedMs: sessionStartedMs,
+    maxTurns: options.maxTurns,
+    timeoutMs: options.timeoutMs ?? runtimeSettings().agentTimeoutMs,
+    firstEventTimeoutMs: options.firstEventTimeoutMs ?? runtimeSettings().agentFirstEventTimeoutMs,
+    idleTimeoutMs: options.idleTimeoutMs ?? runtimeSettings().agentIdleTimeoutMs,
+  });
+  try {
+    return await runObservedAgentSession(backend, args, options, sessionStartedMs);
+  } finally {
+    publishLiveStatus({ type: 'session-end', endedMs: Date.now() });
+  }
+}
+
+async function runObservedAgentSession(backend, args, options, sessionStartedMs) {
   const { command, commandArgs } = commandSpec(backend.binary, args);
   const childEnvironment = backend.createSandboxedEnvironment(options.env ?? process.env, {
     authenticationFile: options.authenticationFile,
@@ -244,7 +262,7 @@ export async function runAgentSession(backend, args, options) {
       // строки — обрыв процесса circuit breaker'ом посреди события, а событие с
       // выводом инструмента бывает в сотни килобайт. Целиком такой блок лёг бы
       // в run.log сразу после сообщения breaker'а, ради которого журнал и читают.
-      console.log(`[${backend.label}] неразобранная строка: ${outputTail(line)}`);
+      logDetail(`[${backend.label}] неразобранная строка: ${outputTail(line)}`);
       return;
     }
 
@@ -281,11 +299,12 @@ export async function runAgentSession(backend, args, options) {
       currentTurn = turns;
     }
 
+    publishLiveStatus({ type: 'session-progress', turns, toolResults, lastEventMs: Date.now() });
     if (currentTurn !== null && event.stepLabel) {
       console.log(`[${backend.label} step ${currentTurn}/${options.maxTurns}] ${event.stepLabel}`);
     }
-    if (event.log) console.log(event.log);
-    if (event.errorLog) console.error(`[${backend.label}] ${event.errorLog}`);
+    if (event.log) logDetail(event.log);
+    if (event.errorLog) logDetailError(`[${backend.label}] ${event.errorLog}`);
   };
 
   child.stdout.on('data', (chunk) => {
@@ -298,7 +317,7 @@ export async function runAgentSession(backend, args, options) {
   });
   child.stderr.on('data', (chunk) => {
     stderr += chunk;
-    console.error(chunk.replace(/\r?\n$/, ''));
+    logDetailError(chunk.replace(/\r?\n$/, ''));
   });
 
   const childResult = new Promise((resolve, reject) => {
@@ -434,26 +453,32 @@ const nonRetryableReviewCodes = new Set([
 ]);
 
 export async function runReviewWithRetries(config, operation, label) {
+  const startedMs = Date.now();
   let lastError;
-  for (let attempt = 1; attempt <= config.runtime.reviewRetryAttempts; attempt += 1) {
-    try {
-      return await operation();
-    } catch (error) {
-      lastError = error;
-      if (
-        error.nonRetryable ||
-        nonRetryableReviewCodes.has(error.code) ||
-        attempt === config.runtime.reviewRetryAttempts
-      ) {
-        throw error;
+  try {
+    for (let attempt = 1; attempt <= config.runtime.reviewRetryAttempts; attempt += 1) {
+      publishLiveStatus({ type: 'review-attempt', label, attempt, attempts: config.runtime.reviewRetryAttempts, startedMs });
+      try {
+        return await operation();
+      } catch (error) {
+        lastError = error;
+        if (
+          error.nonRetryable ||
+          nonRetryableReviewCodes.has(error.code) ||
+          attempt === config.runtime.reviewRetryAttempts
+        ) {
+          throw error;
+        }
+        const delay = retryDelayMs(config.runtime.networkRetryBaseDelayMs, attempt);
+        console.error(
+          `${label} технически не завершился (попытка ${attempt}): ${error.message}. ` +
+            `Повтор через ${delay} ms.`,
+        );
+        waitSync(delay);
       }
-      const delay = retryDelayMs(config.runtime.networkRetryBaseDelayMs, attempt);
-      console.error(
-        `${label} технически не завершился (попытка ${attempt}): ${error.message}. ` +
-          `Повтор через ${delay} ms.`,
-      );
-      waitSync(delay);
     }
+    throw lastError;
+  } finally {
+    publishLiveStatus({ type: 'review-end' });
   }
-  throw lastError;
 }
