@@ -382,7 +382,10 @@ test('split sink receives events while full details stay in persistent log', () 
   withTemporaryDirectory((directory) => {
     const logPath = path.join(directory, 'run.log');
     const events = [];
-    const restore = initializePersistentLog(logPath, {}, { log: (...args) => events.push(args) });
+    const details = [];
+    const restore = initializePersistentLog(logPath, {}, {
+      log: (...args) => events.push(args), detail: (...args) => details.push(args),
+    });
     try {
       console.log('Issue #%d', 42);
       console.error('Review failed');
@@ -393,6 +396,8 @@ test('split sink receives events while full details stay in persistent log', () 
     }
     assert.deepEqual(events.slice(0, 2), [['INFO', 'Issue #42'], ['ERROR', 'Review failed']]);
     assert.ok(events.every(([, text]) => !text.includes('Full agent output') && !text.includes('inherited child output')));
+    assert.ok(details.some(([, text]) => text.includes('Full agent output')));
+    assert.ok(details.some(([, text]) => text.includes('inherited child output')));
     const log = readFileSync(logPath, 'utf8');
     for (const text of ['Issue #42', 'Review failed', 'Full agent output', 'inherited child output']) assert.ok(log.includes(text));
     assert.equal(log.includes('\x1b'), false);

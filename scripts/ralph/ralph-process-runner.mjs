@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
+import { publishLiveStatus } from './ralph-live-status.mjs';
 
 import {
   commandTimeoutError,
@@ -332,6 +333,17 @@ process.once('exit', () => {
 const authenticatedGitCommands = new Set(['fetch', 'ls-remote', 'push']);
 
 function runCommand(name, args, options = {}) {
+  const timeoutMs = options.timeoutMs ?? settings.commandTimeoutMs;
+  const startedMs = Date.now();
+  publishLiveStatus({ type: 'operation-start', label: `${name} ${args[0] ?? ''}`.trim(), startedMs, timeoutMs });
+  try {
+    return runObservedCommand(name, args, options, timeoutMs, startedMs);
+  } finally {
+    publishLiveStatus({ type: 'operation-end', endedMs: Date.now() });
+  }
+}
+
+function runObservedCommand(name, args, options, timeoutMs, startedAt) {
   const commandTarget = commandSpec(name, args);
   const useCommandRunner = process.platform === 'win32';
   const command = useCommandRunner ? process.execPath : commandTarget.command;
@@ -351,8 +363,6 @@ function runCommand(name, args, options = {}) {
     process.platform === 'win32'
       ? { ...(commandEnvironment ?? process.env), ...windowsSafeCommandEnvironment }
       : commandEnvironment;
-  const timeoutMs = options.timeoutMs ?? settings.commandTimeoutMs;
-  const startedAt = Date.now();
   console.log(`Команда: ${name} ${args[0] ?? ''}`.trim());
   const result = spawnSync(command, commandArgs, {
     cwd: projectRoot,
@@ -478,6 +488,7 @@ export function run(name, args, options = {}) {
 
 export function runNetwork(name, args, options = {}) {
   return retryTransientOperation(() => run(name, args, options), {
+    label: name,
     attempts: settings.networkRetryAttempts,
     baseDelayMs: settings.networkRetryBaseDelayMs,
     onRetry: (error, attempt, delay) =>

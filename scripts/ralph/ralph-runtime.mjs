@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { publishLiveStatus } from './ralph-live-status.mjs';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   appendFileSync,
@@ -71,18 +72,23 @@ function retryTransientOperation(operation, options = {}) {
   const transient = options.isTransient ?? isTransientFailure;
   let lastError;
 
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    try {
-      return operation(attempt);
-    } catch (error) {
-      lastError = error;
-      if (!transient(error) || attempt === attempts) throw error;
-      const delay = retryDelayMs(baseDelayMs, attempt);
-      options.onRetry?.(error, attempt, delay);
-      wait(delay);
+  try {
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      publishLiveStatus({ type: 'network-attempt', label: options.label ?? null, attempt, attempts });
+      try {
+        return operation(attempt);
+      } catch (error) {
+        lastError = error;
+        if (!transient(error) || attempt === attempts) throw error;
+        const delay = retryDelayMs(baseDelayMs, attempt);
+        options.onRetry?.(error, attempt, delay);
+        wait(delay);
+      }
     }
+    throw lastError;
+  } finally {
+    publishLiveStatus({ type: 'network-end' });
   }
-  throw lastError;
 }
 
 export function retryDelayMs(baseDelayMs, attempt) {
@@ -267,12 +273,18 @@ let detailAppend = null;
  * по `run.log`, куда вывод попадает целиком.
  */
 export function logDetail(...args) {
-  if (detailAppend) detailAppend('INFO', args);
+  if (detailAppend) {
+    detailAppend('INFO', args);
+    terminalSink?.detail?.('INFO', format(...args));
+  }
   else console.log(...args);
 }
 
 export function logDetailError(...args) {
-  if (detailAppend) detailAppend('ERROR', args);
+  if (detailAppend) {
+    detailAppend('ERROR', args);
+    terminalSink?.detail?.('ERROR', format(...args));
+  }
   else console.error(...args);
 }
 

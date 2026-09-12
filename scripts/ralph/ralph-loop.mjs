@@ -120,6 +120,7 @@ import { buildIndependentReviewPrompt, renderPrompt } from './ralph-prompts.mjs'
 
 import { KIT_VERSION } from './ralph-version.mjs';
 import { createTerminal, parseUiOption, terminalSnapshot } from './ralph-terminal.mjs';
+import { publishLiveStatus, readLiveStatus, resetLiveStatus, subscribeLiveStatus } from './ralph-live-status.mjs';
 import { currentIssueMetrics } from './ralph-run-metrics.mjs';
 
 import {
@@ -1096,14 +1097,20 @@ function issueMetricsContext(config, issue, iteration) {
 
 export async function runContinuousLoop(context, actions) {
   const { config, repository, milestone, rules } = context;
+  publishPhaseConfig(config);
   const stateStore = context.stateStore ?? activeStateStore();
   let iteration = stateStore?.iterationsUsed ?? 0;
   const pendingIssues = new Map();
   const completedIssueNumbers = new Set();
+  const completedInRun = new Set();
   // Issues, которые ревью отклоняло подряд до предела. Из очереди этого прогона
   // они убраны, но остаются открытыми: их разбирает оператор или следующий
   // прогон, а бюджет достаётся остальным.
   const parkedIssueNumbers = new Set();
+  const reportQueueProgress = (remaining) => publishLiveStatus({
+    type: 'queue-progress',
+    queueProgress: { completedInRun: completedInRun.size, remaining, parked: parkedIssueNumbers.size },
+  });
 
   while (true) {
     const listedIssues = actions
@@ -1165,6 +1172,7 @@ export async function runContinuousLoop(context, actions) {
           continue;
         }
         completedIssueNumbers.delete(issue.number);
+        completedInRun.delete(issue.number);
         // Переоткрытую задачу возвращаем в очередь: без этого она живёт одну
         // итерацию и теряется на первом же пустом ответе GitHub.
         pendingIssues.set(issue.number, issue);
@@ -1217,6 +1225,7 @@ export async function runContinuousLoop(context, actions) {
       }
       return left.number - right.number;
     });
+    reportQueueProgress(issues.length);
     if (issues.length === 0) {
       if (config.stopAfterFirstIssue) {
         console.log('Открытых issues нет. Для push и создания PR снимите stopAfterFirstIssue.');
@@ -1301,6 +1310,7 @@ export async function runContinuousLoop(context, actions) {
           replace: true,
         });
         completedIssueNumbers.delete(refreshedReviewIssue.number);
+        completedInRun.delete(refreshedReviewIssue.number);
         pendingIssues.set(refreshedReviewIssue.number, refreshedReviewIssue);
       }
       console.log(
@@ -1392,7 +1402,9 @@ export async function runContinuousLoop(context, actions) {
     } else {
       pendingIssues.delete(currentIssue.number);
       completedIssueNumbers.add(currentIssue.number);
+      completedInRun.add(currentIssue.number);
     }
+    reportQueueProgress(issues.length - (result?.completed === false && !result?.parked ? 0 : 1));
     if (config.stopAfterFirstIssue) {
       if (result?.completed === false) {
         const { reason, runOutcome } = incompleteIssueOutcome(result);
@@ -1489,6 +1501,15 @@ export async function runPhasePlan(config, stateStore, runPhase) {
   }
 }
 
+function publishPhaseConfig(config) {
+  const { maxIterations, maxTestFixAttempts, maxReviewFixAttempts } = config;
+  publishLiveStatus({
+    type: 'phase-config',
+    phaseConfig: { maxIterations, maxTestFixAttempts, maxReviewFixAttempts },
+  });
+  publishLiveStatus({ type: 'queue-progress', queueProgress: null });
+}
+
 async function main() {
   const ui = parseUiOption(mode, process.argv.slice(3));
   // Проверяем, что передан поддерживаемый режим запуска.
@@ -1505,10 +1526,13 @@ async function main() {
 
   const firstPhaseIndex = initialPhaseIndex(config);
   const firstPhaseConfig = configForPhase(config, firstPhaseIndex);
+  resetLiveStatus();
+  publishPhaseConfig(firstPhaseConfig);
   const startedMs = Date.now();
   const terminal = ui === 'split' ? createTerminal({
-    snapshot: () => terminalSnapshot(activeStateStore(), currentIssueMetrics(), startedMs),
+    snapshot: () => terminalSnapshot(activeStateStore(), currentIssueMetrics(), startedMs, Date.now(), readLiveStatus()),
   }) : null;
+  const unsubscribeTerminal = terminal ? subscribeLiveStatus(() => terminal.refresh()) : () => {};
   let restoreConsole;
   let releaseLock;
   try {
@@ -1540,6 +1564,7 @@ async function main() {
     const milestones = config.phases.map((phase) => verifyMilestone(repository, phase.milestone));
     const actions = defaultActions();
     const runPhase = async (phaseConfig) => {
+      publishPhaseConfig(phaseConfig);
       // Примирение с реальным HEAD идёт до проверки дерева: `verifyRepository`
       // разрешает грязное дерево только через `allowsDirtyRecovery`, а тот
       // требует точного совпадения HEAD с сохранённым startingCommit. Пока база
@@ -1602,6 +1627,7 @@ async function main() {
       try {
         restoreConsole?.();
       } finally {
+        unsubscribeTerminal();
         terminal?.close();
       }
     }
