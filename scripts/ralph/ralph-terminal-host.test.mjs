@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import test from 'node:test';
 import { fork, spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, openSync, closeSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -39,11 +39,13 @@ test('host sends snapshots before commands and awaits renderer exit on close', a
   host.refresh();
   host.log('INFO', 'Checking queue');
   host.detail('INFO', 'git output');
-  assert.equal(f.child.messages.find(message => message.type === 'snapshot').snapshot.startedMs, 2);
+  const snapshotPath = f.child.messages.find(message => message.type === 'init').snapshotPath;
+  assert.equal(JSON.parse(readFileSync(snapshotPath, 'utf8')).startedMs, 2);
   assert.equal(f.child.messages.find(message => message.type === 'log').text, 'Checking queue');
   await host.close();
   await host.close();
   assert.equal(f.child.connected, false);
+  assert.equal(existsSync(snapshotPath), false);
   assert.equal(f.lifecycle.listenerCount('SIGINT'), 0);
 });
 
@@ -95,7 +97,8 @@ test('real renderer clock keeps running while host is blocked in spawnSync', asy
   const preload = path.join(directory, 'tty.mjs');
   writeFileSync(preload, `process.stdout.isTTY = true; process.stderr.isTTY = true;
     process.stdout.columns = 80; process.stdout.rows = 24; process.env.TERM = 'xterm';`);
-  let frames = '';
+  const framesPath = path.join(directory, 'frames.log');
+  const framesFd = openSync(framesPath, 'w');
   let child;
   let host;
   try {
@@ -107,9 +110,10 @@ test('real renderer clock keeps running while host is blocked in spawnSync', asy
         activity: { kind: 'queue', label, startedMs },
       } }),
       fork: (module, args, options) => {
-        child = fork(module, args, { ...options, stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+        // Родитель намеренно заблокирован: вывод читаем независимо от его
+        // event loop, как это делает настоящий терминал.
+        child = fork(module, args, { ...options, stdio: ['ignore', framesFd, framesFd, 'ipc'],
           execArgv: ['--import', pathToFileURL(preload).href] });
-        child.stdout.on('data', chunk => { frames += chunk; });
         return child;
       },
     });
@@ -117,15 +121,18 @@ test('real renderer clock keeps running while host is blocked in spawnSync', asy
     for (let index = 0; index < 35; index += 1) host.detail('INFO', 'x'.repeat(100000));
     label = 'Обновлённый этап';
     host.refresh();
-    const result = spawnSync(process.execPath, ['-e', 'setTimeout(() => {}, 2200)']);
+    const result = spawnSync(process.execPath, ['-e', 'setTimeout(() => {}, 3200)']);
     assert.equal(result.status, 0);
-    await new Promise(resolve => setTimeout(resolve, 100));
-    assert.match(frames, /Прогон: 0:00:01/);
-    assert.match(frames, /Обновлённый этап[\s\S]*?Прогон: 0:00:01/);
+    // Проверяем кадры до возврата управления event loop родителя: иначе
+    // отложенная отправка могла бы выдать обновление после блокировки за живое.
+    const frames = readFileSync(framesPath, 'utf8');
+    assert.match(frames, /Прогон: 0:00:0[1-3]/);
+    assert.match(frames, /Обновлённый этап[\s\S]*?Прогон: 0:00:0[1-3]/);
     await host.close();
     assert.equal(child.exitCode, 0);
   } finally {
     await host?.close();
+    closeSync(framesFd);
     rmSync(directory, { recursive: true, force: true });
   }
 });

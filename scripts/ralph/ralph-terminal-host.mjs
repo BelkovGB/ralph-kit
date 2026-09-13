@@ -1,5 +1,8 @@
 import { fork as forkProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 
 const workerPath = fileURLToPath(new URL('./ralph-terminal-worker.mjs', import.meta.url));
 
@@ -8,7 +11,16 @@ const workerPath = fileURLToPath(new URL('./ralph-terminal-worker.mjs', import.m
 export async function createTerminalHost({ snapshot, output = process.stdout, errorOutput = process.stderr,
   input = process.stdin, lifecycle = process, term = process.env.TERM, fork = forkProcess } = {}) {
   if (!output.isTTY || !errorOutput.isTTY || term === 'dumb') return null;
-  const child = fork(workerPath, [], { stdio: ['inherit', 'inherit', 'inherit', 'ipc'], windowsHide: true, execArgv: [] });
+  const directory = mkdtempSync(path.join(tmpdir(), 'ralph-screen-'));
+  const snapshotPath = path.join(directory, 'snapshot.json');
+  let child;
+  try {
+    writeFileSync(snapshotPath, JSON.stringify(snapshot()));
+    child = fork(workerPath, [], { stdio: ['inherit', 'inherit', 'inherit', 'ipc'], windowsHide: true, execArgv: [] });
+  } catch (error) {
+    rmSync(directory, { recursive: true, force: true });
+    throw error;
+  }
   let ready = false;
   let ended = false;
   let closing = false;
@@ -37,6 +49,7 @@ export async function createTerminalHost({ snapshot, output = process.stdout, er
   const onExit = () => {
     if (ended) return;
     ended = true;
+    rmSync(directory, { recursive: true, force: true });
     resolveExit();
     rejectReady(new Error('Процесс экрана завершился до готовности.'));
     if (ready && !closing) {
@@ -46,7 +59,10 @@ export async function createTerminalHost({ snapshot, output = process.stdout, er
   };
   child.once('exit', onExit);
   child.once('error', error => { rejectReady(error); onExit(); });
-  const parentExit = () => { if (child.connected) child.disconnect?.(); };
+  const parentExit = () => {
+    rmSync(directory, { recursive: true, force: true });
+    if (child.connected) child.disconnect?.();
+  };
   const stop = async (signal) => {
     await close();
     lifecycle.kill(lifecycle.pid, signal);
@@ -61,7 +77,11 @@ export async function createTerminalHost({ snapshot, output = process.stdout, er
   lifecycle.on('exit', parentExit);
   lifecycle.on('SIGINT', interrupt);
   lifecycle.on('SIGTERM', terminate);
-  const refresh = () => { if (!closing && !ended) send({ type: 'snapshot', snapshot: snapshot() }); };
+  // Состояние не стоит за подробным логом в очереди IPC. Экран читает его
+  // своим таймером, даже если основной процесс сразу входит в spawnSync.
+  const refresh = () => {
+    if (!closing && !ended) writeFileSync(snapshotPath, JSON.stringify(snapshot()));
+  };
   const timer = setInterval(refresh, 1000);
   timer.unref();
   async function close() {
@@ -83,7 +103,7 @@ export async function createTerminalHost({ snapshot, output = process.stdout, er
   }
   let startupTimeout;
   try {
-    send({ type: 'init', snapshot: snapshot() });
+    send({ type: 'init', snapshotPath });
     await Promise.race([startup, new Promise((_, reject) => {
       startupTimeout = setTimeout(() => reject(new Error('Экран Ralph не запустился за 10 секунд.')), 10000);
     })]);
@@ -99,14 +119,15 @@ export async function createTerminalHost({ snapshot, output = process.stdout, er
       return;
     }
     if (closing) return;
+    refresh();
     // Лог на диске уже записан. Ограничиваем только очередь отображения,
     // чтобы медленный терминал не удерживал произвольный объём вывода агента.
     if (type === 'detail' && pending >= 32) { omitted = true; return; }
     if (omitted) {
       omitted = false;
-      send({ type: 'detail', level: 'INFO', text: 'Часть вывода пропущена экраном; см. run.log.', snapshot: snapshot() });
+      send({ type: 'detail', level: 'INFO', text: 'Часть вывода пропущена экраном; см. run.log.' });
     }
-    send({ type, level, text: String(text).slice(0, 200000), snapshot: snapshot() });
+    send({ type, level, text: String(text).slice(0, 200000) });
   };
   return { refresh, close, log: (level, text) => log('log', level, text), detail: (level, text) => log('detail', level, text) };
 }

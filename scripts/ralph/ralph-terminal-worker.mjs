@@ -1,7 +1,14 @@
 import { EventEmitter } from 'node:events';
+import { readFileSync } from 'node:fs';
 import { createTerminal, terminalSnapshot } from './ralph-terminal.mjs';
 
 let raw;
+let snapshotPath;
+const readSnapshot = () => {
+  // При одновременной записи оставляем последний целый снимок до следующего кадра.
+  try { raw = JSON.parse(readFileSync(snapshotPath, 'utf8')); } catch { /* Повтор на следующем кадре. */ }
+  return terminalSnapshot(raw?.store, raw?.metrics, raw?.startedMs ?? Date.now(), Date.now(), raw?.live);
+};
 let terminal;
 let stopping = false;
 const lifecycle = new EventEmitter();
@@ -20,11 +27,11 @@ process.on('exit', () => lifecycle.emit('exit'));
 process.on('message', message => {
   if (message.type === 'close') { close(); return; }
   if (stopping) return;
-  if (message.snapshot) raw = message.snapshot;
   if (message.type === 'init') {
+    snapshotPath = message.snapshotPath;
     try {
       terminal = createTerminal({ lifecycle,
-        snapshot: () => terminalSnapshot(raw.store, raw.metrics, raw.startedMs, Date.now(), raw.live),
+        snapshot: readSnapshot,
       });
       if (!terminal) throw new Error('Дочерний процесс не получил терминал.');
       process.send({ type: 'ready' });
