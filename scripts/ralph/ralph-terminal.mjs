@@ -12,6 +12,16 @@ function duration(ms) {
   return `${Math.floor(seconds / 3600)}:${String(Math.floor(seconds / 60) % 60).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
 }
 
+export function renderRunSummary({ result, error, startedMs, endedMs, phaseCount, logPath }) {
+  const passed = !error && result?.verdict === 'pass';
+  const status = error ? 'ОШИБКА' : passed ? 'ЗАВЕРШЁН' : 'ОСТАНОВЛЕН';
+  const reason = error?.message ?? (passed ? `Завершены все фазы: ${phaseCount}.`
+    : result?.verdict === 'parked' ? 'Остались отложенные задачи. Проверьте замечания ревью.'
+      : 'Прогон завершился до окончания всех фаз. Подробности в логе.');
+  return `\nRALPH · ИТОГ ПРОГОНА · ${status}\n${stripVTControlCharacters(reason)}\n` +
+    `Длительность: ${duration(endedMs - startedMs)}\nПолный лог: ${logPath}\n`;
+}
+
 export function terminalSnapshot(store, metrics, startedMs, now = Date.now(), live = {}) {
   const state = store?.state;
   const issue = store?.issue;
@@ -149,7 +159,7 @@ export function createTerminal({ output = process.stdout, errorOutput = process.
   let keyBuffer = '';
   const interactive = input.isTTY && typeof input.setRawMode === 'function';
   const wasRaw = input.isRaw;
-  const wasPaused = input.isPaused();
+  const wasFlowing = input.readableFlowing === true;
   const syncTask = () => {
     const current = snapshot();
     if (current.issueKey != null && current.issueKey !== taskKey) {
@@ -196,7 +206,7 @@ export function createTerminal({ output = process.stdout, errorOutput = process.
     if (interactive) {
       input.off('data', onKey);
       input.setRawMode(wasRaw);
-      if (wasPaused) input.pause();
+      if (!wasFlowing && input.listenerCount('data') === 0) input.pause();
     }
     output.write('\x1b[?25h\x1b[?1049l');
     if (events.length) output.write(events.slice(-3).join('\n') + '\n');

@@ -119,7 +119,7 @@ import {
 import { buildIndependentReviewPrompt, renderPrompt } from './ralph-prompts.mjs';
 
 import { KIT_VERSION } from './ralph-version.mjs';
-import { parseUiOption } from './ralph-terminal.mjs';
+import { parseUiOption, renderRunSummary } from './ralph-terminal.mjs';
 import { createTerminalHost } from './ralph-terminal-host.mjs';
 import { publishLiveStatus, readLiveStatus, reportActivity, resetLiveStatus, subscribeLiveStatus } from './ralph-live-status.mjs';
 import { currentIssueMetrics } from './ralph-run-metrics.mjs';
@@ -1560,6 +1560,8 @@ async function main() {
   const unsubscribeTerminal = terminal ? subscribeLiveStatus(() => terminal.refresh()) : () => {};
   let restoreConsole;
   let releaseLock;
+  let runResult;
+  let runError;
   try {
     restoreConsole = initializePersistentLog(runtimeLogPath, {
       mode,
@@ -1644,9 +1646,11 @@ async function main() {
     const result = mode === '--run'
       ? await runPhasePlan(config, activeStateStore(), runPhase)
       : await runPhase(firstPhaseConfig);
+    runResult = result;
     reportActivity('finished', 'Прогон завершён');
     return result;
   } catch (error) {
+    runError = error;
     reportActivity('failed', 'Прогон остановлен с ошибкой');
     console.error(`AFK pipeline error: ${error.message}`);
     throw error;
@@ -1659,6 +1663,10 @@ async function main() {
       } finally {
         unsubscribeTerminal();
         await terminal?.close();
+        if (mode === '--run') {
+          console.log(renderRunSummary({ result: runResult, error: runError, startedMs,
+            endedMs: Date.now(), phaseCount: config.phases.length, logPath: runtimeLogPath }));
+        }
       }
     }
   }

@@ -1,7 +1,54 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { spawn } from 'node:child_process';
 import test from 'node:test';
-import { createTerminal, renderTerminal, parseUiOption, terminalSnapshot } from './ralph-terminal.mjs';
+import { createTerminal, renderTerminal, parseUiOption, terminalSnapshot, renderRunSummary } from './ralph-terminal.mjs';
+
+test('run summary distinguishes completed, stopped and failed runs without inventing totals', () => {
+  const base = { startedMs: 1000, endedMs: 62000, phaseCount: 4, logPath: 'run.log' };
+  assert.match(renderRunSummary({ ...base, result: { verdict: 'pass' } }), /ЗАВЕРШЁН[\s\S]*Завершены все фазы: 4[\s\S]*0:01:01[\s\S]*run.log/);
+  const stopped = renderRunSummary({ ...base, result: { verdict: 'parked' } });
+  assert.match(stopped, /ОСТАНОВЛЕН/);
+  assert.doesNotMatch(stopped, /Завершены все фазы/);
+  assert.match(renderRunSummary({ ...base, error: new Error('Проверка изменила файлы') }), /ОШИБКА[\s\S]*Проверка изменила файлы/);
+});
+
+test('closing fresh stdin pauses the reader started by the terminal', () => {
+  const input = keyboard();
+  input.paused = false;
+  input.readableFlowing = null;
+  const output = surface();
+  const terminal = createTerminal({ output, errorOutput: output, input, lifecycle: new EventEmitter(), term: 'xterm' });
+  terminal.close();
+  assert.equal(input.paused, true);
+  assert.equal(input.listenerCount('data'), 0);
+});
+
+test('process exits naturally after closing terminal with an open stdin pipe', async () => {
+  const script = `import { createTerminal } from ${JSON.stringify(new URL('./ralph-terminal.mjs', import.meta.url).href)};
+    process.stdin.isTTY = true;
+    process.stdin.setRawMode = () => {};
+    process.stdout.isTTY = true;
+    process.stdout.columns = 80; process.stdout.rows = 24;
+    const terminal = createTerminal({ errorOutput: process.stdout, term: 'xterm' });
+    terminal.close(); console.log('CLOSED');`;
+  const child = spawn(process.execPath, ['--input-type=module', '-e', script], { stdio: ['pipe', 'pipe', 'pipe'] });
+  let output = '';
+  child.stdout.on('data', chunk => { output += chunk; });
+  let timer;
+  try {
+    const code = await Promise.race([
+      new Promise((resolve, reject) => { child.once('exit', resolve); child.once('error', reject); }),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Terminal kept process alive')), 5000); }),
+    ]);
+    assert.equal(code, 0);
+    assert.match(output, /CLOSED/);
+  } finally {
+    clearTimeout(timer);
+    if (child.exitCode === null) child.kill();
+    child.stdin.destroy();
+  }
+});
 
 test('summary uses persisted state and does not invent missing counters or durations', () => {
   const store = { phaseIndex: 1, phaseCount: 3, state: { milestone: 'M2', iterationsUsed: 4 },
