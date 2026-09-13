@@ -23,9 +23,11 @@ test('phase transition clears phase-bound observations', () => {
   resetLiveStatus();
   publishLiveStatus({ type: 'session-start', startedMs: 100, maxTurns: 5 });
   publishLiveStatus({ type: 'review-attempt', attempt: 2, attempts: 3 });
+  publishLiveStatus({ type: 'activity', kind: 'milestone-review', label: 'Ревью фазы', startedMs: 100 });
   publishLiveStatus({ type: 'phase-config', phaseConfig: { maxIterations: 8 } });
   assert.equal(readLiveStatus().session, null);
   assert.equal(readLiveStatus().review, null);
+  assert.equal(readLiveStatus().activity, null);
 });
 
 test('network observations count the first attempt and settle on success or failure', () => {

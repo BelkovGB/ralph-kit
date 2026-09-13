@@ -398,6 +398,8 @@ test('split sink receives events while full details stay in persistent log', () 
     assert.ok(events.every(([, text]) => !text.includes('Full agent output') && !text.includes('inherited child output')));
     assert.ok(details.some(([, text]) => text.includes('Full agent output')));
     assert.ok(details.some(([, text]) => text.includes('inherited child output')));
+    assert.equal(events.some(([, text]) => text.startsWith('Команда')), false);
+    assert.ok(details.some(([, text]) => text.startsWith('Команда')));
     const log = readFileSync(logPath, 'utf8');
     for (const text of ['Issue #42', 'Review failed', 'Full agent output', 'inherited child output']) assert.ok(log.includes(text));
     assert.equal(log.includes('\x1b'), false);

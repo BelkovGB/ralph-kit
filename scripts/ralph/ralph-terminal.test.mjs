@@ -1,7 +1,54 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { spawn } from 'node:child_process';
 import test from 'node:test';
-import { createTerminal, renderTerminal, parseUiOption, terminalSnapshot } from './ralph-terminal.mjs';
+import { createTerminal, renderTerminal, parseUiOption, terminalSnapshot, renderRunSummary } from './ralph-terminal.mjs';
+
+test('run summary distinguishes completed, stopped and failed runs without inventing totals', () => {
+  const base = { startedMs: 1000, endedMs: 62000, phaseCount: 4, logPath: 'run.log' };
+  assert.match(renderRunSummary({ ...base, result: { verdict: 'pass' } }), /ЗАВЕРШЁН[\s\S]*Завершены все фазы: 4[\s\S]*0:01:01[\s\S]*run.log/);
+  const stopped = renderRunSummary({ ...base, result: { verdict: 'parked' } });
+  assert.match(stopped, /ОСТАНОВЛЕН/);
+  assert.doesNotMatch(stopped, /Завершены все фазы/);
+  assert.match(renderRunSummary({ ...base, error: new Error('Проверка изменила файлы') }), /ОШИБКА[\s\S]*Проверка изменила файлы/);
+});
+
+test('closing fresh stdin pauses the reader started by the terminal', () => {
+  const input = keyboard();
+  input.paused = false;
+  input.readableFlowing = null;
+  const output = surface();
+  const terminal = createTerminal({ output, errorOutput: output, input, lifecycle: new EventEmitter(), term: 'xterm' });
+  terminal.close();
+  assert.equal(input.paused, true);
+  assert.equal(input.listenerCount('data'), 0);
+});
+
+test('process exits naturally after closing terminal with an open stdin pipe', async () => {
+  const script = `import { createTerminal } from ${JSON.stringify(new URL('./ralph-terminal.mjs', import.meta.url).href)};
+    process.stdin.isTTY = true;
+    process.stdin.setRawMode = () => {};
+    process.stdout.isTTY = true;
+    process.stdout.columns = 80; process.stdout.rows = 24;
+    const terminal = createTerminal({ errorOutput: process.stdout, term: 'xterm' });
+    terminal.close(); console.log('CLOSED');`;
+  const child = spawn(process.execPath, ['--input-type=module', '-e', script], { stdio: ['pipe', 'pipe', 'pipe'] });
+  let output = '';
+  child.stdout.on('data', chunk => { output += chunk; });
+  let timer;
+  try {
+    const code = await Promise.race([
+      new Promise((resolve, reject) => { child.once('exit', resolve); child.once('error', reject); }),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Terminal kept process alive')), 5000); }),
+    ]);
+    assert.equal(code, 0);
+    assert.match(output, /CLOSED/);
+  } finally {
+    clearTimeout(timer);
+    if (child.exitCode === null) child.kill();
+    child.stdin.destroy();
+  }
+});
 
 test('summary uses persisted state and does not invent missing counters or durations', () => {
   const store = { phaseIndex: 1, phaseCount: 3, state: { milestone: 'M2', iterationsUsed: 4 },
@@ -25,6 +72,40 @@ test('UI option is explicit and restricted to run', () => {
   assert.equal(parseUiOption('--run', ['--ui=split']), 'split');
   assert.throws(() => parseUiOption('--check', ['--ui=split']));
   assert.throws(() => parseUiOption('--run', ['--ui=splt']));
+});
+
+test('milestone review is named while waiting for an agent with only service events', () => {
+  const store = { phaseIndex: 0, phaseCount: 4, state: { iterationsUsed: 20 }, issue: null };
+  const live = { activity: { kind: 'milestone-review', label: 'Ревью фазы: PR #227', startedMs: 0 },
+    session: { startedMs: 1000, lastEventMs: 18000, active: true, turns: 0, toolResults: 0,
+      maxTurns: 100, timeoutMs: 5400000, firstEventTimeoutMs: 300000, idleTimeoutMs: 600000 } };
+  const snapshot = terminalSnapshot(store, { issue: null, startedMs: 0 }, 0, 223000, live);
+  assert.equal(snapshot.issue, 'Ревью фазы: PR #227');
+  assert.equal(snapshot.status, 'Ожидание агента');
+  assert.match(snapshot.stage, /первый рабочий шаг/);
+  assert.ok(snapshot.counters.some(line => line.includes('До остановки: 0:06:35')));
+  assert.equal(snapshot.issueTime, '0:03:43');
+  live.session.lastEventMs = null;
+  assert.match(terminalSnapshot(store, { issue: null, startedMs: 0 }, 0, 2000, live).stage, /первое событие/);
+});
+
+test('between tasks shows live command purpose and elapsed time instead of missing issue', () => {
+  const live = { activity: { kind: 'queue', label: 'Обновление очереди задач в GitHub', startedMs: 1000 },
+    operation: { label: 'gh api', active: true, startedMs: 2000, timeoutMs: 300000 } };
+  const snapshot = terminalSnapshot(null, null, 0, 12000, live);
+  assert.equal(snapshot.issue, live.activity.label);
+  assert.match(snapshot.stage, /Запрос GitHub/);
+  assert.ok(snapshot.counters.some(line => line.includes('gh api')));
+  assert.equal(snapshot.issueTime, '0:00:11');
+});
+
+test('preparing the next issue hides the previous issue and agent session', () => {
+  const live = { activity: { kind: 'issue-preparation', label: 'Подготовка задачи #43', startedMs: 10000 },
+    session: { startedMs: 1000, active: false, endedMs: 2000 } };
+  const snapshot = terminalSnapshot({ state: {}, issue: { number: 42, title: 'Старая задача' } },
+    { issue: 42, startedMs: 500 }, 0, 12000, live);
+  assert.equal(snapshot.issue, 'Подготовка задачи #43');
+  assert.equal(snapshot.counters.some(line => line.startsWith('Агент:')), false);
 });
 
 test('live counters show actual session limits, phase limits and distinct attempt budgets', () => {

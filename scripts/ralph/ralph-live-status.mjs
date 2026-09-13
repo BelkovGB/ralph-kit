@@ -1,5 +1,5 @@
 // Наблюдения текущего процесса. Они не управляют лимитами и не заменяют state.json.
-let state = { session: null, network: null, review: null, operation: null, phaseConfig: null, queueProgress: null };
+let state = { session: null, network: null, review: null, operation: null, activity: null, phaseConfig: null, queueProgress: null };
 const listeners = new Set();
 
 export function readLiveStatus() {
@@ -7,7 +7,12 @@ export function readLiveStatus() {
 }
 
 export function resetLiveStatus() {
-  state = { session: null, network: null, review: null, operation: null, phaseConfig: null, queueProgress: null };
+  state = { session: null, network: null, review: null, operation: null, activity: null, phaseConfig: null, queueProgress: null };
+}
+
+export function reportActivity(kind, label) {
+  publishLiveStatus({ type: 'activity', kind, label, startedMs: Date.now(), active: true });
+  console.log(label);
 }
 
 export function subscribeLiveStatus(listener) {
@@ -18,11 +23,15 @@ export function subscribeLiveStatus(listener) {
 export function publishLiveStatus(event) {
   const { type, ...values } = event;
   switch (type) {
+    case 'activity':
+      state.activity = { ...values, active: values.active ?? true };
+      break;
     case 'phase-config':
       state.phaseConfig = structuredClone(values.phaseConfig);
       state.session = null;
       state.review = null;
       state.operation = null;
+      state.activity = null;
       break;
     case 'queue-progress':
       state.queueProgress = structuredClone(values.queueProgress);

@@ -363,7 +363,8 @@ function runObservedCommand(name, args, options, timeoutMs, startedAt) {
     process.platform === 'win32'
       ? { ...(commandEnvironment ?? process.env), ...windowsSafeCommandEnvironment }
       : commandEnvironment;
-  console.log(`Команда: ${name} ${args[0] ?? ''}`.trim());
+  const logCommand = hasTerminalSink() ? logDetail : console.log;
+  logCommand(`Команда: ${name} ${args[0] ?? ''}`.trim());
   const result = spawnSync(command, commandArgs, {
     cwd: projectRoot,
     encoding: 'utf8',
@@ -436,7 +437,7 @@ function runObservedCommand(name, args, options, timeoutMs, startedAt) {
     if (result.stdout?.trim()) logDetail(outputTail(result.stdout, 100_000));
     if (result.stderr?.trim()) logDetailError(outputTail(result.stderr, 100_000));
   }
-  console.log(`Команда ${name} завершена за ${Date.now() - startedAt} ms.`);
+  logCommand(`Команда ${name} завершена за ${Date.now() - startedAt} ms.`);
 
   return {
     status: result.status,

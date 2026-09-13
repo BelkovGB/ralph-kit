@@ -4,6 +4,44 @@ import { runContinuousLoop } from './ralph-loop.mjs';
 import { readLiveStatus, resetLiveStatus } from './ralph-live-status.mjs';
 import { actions, context } from './ralph-test-support.mjs';
 
+test('empty queue exposes milestone review and subsequent verification as operator activities', async () => {
+  resetLiveStatus();
+  await runContinuousLoop(context(), actions({
+    openIssues: () => {
+      assert.equal(readLiveStatus().activity.kind, 'queue');
+      return [];
+    },
+    createPullRequest: () => {
+      assert.equal(readLiveStatus().activity.kind, 'pull-request');
+      return { number: 227 };
+    },
+    runMilestoneReview: async () => {
+      const activity = readLiveStatus().activity;
+      assert.equal(activity.kind, 'milestone-review');
+      assert.match(activity.label, /#227/);
+      assert.equal(activity.active, true);
+      assert.equal(typeof activity.startedMs, 'number');
+      return { verdict: 'pass', findings: [] };
+    },
+    verifyReviewedPullRequestHead: () => assert.equal(readLiveStatus().activity.kind, 'pull-request'),
+    closeMilestone: () => assert.equal(readLiveStatus().activity.kind, 'milestone-close'),
+  }));
+});
+
+test('failed milestone review exposes creation of followup tasks', async () => {
+  resetLiveStatus();
+  const stop = new Error('stop after observing followup');
+  await assert.rejects(runContinuousLoop(context(), actions({
+    openIssues: () => [],
+    runMilestoneReview: async () => ({ verdict: 'fail', findings: [{}] }),
+    createOrReopenReviewIssues: () => {
+      assert.equal(readLiveStatus().activity.kind, 'review-results');
+      assert.match(readLiveStatus().activity.label, /#10/);
+      throw stop;
+    },
+  })), (error) => error === stop);
+});
+
 test('queue progress counts completed work in this run and separates parked issues', async () => {
   resetLiveStatus();
   const observed = [];
