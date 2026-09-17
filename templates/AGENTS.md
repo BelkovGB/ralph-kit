@@ -14,6 +14,10 @@ contracts. Keep it short: an agent reads this file on every task.
 
 ## Code structure and naming
 
+- Before implementing, find suitable functions, components and patterns in the
+  project. Reuse an existing solution when it fits the task; extend it when
+  needed. Do not create duplicates or combine different logic just because it
+  looks similar.
 - Split by reason to change, not by line count: one subject area lives in one
   file and can be read without reading its neighbours. Size is a signal, not a
   target.
