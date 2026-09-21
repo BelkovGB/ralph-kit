@@ -71,7 +71,6 @@ import {
   commitMessageFromAgent,
   commitStagedChanges,
   commitTrailerForIssue,
-  filesChangedBetween,
   isAncestorCommit,
   issueChangeInventory,
   linkedCommitForIssue,
@@ -118,6 +117,8 @@ import {
 
 import { buildIndependentReviewPrompt, renderPrompt } from './ralph-prompts.mjs';
 
+import { analyzeRecovery, applyRecoveryPlan, committedRecoveryPhases } from './ralph-recovery.mjs';
+
 import { KIT_VERSION } from './ralph-version.mjs';
 import { parseUiOption, renderRunSummary } from './ralph-terminal.mjs';
 import { createTerminalHost } from './ralph-terminal-host.mjs';
@@ -136,7 +137,7 @@ import {
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const mode = process.argv[2] ?? '--check';
-const supportedModes = new Set(['--check', '--run']);
+const supportedModes = new Set(['--check', '--run', '--accept-manual-commit']);
 const runtimeDirectory = resolveRalphRuntimeDirectory(projectRoot);
 const runtimeLockPath = path.join(runtimeDirectory, 'run.lock');
 const runtimeLogPath = path.join(runtimeDirectory, 'run.log');
@@ -171,7 +172,7 @@ export { incompleteIssueOutcome };
  * существует, но ревью его уже отклонило: продолжение без сессии агента
  * означало бы бесконечный повтор того же ревью над тем же деревом.
  */
-export const committedRecoveryPhases = ['committed', 'pushed', 'reviewing', 'closing'];
+export { committedRecoveryPhases };
 
 /**
  * Фаза между вердиктом PASS и закрытием issue.
@@ -415,6 +416,7 @@ async function reviewAndCloseCommittedIssue(config, repository, issue, commit) {
     phase: 'pushed',
     commit,
     pushedHead,
+    recoveryHead: pushedHead,
     ...clearedFailure,
   });
 
@@ -716,6 +718,7 @@ async function commitAndCompleteIssue(config, repository, issue, startingCommit,
   const commit = run('git', ['rev-parse', 'HEAD']).stdout;
   activeStateStore()?.updateIssue({
     phase: 'committed',
+    recoveryHead: commit,
     commit,
     pushedHead: null,
     ...clearedFailure,
@@ -726,45 +729,6 @@ async function commitAndCompleteIssue(config, repository, issue, startingCommit,
 // -----------------------------------------------------------------------------
 // Реализация одной issue агентом и проверка правил завершения
 // -----------------------------------------------------------------------------
-
-// Фазы, на которых работа issue лежит незакоммиченной в рабочем дереве.
-const uncommittedWorkPhases = new Set([
-  'agent-running',
-  'working-tree',
-  'validating',
-  'validation-mutated',
-]);
-
-/**
- * Можно ли продолжить issue, если ветка ушла вперёд с сохранённого commit.
- *
- * Требование точного совпадения HEAD теряет задачу каждый раз, когда между
- * прогонами в ветку попадает посторонний commit — а это ровно то, что делает
- * оператор, правя Ralph между запусками.
- *
- * Условие зависит от того, где лежит работа. После отказа ревью она в HEAD, а
- * дерево чистое: двигать базу безопасно всегда. На фазах с незакоммиченным
- * diff — только если пришедшие коммиты не трогают ни одного файла, который
- * сейчас правит агент; иначе его правки лягут поверх изменившегося файла, и
- * это уже не продолжение, а конфликт.
- *
- * `staging` не входит: там в состоянии лежит `expectedTree`, собранный против
- * прежнего HEAD.
- */
-export function advanceStartingCommitIfBranchMovedOn(stateStore = activeStateStore()) {
-  const storedIssue = stateStore?.issue;
-  const currentHead = run('git', ['rev-parse', 'HEAD']).stdout;
-  if (!branchMovedWithoutDisturbingIssue(storedIssue, currentHead)) return false;
-
-  console.log(
-    `Issue #${storedIssue.number}: ветка ушла вперёд с ` +
-      `${storedIssue.startingCommit.slice(0, 8)} до ${currentHead.slice(0, 8)}; ` +
-      'продолжаем поверх нового HEAD.',
-  );
-  stateStore.updateIssue({ startingCommit: currentHead });
-
-  return true;
-}
 
 export function recoverHostValidationMutation(
   storedIssue,
@@ -795,33 +759,13 @@ export function recoverHostValidationMutation(
   return true;
 }
 
-function branchMovedWithoutDisturbingIssue(storedIssue, currentHead) {
-  const storedStart = storedIssue?.startingCommit;
-  if (!storedStart || storedStart === currentHead) return false;
-  if (!isAncestorCommit(storedStart, currentHead)) return false;
-
-  const status = workingTreeStatus();
-  if (storedIssue.phase === 'review-failed') return status === '';
-  // `staging` исключён из uncommittedWorkPhases из-за expectedTree, собранного
-  // против прежнего HEAD. Пока его нет, исключать нечего: сбой пришёлся на
-  // время до фиксации индекса — например, на `git add`, — и в дереве лежит
-  // обычная незакоммиченная работа.
-  const phase =
-    storedIssue.phase === 'staging' && !storedIssue.expectedTree
-      ? 'working-tree'
-      : storedIssue.phase;
-  if (!uncommittedWorkPhases.has(phase) || status === '') return false;
-
-  const dirtyFiles = new Set(workingTreePaths(status));
-  const moved = filesChangedBetween(storedStart, currentHead);
-
-  return moved !== null && moved.every((file) => !dirtyFiles.has(file));
-}
-
 export async function runAgentOnIssue(config, repository, issue, rules) {
   issue = assertTrustedIssue(config, issue, repository);
   const storedIssue =
     activeStateStore()?.issue?.number === issue.number ? activeStateStore().issue : null;
+  if (storedIssue) {
+    applyRecoveryPlan(analyzeRecovery(config, storedIssue, { hostWorkingTreeHash }), activeStateStore());
+  }
   recoverHostValidationMutation(storedIssue);
   if (storedIssue?.commit && committedRecoveryPhases.includes(storedIssue.phase)) {
     assertCleanTree(`Issue #${issue.number}: committed recovery требует чистое рабочее дерево.`);
@@ -1522,10 +1466,10 @@ function publishPhaseConfig(config) {
 }
 
 async function main() {
-  const ui = parseUiOption(mode, process.argv.slice(3));
+  const ui = parseUiOption(mode, process.argv.slice(mode === '--accept-manual-commit' ? 4 : 3));
   // Проверяем, что передан поддерживаемый режим запуска.
   if (!supportedModes.has(mode)) {
-    fail(`Неизвестный режим ${mode}. Используйте --check или --run.`);
+    fail(`Неизвестный режим ${mode}. Используйте --check, --run или --accept-manual-commit <SHA>.`);
   }
 
   const config = loadConfig();
@@ -1574,13 +1518,13 @@ async function main() {
       projectRoot,
       branch: firstPhaseConfig.branch,
     });
-    setActiveStateStore(createStateStore(firstPhaseConfig, mode));
+    setActiveStateStore(createStateStore(firstPhaseConfig, mode === '--accept-manual-commit' ? '--check' : mode));
     Object.assign(config.approvedIssueSnapshots, activeStateStore().approvedIssueSnapshots);
     reportActivity('startup', 'Проверка инструментов и настроек запуска');
     const rules = loadRalphRules(config);
     verifyTools(config);
     verifyAgentSkills();
-    if (mode !== '--check') {
+    if (mode === '--run') {
       verifyAgentAuthentication(config);
     }
     for (const phase of config.phases) {
@@ -1595,18 +1539,27 @@ async function main() {
     const runPhase = async (phaseConfig) => {
       publishPhaseConfig(phaseConfig);
       reportActivity('phase-preparation', `Подготовка ветки фазы: ${phaseConfig.branch}`);
-      // Примирение с реальным HEAD идёт до проверки дерева: `verifyRepository`
-      // разрешает грязное дерево только через `allowsDirtyRecovery`, а тот
-      // требует точного совпадения HEAD с сохранённым startingCommit. Пока база
-      // не сдвинута, продолжение отвергается на слой раньше, чем до него
-      // доходит очередь.
-      if (mode !== '--check') advanceStartingCommitIfBranchMovedOn();
-      const repositoryState = verifyRepository(phaseConfig, mode !== '--check');
+      const recoveryOptions = {
+        hostWorkingTreeHash,
+        ...(mode === '--accept-manual-commit' ? { manualCommit: process.argv[3] ?? '' } : {}),
+      };
+      const recovery = analyzeRecovery(phaseConfig, activeStateStore()?.issue, recoveryOptions);
+      if (mode === '--run') applyRecoveryPlan(recovery, activeStateStore());
+      const repositoryState = verifyRepository(phaseConfig, mode === '--run');
+      if (mode === '--accept-manual-commit') {
+        // Re-read HEAD and the index immediately before persisting acceptance.
+        const confirmed = analyzeRecovery(phaseConfig, activeStateStore()?.issue, recoveryOptions);
+        if (confirmed.head !== recovery.head) fail('HEAD изменился во время принятия ручного коммита.');
+        applyRecoveryPlan(confirmed, activeStateStore());
+        console.log('Ручной коммит принят. Следующий --run заново выполнит проверки и ревью; задача ещё не завершена.');
+        return { mode, accepted: confirmed.patch.commit };
+      }
       // Слияние базы идёт до слепка control plane и после переключения ветки:
       // база может принести правки `.agents/**` или `scripts/ralph/**`, и
       // слепок, снятый до неё, объявил бы их подделкой доверенных файлов.
       const mergedBase =
-        mode !== '--check' && phaseConfig.syncBaseBranch && syncPhaseBranchWithBase(phaseConfig);
+        mode === '--run' && !activeStateStore()?.issue &&
+        phaseConfig.syncBaseBranch && syncPhaseBranchWithBase(phaseConfig);
       // Слепок пересчитывается сразу после переключения ветки и до сессии
       // агента. `verifyRepository` — единственное место, где рабочее дерево
       // меняет сам цикл, а `.claude/**` и `AGENTS.md` есть не на каждой ветке:
@@ -1621,10 +1574,10 @@ async function main() {
         // HEAD сдвинулся слиянием, а не работой агента: сохранённая база issue
         // обязана переехать вместе с ним, иначе продолжение потребует HEAD,
         // который остался позади.
-        advanceStartingCommitIfBranchMovedOn();
+        applyRecoveryPlan(analyzeRecovery(phaseConfig, activeStateStore()?.issue, { hostWorkingTreeHash }), activeStateStore());
         verifyMergedBase(phaseConfig);
       }
-      if (mode !== '--check') {
+      if (mode === '--run') {
         reconcileStateAfterCrash(phaseConfig, activeStateStore());
       }
       verifyBaseHistory(phaseConfig);

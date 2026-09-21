@@ -293,13 +293,13 @@ export function commitStagedChanges(commitMessage, issue, timeoutMs, dependencie
 // Обе ветки восстановления сверяют результат одинаково: parent, tree и trailer
 // должны совпасть с тем, что Ralph собирался закоммитить. Иначе это чужой
 // commit, и автоматический reset запрещён.
-function validateRecoveredCommit(storedIssue, currentHead) {
+export function validateRecoveredCommit(storedIssue, currentHead, execute = run) {
   const commitCount = Number(
-    run('git', ['rev-list', '--count', `${storedIssue.startingCommit}..${currentHead}`]).stdout,
+    execute('git', ['rev-list', '--count', `${storedIssue.startingCommit}..${currentHead}`]).stdout,
   );
-  const parent = run('git', ['show', '-s', '--format=%P', currentHead]).stdout;
-  const tree = run('git', ['rev-parse', `${currentHead}^{tree}`]).stdout;
-  const trailer = run('git', [
+  const parent = execute('git', ['show', '-s', '--format=%P', currentHead]).stdout;
+  const tree = execute('git', ['rev-parse', `${currentHead}^{tree}`]).stdout;
+  const trailer = execute('git', [
     'show',
     '-s',
     '--format=%(trailers:key=Ralph-Issue,valueonly)',
@@ -334,7 +334,7 @@ export function reconcileStateAfterCrash(config, stateStore = activeStateStore()
       );
     }
     const commit = validateRecoveredCommit(storedIssue, currentHead);
-    stateStore.updateIssue({ phase: 'committed', commit, ...clearedFailure });
+    stateStore.updateIssue({ phase: 'committed', commit, recoveryHead: commit, pushedHead: null, ...clearedFailure });
     console.log(`Issue #${storedIssue.number}: распознан commit ${commit} после crash.`);
     return;
   }
@@ -349,7 +349,7 @@ export function reconcileStateAfterCrash(config, stateStore = activeStateStore()
 
   commitStagedChanges(storedIssue.commitMessage, storedIssue, config.runtime.validationTimeoutMs);
   const commit = validateRecoveredCommit(storedIssue, run('git', ['rev-parse', 'HEAD']).stdout);
-  stateStore.updateIssue({ phase: 'committed', commit, ...clearedFailure });
+  stateStore.updateIssue({ phase: 'committed', commit, recoveryHead: commit, pushedHead: null, ...clearedFailure });
   console.log(`Issue #${storedIssue.number}: staging завершён commit ${commit} после crash.`);
 }
 

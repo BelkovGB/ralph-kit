@@ -49,7 +49,7 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
       state.milestone !== config.milestone;
     if (identityMismatch) {
       if (state.issue === null && state.iterationsUsed === 0) {
-        removeFileIfExists(statePath);
+        if (selectedMode !== '--check') removeFileIfExists(statePath);
         state = null;
       } else {
         fail(
