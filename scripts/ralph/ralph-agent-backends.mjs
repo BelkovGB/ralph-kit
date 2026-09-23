@@ -40,9 +40,9 @@ export function verifyAgentAuthentication(config, dependencies = {}) {
   return agentBackend(config).verifyAuthentication(dependencies);
 }
 
-export async function runDevelopmentSession(config, options) {
+export async function runDevelopmentSession(config, options, metricsRole = 'development') {
   const backend = agentBackend(config);
-  return withRecordedTelemetry('development', () =>
+  return withRecordedTelemetry(metricsRole, () =>
     runAgentSession(backend, backend.developmentArguments(config), options),
   );
 }
