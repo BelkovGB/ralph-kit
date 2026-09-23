@@ -1019,7 +1019,7 @@ export function printCheck(
   console.log(`Модель разработки: ${config.developmentModel} (effort=${config.developmentEffort})`);
   if (config.supervisor?.enabled) {
     console.log(
-      `Лиза: ${config.supervisor.model} (effort=${config.supervisor.effort}), ` +
+      `Лиза: ${config.supervisor.agentCli} / ${config.supervisor.model} (effort=${config.supervisor.effort}), ` +
         `до ${config.supervisor.maxInterventions} вызовов на фазу`,
     );
   }

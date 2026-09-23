@@ -229,12 +229,12 @@ CLI, а не в прогоне, поэтому ей доступны ваши MC
 
 Вместе меняются четыре поля:
 
-| Поле                    | claude          | codex           |
-| ----------------------- | --------------- | --------------- |
-| `agentCli`              | `claude`        | `codex`         |
-| `developmentModel`      | `claude-opus-5` | `gpt-5.6-terra` |
-| `review.model`          | `claude-opus-5` | `gpt-5.6-terra` |
-| `milestoneReview.model` | `claude-opus-5` | `gpt-5.6-sol`   |
+| Поле                    | claude            | codex         |
+| ----------------------- | ----------------- | ------------- |
+| `agentCli`              | `claude`          | `codex`       |
+| `developmentModel`      | `claude-opus-5-5` | `gpt-6-sol`   |
+| `review.model`          | `claude-opus-5-5` | `gpt-6-sol`   |
+| `milestoneReview.model` | `claude-opus-5-5` | `gpt-6-astra` |
 
 Полный набор effort задаёт CLI: у Codex — `minimal`, `low`, `medium`, `high`,
 `xhigh`, `max`, `ultra`; у Claude — `low`, `medium`, `high`, `xhigh`, `max`.
@@ -247,9 +247,11 @@ CLI, а не в прогоне, поэтому ей доступны ваши MC
 ## Продолжить работу через Лизу
 
 Включите `supervisor.enabled` в `.agents/ralph.config.json`, если после
-остановки Ralph должен автоматически вызвать отдельную сессию Codex. По
-умолчанию режим выключен. Лиза использует `gpt-6-astra` с effort `low`, даже
-если разработка идёт через Claude. Для работы нужен авторизованный Codex CLI.
+остановки Ralph должен автоматически вызвать отдельную сессию агента. По
+умолчанию режим выключен. `supervisor.agentCli`, `supervisor.model` и
+`supervisor.effort` задают Лизе собственные CLI, модель и усилие независимо от
+разработки. По умолчанию это Codex, `gpt-6-astra` и `low`. Для работы нужен
+авторизованный CLI выбранного агента.
 
 Лиза получает сохранённую issue, этап, причину остановки и замечания ревью.
 Она может исправить работу в пределах задачи и вернуть управление Ralph либо

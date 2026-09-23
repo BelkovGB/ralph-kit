@@ -244,7 +244,8 @@ issue откладывается: работа остаётся в ветке, �
 продолжит с того же места.
 
 При `supervisor.enabled: true` остановка незавершённой фазы вызывает Лизу.
-Она работает через Codex CLI на `supervisor.model` с `supervisor.effort`.
+Её CLI, модель и усилие задают `supervisor.agentCli`, `supervisor.model` и
+`supervisor.effort`; по умолчанию это Codex, `gpt-6-astra` и `low`.
 После её ответа Ralph снова проверяет состояние и работу. Число вызовов за фазу
 ограничивает `supervisor.maxInterventions`, а добавочные итерации Ralph —
 `supervisor.maxAdditionalIterations`. Счётчики живут в `state.json` и не
