@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { configPath, prepareConfig } from './ralph-config.mjs';
 import { runPhasePlan } from './ralph-loop.mjs';
+import { fieldGroups } from './ralph-gui-fields.mjs';
 import { assertLisaWorkspaceUnchanged, effectiveLisaIterationReserve, runWithSupervisor,
   supervisorAgentConfig, supervisorPhaseConfig, supervisorPrompt } from './ralph-supervisor.mjs';
 
@@ -106,6 +107,34 @@ test('Lisa uses Codex Astra low even when Ralph uses Claude', () => {
   assert.equal(config.agentCli, 'codex');
   assert.equal(config.developmentModel, 'gpt-6-astra');
   assert.equal(config.developmentEffort, 'low');
+});
+
+test('Lisa can use Claude independently of Ralph with its own model and effort', () => {
+  const sample = JSON.parse(readFileSync(configPath, 'utf8'));
+  const config = prepareConfig({ ...sample, agentCli: 'codex',
+    supervisor: { agentCli: 'claude', model: 'claude-opus-5-5', effort: 'high' } });
+  const lisa = supervisorAgentConfig(config);
+  assert.equal(lisa.agentCli, 'claude');
+  assert.equal(lisa.developmentModel, 'claude-opus-5-5');
+  assert.equal(lisa.developmentEffort, 'high');
+  assert.throws(() => prepareConfig({ ...sample,
+    supervisor: { agentCli: 'unknown' } }), /supervisor.agentCli/);
+  assert.throws(() => prepareConfig({ ...sample,
+    supervisor: { agentCli: 'claude', effort: 'minimal' } }), /supervisor.effort/);
+});
+
+test('Lisa model and effort choices follow her CLI in the control panel', () => {
+  const fields = fieldGroups.flatMap((group) => group.fields);
+  const byPath = (path) => fields.find((field) => field.path === path);
+  assert.deepEqual(byPath('supervisor.agentCli').options, ['codex', 'claude']);
+  assert.equal(byPath('supervisor.model').optionsDependOn, 'supervisor.agentCli');
+  assert.ok(byPath('supervisor.model').options.claude.includes('claude-opus-5-5'));
+  assert.ok(byPath('supervisor.model').options.claude.includes('claude-fable-5-1'));
+  assert.ok(byPath('supervisor.model').options.codex.includes('gpt-6-astra'));
+  assert.ok(byPath('supervisor.model').options.codex.includes('gpt-6-sol'));
+  assert.ok(byPath('supervisor.model').options.codex.includes('gpt-6-luna'));
+  assert.equal(byPath('supervisor.effort').optionsDependOn, 'supervisor.agentCli');
+  assert.ok(byPath('supervisor.effort').options.claude.includes('max'));
 });
 
 test('Lisa receives the current saved phase and cannot move HEAD', () => {

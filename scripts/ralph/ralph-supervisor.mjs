@@ -36,7 +36,7 @@ export function supervisorPrompt(config, state, error, call) {
 export function supervisorAgentConfig(config) {
   return {
     ...config,
-    agentCli: 'codex',
+    agentCli: config.supervisor.agentCli ?? 'codex',
     developmentModel: config.supervisor.model,
     developmentEffort: config.supervisor.effort,
   };
@@ -96,7 +96,7 @@ export async function requestLisa(config, store, error, call) {
     milestone: config.milestone,
     branch: config.branch,
     iteration: null,
-    agentCli: 'codex',
+    agentCli: lisaConfig.agentCli,
   });
   const endStage = startStage('supervisor');
   let outcome = { outcome: 'supervisor-failed', reason: 'сессия не завершилась' };
