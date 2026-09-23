@@ -1285,6 +1285,28 @@ test('milestone не закрывается, пока есть отложенн�
   assert.deepEqual(result.parkedIssues, [97]);
 });
 
+test('с Лизой отложенная issue сохраняет recovery и вызывает помощь до других задач', async () => {
+  const stateStore = persistentState({ issue: {
+    number: 97, title: 'Нужна помощь', phase: 'review-failed', startingCommit: 'a'.repeat(40),
+  } });
+  let nextIssueStarted = false;
+  const result = await runContinuousLoop(
+    context({ stateStore, config: { maxIterations: 20,
+      supervisor: { enabled: true, maxInterventions: 3 } } }),
+    actions({
+      openIssues: () => [97, 98].map((number) => ({ number, title: `Issue ${number}` })),
+      runAgentOnIssue: async (_config, _repository, issue) => {
+        if (issue.number === 98) nextIssueStarted = true;
+        return { completed: false, parked: true };
+      },
+    }),
+  );
+  assert.equal(result.verdict, 'parked');
+  assert.deepEqual(result.parkedIssues, [97]);
+  assert.equal(stateStore.issue.number, 97);
+  assert.equal(nextIssueStarted, false);
+});
+
 /**
  * Договор с пультом: строку про итерацию печатает цикл, а разбирает
  * `ralph-gui-data.mjs`. Разбор идёт по настоящему `run.log`, а не по сообщениям

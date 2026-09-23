@@ -47,6 +47,18 @@ test('startStage складывает время повторных прогон
   });
 });
 
+test('отдельный вызов Лизы хранит присланную телеметрию и называется в журнале', () => {
+  withMetricsFile((metricsPath) => {
+    beginIssueMetrics({ issue: null, milestone: 'Phase 1', agentCli: 'codex' });
+    recordAgentTelemetry('supervisor', { turns: 4, outputTokens: 20 });
+    const record = finishIssueMetrics(
+      { outcome: 'supervisor-resume', reason: 'исправлено' }, { metricsPath });
+    assert.equal(record.totals.turns, 4);
+    assert.equal(record.agents[0].role, 'supervisor');
+    assert.match(formatIssueMetrics(record), /Лиза/);
+  });
+});
+
 test('завершение стадии идемпотентно: повторный вызов не удваивает время', () => {
   withMetricsFile((metricsPath) => {
     beginIssueMetrics({ issue: 8 }, { now: clockOf([0, 10, 500, 900]) });

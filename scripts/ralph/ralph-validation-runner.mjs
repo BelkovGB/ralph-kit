@@ -29,6 +29,11 @@ const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 // -----------------------------------------------------------------------------
 
 export function assertTrustedControlFilesUnchanged(config) {
+  const changed = (message) => {
+    const error = new Error(message);
+    error.code = 'RALPH_CONTROL_PLANE_CHANGED';
+    throw error;
+  };
   // Ожидаемый набор берётся из конфигурации, а не выводится из имён файлов:
   // выводить его здесь значит держать правило «что считается инструкцией» в
   // двух местах, и они разойдутся.
@@ -38,14 +43,14 @@ export function assertTrustedControlFilesUnchanged(config) {
     trustedAgentInstructionFiles.size !== currentAgentInstructionFiles.size ||
     [...currentAgentInstructionFiles].some((file) => !trustedAgentInstructionFiles.has(file))
   ) {
-    fail(
+    changed(
       'AFK-сессия изменила набор доверенных файлов инструкций. ' +
         'Изменение отклонено до валидации, commit и push.',
     );
   }
   for (const [file, expectedHash] of config.trustedControlFileHashes ?? []) {
     if (!existsSync(file) || trustedFileHash(file) !== expectedHash) {
-      fail(
+      changed(
         `AFK-сессия изменила доверенный файл ${file}. ` +
           'Изменение отклонено до валидации, commit и push.',
       );

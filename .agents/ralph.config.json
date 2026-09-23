@@ -16,6 +16,14 @@
   "maxTurns": 50,
   "maxTestFixAttempts": 5,
   "maxReviewFixAttempts": 3,
+  "supervisor": {
+    "enabled": false,
+    "model": "gpt-6-astra",
+    "effort": "low",
+    "maxInterventions": 3,
+    "maxAdditionalIterations": 3,
+    "maxTurns": 50
+  },
   "runtime": {
     "commandTimeoutMs": 300000,
     "validationTimeoutMs": 1800000,

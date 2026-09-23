@@ -71,6 +71,8 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
       baseBranch: config.baseBranch,
       milestone: config.milestone,
       iterationsUsed: 0,
+      supervisorCalls: 0,
+      supervisorExtraIterations: 0,
       approvedIssueSnapshots: {},
       issue: null,
       updatedAt: new Date().toISOString(),
@@ -154,6 +156,24 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
     get iterationsUsed() {
       return state?.iterationsUsed ?? 0;
     },
+    get supervisorCalls() {
+      return state?.supervisorCalls ?? 0;
+    },
+    get supervisorExtraIterations() {
+      return state?.supervisorExtraIterations ?? 0;
+    },
+    reserveSupervisorCall() {
+      if (!state) return null;
+      state.supervisorCalls = (state.supervisorCalls ?? 0) + 1;
+      persist();
+      return state.supervisorCalls;
+    },
+    grantSupervisorIteration() {
+      if (!state) return null;
+      state.supervisorExtraIterations = (state.supervisorExtraIterations ?? 0) + 1;
+      persist();
+      return state.supervisorExtraIterations;
+    },
     reserveIteration() {
       if (!state) return null;
       state.iterationsUsed += 1;
@@ -190,6 +210,8 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
       state.baseBranch = nextConfig.baseBranch;
       state.milestone = nextConfig.milestone;
       state.iterationsUsed = 0;
+      state.supervisorCalls = 0;
+      state.supervisorExtraIterations = 0;
       persist();
       return true;
     },
