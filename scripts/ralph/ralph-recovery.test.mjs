@@ -97,12 +97,12 @@ for (const scenario of ['dirty', 'branch', 'trailer', 'sha', 'history', 'staging
   });
 }
 
-test('unchanged HEAD permits dirty recovery; unrelated clean state does not permit dirt', (t) => {
+test('unchanged HEAD permits dirty recovery; check can inspect an uncommitted installation', (t) => {
   const f = fixture(t);
   f.store.updateIssue({ startingCommit: f.manual });
   writeFileSync(path.join(f.root, 'app.txt'), 'work in progress');
   assert.equal(f.analyze().kind, 'ready');
-  assert.throws(() => analyzeRecovery(f.config, null, { run: f.run }), /дерево/);
+  assert.equal(analyzeRecovery(f.config, null, { run: f.run }).kind, 'ready');
 });
 
 test('check predicts disjoint branch advance without persisting it', (t) => {
