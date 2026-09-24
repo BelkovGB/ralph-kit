@@ -101,6 +101,16 @@ test('exhausted interventions and authorization errors never invoke Lisa', async
   assert.equal(calls, 0);
 });
 
+test('manual recovery stop leaves Lisa budget for a fix she can perform', async () => {
+  const { config, state, store } = fixture();
+  let calls = 0;
+  await assert.rejects(runWithSupervisor(config, store, async () => {
+    throw Object.assign(new Error('Укажите ручной коммит'), { code: 'RALPH_RECOVERY_BLOCKED' });
+  }, async () => { calls += 1; }), /ручной коммит/);
+  assert.equal(calls, 0);
+  assert.equal(state.calls, 0);
+});
+
 test('an intentional one-issue stop does not call Lisa', async () => {
   const { config, store } = fixture();
   let calls = 0;

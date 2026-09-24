@@ -10,6 +10,7 @@ const humanOnlyCodes = new Set([
   'RALPH_AGENT_WRITE_ACCESS',
   'RALPH_UNTRUSTED_ISSUE',
   'RALPH_CONTROL_PLANE_CHANGED',
+  'RALPH_RECOVERY_BLOCKED',
 ]);
 
 export function supervisorPrompt(config, state, error, call) {

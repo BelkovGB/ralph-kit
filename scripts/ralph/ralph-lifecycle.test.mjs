@@ -376,3 +376,68 @@ test('пройденное на прошлом прогоне ревью не п
     assert.equal(store.issue, null);
   });
 });
+
+test('принятый ручной commit повторяет validation и ревью без разработки', async () => {
+  await withLifecycleStand('ralph/lifecycle-manual', passVerdict, async (stand) => {
+    const store = recordingStateStore({
+      number: issueNumber,
+      title: issueTitle,
+      body: issueBody,
+      startingCommit: git(stand.repository.workTree, ['rev-parse', 'HEAD^']),
+      foreignPaths: [],
+      phase: 'committed',
+      commit: stand.repository.commit,
+      recoveryHead: stand.repository.commit,
+      reviewedCommit: null,
+      validationFixAttempts: 0,
+    });
+    setActiveStateStore(store);
+    const config = lifecycleConfig(stand.repository, stand.reviewOutputPath);
+    const validationPath = path.join(stand.repository.root, 'validate.cjs');
+    const writeValidation = (exitCode) =>
+      writeFileSync(
+        validationPath,
+        `require('node:fs').appendFileSync(${JSON.stringify(`${stand.reviewOutputPath}.invocations`)}, 'validation\\n');\nprocess.exit(${exitCode});\n`,
+        'utf8',
+      );
+    config.validationEnvironment = [
+      ...(config.validationEnvironment ?? []),
+      `RALPH_LIFECYCLE_VALIDATION=${validationPath}`,
+    ];
+    config.validationScripts = [
+      process.platform === 'win32'
+        ? 'node -e require(process.env.RALPH_LIFECYCLE_VALIDATION)'
+        : "node -e 'require(process.env.RALPH_LIFECYCLE_VALIDATION)'",
+    ];
+
+    writeValidation(1);
+    await assert.rejects(
+      runAgentOnIssue(config, 'owner/repository', lifecycleIssue(), 'rules'),
+      (error) => {
+        assert.equal(error.code, 'RALPH_VALIDATION_FAILED');
+        assert.deepEqual(codexInvocations(stand.reviewOutputPath), ['validation'], error.message);
+        return true;
+      },
+    );
+
+    assert.deepEqual(codexInvocations(stand.reviewOutputPath), ['validation']);
+    assert.equal(stand.gh.issueState().state, 'open');
+    assert.equal(stand.gh.calls().some((call) => call.method === 'PATCH'), false);
+    assert.equal(store.issue.phase, 'committed');
+    assert.equal(store.issue.commit, stand.repository.commit);
+
+    writeValidation(0);
+    const result = await runAgentOnIssue(config, 'owner/repository', lifecycleIssue(), 'rules');
+
+    assert.equal(result.completed, true);
+    assert.equal(result.commit, stand.repository.commit);
+    assert.equal(result.review.verdict, 'pass');
+    assert.deepEqual(codexInvocations(stand.reviewOutputPath), [
+      'validation',
+      'validation',
+      'review',
+    ]);
+    assert.equal(stand.gh.issueState().state, 'closed');
+    assert.equal(store.issue, null);
+  });
+});

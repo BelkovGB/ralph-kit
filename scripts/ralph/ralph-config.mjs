@@ -976,6 +976,7 @@ function collectTrustedControlFileHashes(config) {
     path.join(scriptDirectory, 'ralph-config.mjs'),
     path.join(scriptDirectory, 'ralph-failure-summary.mjs'),
     path.join(scriptDirectory, 'ralph-git.mjs'),
+    path.join(scriptDirectory, 'ralph-recovery.mjs'),
     path.join(scriptDirectory, 'ralph-github-client.mjs'),
     path.join(scriptDirectory, 'ralph-gui.mjs'),
     path.join(scriptDirectory, 'ralph-gui-data.mjs'),
