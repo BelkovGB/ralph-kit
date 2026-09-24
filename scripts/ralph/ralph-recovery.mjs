@@ -1,7 +1,7 @@
 import { run } from './ralph-process-runner.mjs';
 import { isRalphInfrastructurePath } from './ralph-scope.mjs';
 import { clearedFailure } from './ralph-failure-summary.mjs';
-import { filesChangedBetween, isAncestorCommit, validateRecoveredCommit, workingTreePaths } from './ralph-git.mjs';
+import { filesChangedBetween, isAncestorCommit, validateRecoveredCommit, verifyRepository, workingTreePaths } from './ralph-git.mjs';
 
 export const committedRecoveryPhases = ['committed', 'pushed', 'reviewing', 'closing'];
 const workingPhases = new Set(['agent-running', 'working-tree', 'validating', 'validation-mutated']);
@@ -42,6 +42,13 @@ export function analyzeRecovery(config, issue, dependencies = {}) {
     if (manualCommit === issue.startingCommit &&
         (workingPhases.has(issue.phase) || issue.phase === 'review-failed')) {
       blocked('Ручной коммит не содержит продолжения сохранённой задачи.');
+    }
+    if (issue.phase === 'review-failed') {
+      const changed = git('diff', '--name-only', '--no-renames', issue.startingCommit, manualCommit)
+        .split(/\r?\n/).filter(Boolean);
+      if (!changed.some((file) => !isRalphInfrastructurePath(file))) {
+        blocked('Ручной коммит не содержит исправления после отклонённого ревью.');
+      }
     }
     // Inspect every commit, not just the net diff: a change and its revert
     // must not hide unrelated product work. Ralph-only updates may follow a fix.
@@ -106,4 +113,27 @@ export function analyzeRecovery(config, issue, dependencies = {}) {
 
 export function applyRecoveryPlan(plan, stateStore) {
   if (plan.patch) stateStore.updateIssue(plan.patch);
+}
+
+/** Prepare one phase through the same entry path used by check, run and manual acceptance. */
+export function prepareRecovery(config, stateStore, mode, dependencies = {}) {
+  const execute = dependencies.run ?? run;
+  const verify = dependencies.verifyRepository ?? verifyRepository;
+  let repositoryState;
+  // A saved issue belongs to its phase branch. A clean --run may return there
+  // before recovery reads HEAD; check and manual acceptance stay read-only.
+  if (mode === '--run' && stateStore?.issue &&
+      execute('git', ['branch', '--show-current']).stdout !== config.branch) {
+    repositoryState = verify(config, true);
+  }
+  const recovery = analyzeRecovery(config, stateStore?.issue, dependencies);
+  if (mode === '--run') applyRecoveryPlan(recovery, stateStore);
+  repositoryState ??= verify(config, mode === '--run');
+  if (mode === '--accept-manual-commit') {
+    const confirmed = analyzeRecovery(config, stateStore?.issue, dependencies);
+    if (confirmed.head !== recovery.head) blocked('HEAD изменился во время принятия ручного коммита.');
+    applyRecoveryPlan(confirmed, stateStore);
+    return { recovery, repositoryState, accepted: confirmed.patch.commit };
+  }
+  return { recovery, repositoryState };
 }

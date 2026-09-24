@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'nod
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { analyzeRecovery, applyRecoveryPlan } from './ralph-recovery.mjs';
+import { analyzeRecovery, applyRecoveryPlan, prepareRecovery } from './ralph-recovery.mjs';
 import { createStateStore } from './ralph-state-store.mjs';
 
 function fixture(t) {
@@ -64,10 +64,50 @@ test('explicit manual acceptance queues full validation and review, retaining hi
   assert.equal(f.analyze().kind, 'ready');
 });
 
+test('manual mode persists acceptance and the next run resumes validation', (t) => {
+  const f = fixture(t);
+  const verifyRepository = () => ({ currentBranch: f.git('branch', '--show-current'), clean: true });
+  const result = prepareRecovery(f.config, f.store, '--accept-manual-commit', {
+    run: f.run, verifyRepository, manualCommit: f.manual,
+  });
+  assert.equal(result.accepted, f.manual);
+  assert.equal(createStateStore(f.config, '--run', f.statePath).issue.phase, 'committed');
+  const resumed = prepareRecovery(f.config, f.store, '--run', { run: f.run, verifyRepository });
+  assert.equal(resumed.recovery.kind, 'ready');
+  assert.equal(f.store.issue.reviewedCommit, null);
+});
+
+test('run switches to the saved issue branch before recovery, while check and manual acceptance stay strict', (t) => {
+  const f = fixture(t);
+  f.store.updateIssue({ phase: 'committed', commit: f.manual, recoveryHead: f.manual });
+  f.git('switch', '-qc', 'main', f.base);
+  const before = readFileSync(f.statePath, 'utf8');
+  const verifyRepository = (_config, requireClean) => {
+    if (f.git('branch', '--show-current') !== 'feature') {
+      if (!requireClean || f.git('status', '--porcelain')) throw new Error('wrong branch or dirty tree');
+      f.git('switch', 'feature');
+    }
+    return { currentBranch: f.git('branch', '--show-current'), clean: true };
+  };
+  assert.throws(() => prepareRecovery(f.config, f.store, '--check', { run: f.run, verifyRepository }), /ожидается feature/);
+  assert.throws(() => prepareRecovery(f.config, f.store, '--accept-manual-commit', {
+    run: f.run, verifyRepository, manualCommit: f.manual,
+  }), /ожидается feature/);
+  assert.equal(f.git('branch', '--show-current'), 'main');
+  assert.equal(readFileSync(f.statePath, 'utf8'), before);
+  const result = prepareRecovery(f.config, f.store, '--run', { run: f.run, verifyRepository });
+  assert.equal(result.recovery.kind, 'ready');
+  assert.equal(result.repositoryState.currentBranch, 'feature');
+});
+
 test('rejected review cannot accept the same commit as a manual fix', (t) => {
   const f = fixture(t);
   f.store.updateIssue({ phase: 'review-failed', startingCommit: f.manual, commit: f.manual, reviewedCommit: f.manual });
   assert.throws(() => f.analyze({ manualCommit: f.manual }), /не содержит продолжения/);
+  f.git('commit', '--allow-empty', '-qm', 'fix: empty review retry\n\nRalph-Issue: #325');
+  const empty = f.git('rev-parse', 'HEAD');
+  assert.equal(f.git('rev-parse', `${f.manual}^{tree}`), f.git('rev-parse', `${empty}^{tree}`));
+  assert.throws(() => f.analyze({ manualCommit: empty }), /не содержит исправления/);
   const fix = f.commit('app.txt', 'fixed after review', 'fix: review finding\n\nRalph-Issue: #325');
   assert.equal(f.analyze({ manualCommit: fix }).patch.commit, fix);
 });

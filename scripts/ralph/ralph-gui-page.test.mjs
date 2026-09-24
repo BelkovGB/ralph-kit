@@ -1,11 +1,36 @@
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import vm from 'node:vm';
 import test from 'node:test';
 
 // Пульт ставится не в каждую копию набора: без его модуля страницу не собрать,
 // и проверки пропускаются, как в соседних тестах.
 const guiPagePath = fileURLToPath(new URL('./ralph-gui-page.mjs', import.meta.url));
+
+test('Lisa model and effort choices use the default CLI in an older config', { skip: !existsSync(guiPagePath) }, async () => {
+  const { renderPage } = await import('./ralph-gui-page.mjs');
+  const { fieldGroups } = await import('./ralph-gui-fields.mjs');
+  const page = renderPage();
+  const start = page.indexOf('  function normalizeGroups(fields) {');
+  const end = page.indexOf('  /* Значение вне списка.', start);
+  assert.ok(start >= 0 && end > start);
+  const context = {
+    draft: { supervisor: { enabled: true } },
+    dependencyPaths: Object.create(null),
+    fieldDefaults: Object.create(null),
+    getPath: (target, path) => path.split('.').reduce((value, key) => value?.[key], target),
+    isUnset: (value) => value === undefined || value === null || value === '',
+  };
+  const { normalizeGroups, optionList } = vm.runInNewContext(
+    `${page.slice(start, end)}\n({ normalizeGroups, optionList })`, context,
+  );
+  const fields = normalizeGroups(fieldGroups).flatMap((group) => group.fields);
+  const model = fields.find((field) => field.path === 'supervisor.model');
+  const effort = fields.find((field) => field.path === 'supervisor.effort');
+  assert.ok(optionList(model).some((option) => option.value === 'gpt-6-astra'));
+  assert.ok(optionList(effort).some((option) => option.value === 'low'));
+});
 
 test('the GUI page ships a single dark theme', { skip: !existsSync(guiPagePath) }, async () => {
   const { renderPage } = await import('./ralph-gui-page.mjs');
