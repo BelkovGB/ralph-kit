@@ -73,10 +73,15 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
       iterationsUsed: 0,
       supervisorCalls: 0,
       supervisorExtraIterations: 0,
+      supervisorActive: false,
       approvedIssueSnapshots: {},
       issue: null,
       updatedAt: new Date().toISOString(),
     };
+    writeJsonAtomic(statePath, state);
+  }
+  if (state?.supervisorActive && selectedMode === '--run') {
+    state.supervisorActive = false;
     writeJsonAtomic(statePath, state);
   }
 
@@ -165,8 +170,14 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
     reserveSupervisorCall() {
       if (!state) return null;
       state.supervisorCalls = (state.supervisorCalls ?? 0) + 1;
+      state.supervisorActive = true;
       persist();
       return state.supervisorCalls;
+    },
+    finishSupervisorCall() {
+      if (!state) return;
+      state.supervisorActive = false;
+      persist();
     },
     grantSupervisorIteration() {
       if (!state) return null;
@@ -212,6 +223,7 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
       state.iterationsUsed = 0;
       state.supervisorCalls = 0;
       state.supervisorExtraIterations = 0;
+      state.supervisorActive = false;
       persist();
       return true;
     },

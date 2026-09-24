@@ -1,4 +1,5 @@
 import { runDevelopmentSession, verifyAgentAuthentication } from './ralph-agent-backends.mjs';
+import { publishLiveStatus, reportActivity } from './ralph-live-status.mjs';
 import { assertTrustedControlFilesUnchanged } from './ralph-validation-runner.mjs';
 import { run } from './ralph-process-runner.mjs';
 import { beginIssueMetrics, currentIssueMetrics, finishIssueMetrics,
@@ -104,6 +105,7 @@ export async function requestLisa(config, store, error, call) {
     verifyAgentAuthentication(lisaConfig);
     const session = await runDevelopmentSession(lisaConfig, {
       input: supervisorPrompt(config, store.state, error, call),
+      progressLabel: 'Лиза',
       maxTurns: config.supervisor.maxTurns,
       timeoutMs: config.supervisor.timeoutMs,
       label: `Лиза: помощь Ralph${store.issue ? ` с issue #${store.issue.number}` : ''}`,
@@ -146,12 +148,18 @@ export async function runWithSupervisor(config, store, runPlan, request = reques
     }
 
     const call = store.reserveSupervisorCall();
-    console.log(`Лиза: вызов ${call}/${config.supervisor.maxInterventions}.`);
+    const label = `Лиза: вызов ${call}/${config.supervisor.maxInterventions}.` +
+      (store.issue ? ` Issue #${store.issue.number}` : '');
+    reportActivity('supervisor', label);
     let answer;
     try {
       answer = await request(supervisorPhaseConfig(config, store), store, failure, call);
     } catch (error) {
       return { verdict: 'needs-human', reason: `Лиза остановилась: ${error.message}` };
+    } finally {
+      console.log(`Лиза: вызов ${call} завершён.`);
+      store.finishSupervisorCall();
+      publishLiveStatus({ type: 'activity', kind: 'supervisor', label, active: false });
     }
     if (answer?.verdict !== 'resume') {
       return { verdict: 'needs-human', reason: answer?.reason ?? 'Лиза не разрешила продолжение.' };
