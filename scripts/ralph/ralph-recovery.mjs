@@ -21,7 +21,6 @@ export function analyzeRecovery(config, issue, dependencies = {}) {
   const manualCommit = dependencies.manualCommit;
   if (!issue) {
     if (manualCommit !== undefined) blocked('Нет сохранённой задачи для принятия ручного коммита.');
-    if (status !== '') blocked('Рабочее дерево не чистое; нет сохранённой задачи для восстановления.');
     return ready;
   }
   if (branch !== config.branch) {
