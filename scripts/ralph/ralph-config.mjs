@@ -354,6 +354,7 @@ const configFields = new Set([
   'runtime',
   'stopAfterFirstIssue',
   'syncBaseBranch',
+  'supervisor',
   'trustedIssueAuthors',
   'validationArtifactPaths',
   'validationEnvironment',
@@ -419,6 +420,22 @@ function applyLoopDefaults(config) {
   if (config.githubAccount === '') config.githubAccount = null;
   else config.githubAccount ??= null;
   config.maxIterations ??= 20;
+  config.supervisor ??= {};
+  if (typeof config.supervisor !== 'object' || Array.isArray(config.supervisor)) {
+    fail('Поле "supervisor" должно быть объектом.');
+  }
+  const unknownSupervisorFields = Object.keys(config.supervisor).filter((field) =>
+    !['enabled', 'agentCli', 'model', 'effort', 'maxInterventions', 'maxAdditionalIterations', 'maxTurns', 'timeoutMs'].includes(field));
+  if (unknownSupervisorFields.length > 0) {
+    fail(`Неизвестные поля в "supervisor": ${unknownSupervisorFields.join(', ')}.`);
+  }
+  config.supervisor.enabled ??= false;
+  config.supervisor.agentCli ??= 'codex';
+  config.supervisor.model ??= 'gpt-6-astra';
+  config.supervisor.effort ??= 'low';
+  config.supervisor.maxInterventions ??= 3;
+  config.supervisor.maxAdditionalIterations ??= 3;
+  config.supervisor.maxTurns ??= 50;
   config.maxTurns ??= 50;
   config.maxTestFixAttempts ??= 5;
   // Сколько раз подряд ревью может отклонить одну issue, прежде чем она уйдёт
@@ -441,6 +458,7 @@ function applyLoopDefaults(config) {
   for (const [field, value] of Object.entries(defaultRuntimeSettings)) {
     config.runtime[field] ??= value;
   }
+  config.supervisor.timeoutMs ??= config.runtime.agentTimeoutMs;
   // Незнакомый ключ отклоняется, а не игнорируется: иначе опечатка или
   // устаревшее имя остаётся в конфиге мёртвой настройкой, которую правят без
   // всякого эффекта.
@@ -762,6 +780,28 @@ function validateRuntimeSettings(config) {
 }
 
 function validateAgentRoles(config) {
+  if (typeof config.supervisor.enabled !== 'boolean') {
+    fail('Поле "supervisor.enabled" должно быть true или false.');
+  }
+  if (!agentClis.includes(config.supervisor.agentCli)) {
+    fail(`Поле "supervisor.agentCli" должно быть одним из: ${agentClis.join(', ')}.`);
+  }
+  if (typeof config.supervisor.model !== 'string' ||
+      !/^[a-zA-Z0-9._-]+$/.test(config.supervisor.model)) {
+    fail('Поле "supervisor.model" должно содержать безопасное имя модели.');
+  }
+  if (!reasoningEffortsFor(config.supervisor.agentCli).includes(config.supervisor.effort)) {
+    fail(`Поле "supervisor.effort" должно быть допустимым усилием ${config.supervisor.agentCli}.`);
+  }
+  for (const field of ['maxInterventions', 'maxTurns', 'timeoutMs']) {
+    if (!Number.isSafeInteger(config.supervisor[field]) || config.supervisor[field] < 1) {
+      fail(`Поле "supervisor.${field}" должно быть целым числом больше 0.`);
+    }
+  }
+  if (!Number.isSafeInteger(config.supervisor.maxAdditionalIterations) ||
+      config.supervisor.maxAdditionalIterations < 0) {
+    fail('Поле "supervisor.maxAdditionalIterations" должно быть целым числом от 0.');
+  }
   if (typeof config.review !== 'object' || config.review === null) {
     fail('Поле "review" должно быть объектом.');
   }
@@ -956,6 +996,7 @@ function collectTrustedControlFileHashes(config) {
     path.join(scriptDirectory, 'ralph-live-status.mjs'),
     path.join(scriptDirectory, 'ralph-scope.mjs'),
     path.join(scriptDirectory, 'ralph-state-store.mjs'),
+    path.join(scriptDirectory, 'ralph-supervisor.mjs'),
     path.join(scriptDirectory, 'ralph-validation-runner.mjs'),
     path.join(scriptDirectory, 'ralph-version.mjs'),
     path.join(projectRoot, '.agents', 'RALPH.md'),

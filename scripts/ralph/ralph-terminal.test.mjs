@@ -89,6 +89,20 @@ test('milestone review is named while waiting for an agent with only service eve
   assert.match(terminalSnapshot(store, { issue: null, startedMs: 0 }, 0, 2000, live).stage, /первое событие/);
 });
 
+test('split screen names Lisa and her steps during an intervention', () => {
+  const store = { phaseIndex: 0, phaseCount: 1, state: { iterationsUsed: 5 },
+    issue: { number: 12, title: 'Исправить сбой', phase: 'review-failed' } };
+  const live = { activity: { kind: 'supervisor', label: 'Лиза: вызов 2/3, issue #12',
+    startedMs: 1000, active: true }, session: { startedMs: 2000, lastEventMs: 3000,
+    active: true, turns: 4, toolResults: 2, maxTurns: 30, timeoutMs: 90000,
+    firstEventTimeoutMs: 10000, idleTimeoutMs: 10000 } };
+  const snapshot = terminalSnapshot(store, { issue: 12, startedMs: 1000 }, 0, 4000, live);
+  assert.match(snapshot.issue, /Лиза: вызов 2\/3/);
+  assert.match(snapshot.stage, /Лиза/);
+  assert.ok(snapshot.counters.some(line => line === 'Шаги Лизы: 4/30'));
+  assert.match(renderTerminal(snapshot, [], 100, 24), /Лиза/);
+});
+
 test('between tasks shows live command purpose and elapsed time instead of missing issue', () => {
   const live = { activity: { kind: 'queue', label: 'Обновление очереди задач в GitHub', startedMs: 1000 },
     operation: { label: 'gh api', active: true, startedMs: 2000, timeoutMs: 300000 } };

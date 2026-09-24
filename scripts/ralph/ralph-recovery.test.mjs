@@ -64,6 +64,14 @@ test('explicit manual acceptance queues full validation and review, retaining hi
   assert.equal(f.analyze().kind, 'ready');
 });
 
+test('rejected review cannot accept the same commit as a manual fix', (t) => {
+  const f = fixture(t);
+  f.store.updateIssue({ phase: 'review-failed', startingCommit: f.manual, commit: f.manual, reviewedCommit: f.manual });
+  assert.throws(() => f.analyze({ manualCommit: f.manual }), /не содержит продолжения/);
+  const fix = f.commit('app.txt', 'fixed after review', 'fix: review finding\n\nRalph-Issue: #325');
+  assert.equal(f.analyze({ manualCommit: fix }).patch.commit, fix);
+});
+
 test('Ralph update after manual fix is accepted, later product edits are rejected', (t) => {
   const f = fixture(t);
   const head = f.commit('scripts/ralph/fix.mjs', 'export {};', 'fix: recovery');

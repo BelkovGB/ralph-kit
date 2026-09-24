@@ -120,6 +120,7 @@ import { buildIndependentReviewPrompt, renderPrompt } from './ralph-prompts.mjs'
 import { analyzeRecovery, applyRecoveryPlan, committedRecoveryPhases } from './ralph-recovery.mjs';
 
 import { KIT_VERSION } from './ralph-version.mjs';
+import { effectiveLisaIterationReserve, runWithSupervisor } from './ralph-supervisor.mjs';
 import { parseUiOption, renderRunSummary } from './ralph-terminal.mjs';
 import { createTerminalHost } from './ralph-terminal-host.mjs';
 import { publishLiveStatus, readLiveStatus, reportActivity, resetLiveStatus, subscribeLiveStatus } from './ralph-live-status.mjs';
@@ -540,7 +541,7 @@ async function reviewAndCloseCommittedIssue(config, repository, issue, commit) {
           'Issue отложена до конца прогона: работа в ветке, замечания в её теле. ' +
           'Следующие заходы повторяли бы тот же круг.',
       );
-      activeStateStore()?.clearIssue();
+      if (!config.supervisor?.enabled) activeStateStore()?.clearIssue();
       return { completed: false, parked: true, commit, review };
     }
     return { completed: false, commit, review };
@@ -925,7 +926,7 @@ function createPullRequest(config, repository) {
 // Бюджет итераций живёт в state и переживает перезапуск, поэтому конфигурация
 // может быть корректной, а `--run` при этом останавливаться сразу.
 export function iterationBudget(config, stateStore) {
-  const limit = config.maxIterations;
+  const limit = config.maxIterations + effectiveLisaIterationReserve(config, stateStore);
   const used = stateStore?.iterationsUsed ?? 0;
   return { used, limit, remaining: Math.max(0, limit - used) };
 }
@@ -960,6 +961,12 @@ export function printCheck(
   console.log(`Лимит шагов на сессию: ${config.maxTurns}`);
   console.log(`Лимит исправлений тестов: ${config.maxTestFixAttempts}`);
   console.log(`Модель разработки: ${config.developmentModel} (effort=${config.developmentEffort})`);
+  if (config.supervisor?.enabled) {
+    console.log(
+      `Лиза: ${config.supervisor.agentCli} / ${config.supervisor.model} (effort=${config.supervisor.effort}), ` +
+        `до ${config.supervisor.maxInterventions} вызовов на фазу`,
+    );
+  }
   console.log(`Правила сессии: ${config.rulesFile}`);
   // Команды нумерованы, потому что порядок — часть настройки: прогон
   // останавливается на первой упавшей команде, и агент получает сводку только по
@@ -1231,7 +1238,7 @@ export async function runContinuousLoop(context, actions) {
             `Milestone не закрыт: ${parked} отложены после ${config.maxReviewFixAttempts} отказов ревью подряд. ` +
               'Работа в ветке, замечания в теле задач; разберите их и запустите цикл снова.',
           );
-          stateStore?.finish();
+          if (!config.supervisor?.enabled) stateStore?.finish();
           return {
             mode: 'run',
             verdict: 'parked',
@@ -1306,12 +1313,14 @@ export async function runContinuousLoop(context, actions) {
         outcome: 'iteration-limit',
         reason: `бюджет ${config.maxIterations} итераций исчерпан до начала задачи`,
       });
-      fail(
+      const error = new Error(
         `Достигнут лимит ${config.maxIterations} итераций; ` +
           `осталось открытых issues: ${issues.length}. PR цикл здесь не создаёт и не трогает: ` +
           'он открывается только когда открытых issues не остаётся. Состояние сохранено — ' +
           'увеличьте maxIterations, и следующий --run продолжит с него.',
       );
+      error.code = 'RALPH_ITERATION_LIMIT';
+      throw error;
     }
 
     if (needsDevelopmentIteration) {
@@ -1348,6 +1357,9 @@ export async function runContinuousLoop(context, actions) {
         ? incompleteIssueOutcome(result)
         : { outcome: 'completed', reason: 'issue закрыта' },
     );
+    if (result?.parked && config.supervisor?.enabled) {
+      return { mode: 'run', verdict: 'parked', parkedIssues: [currentIssue.number] };
+    }
     if (result?.parked) {
       parkedIssueNumbers.add(currentIssue.number);
       pendingIssues.delete(currentIssue.number);
@@ -1430,6 +1442,9 @@ export async function runPhasePlan(config, stateStore, runPhase) {
   let phaseIndex = stateStore?.phaseIndex ?? 0;
   while (true) {
     const currentConfig = configForPhase(config, phaseIndex);
+    if (Number.isInteger(currentConfig.maxIterations)) {
+      currentConfig.maxIterations += effectiveLisaIterationReserve(config, stateStore);
+    }
     console.log(
       `\n=== Фаза ${phaseIndex + 1}/${config.phases.length}: ${currentConfig.milestone} ` +
         `(${currentConfig.branch} -> ${currentConfig.baseBranch}) ===`,
@@ -1597,9 +1612,15 @@ async function main() {
     };
 
     const result = mode === '--run'
-      ? await runPhasePlan(config, activeStateStore(), runPhase)
+      ? await runWithSupervisor(config, activeStateStore(),
+        (effectiveConfig) => runPhasePlan(effectiveConfig, activeStateStore(), runPhase))
       : await runPhase(firstPhaseConfig);
     runResult = result;
+    if (result?.verdict === 'needs-human') {
+      const error = new Error(`Нужен человек: ${result.reason}`);
+      error.code = 'RALPH_NEEDS_HUMAN';
+      throw error;
+    }
     reportActivity('finished', 'Прогон завершён');
     return result;
   } catch (error) {

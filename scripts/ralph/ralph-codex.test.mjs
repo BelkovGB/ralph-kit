@@ -23,6 +23,30 @@ import {
 } from './ralph-process-runner.mjs';
 import { withFakeCodex } from './ralph-test-support.mjs';
 
+test('Lisa step and message carry her name in CLI output', async () => {
+  const printed = [];
+  const originalLog = console.log;
+  try {
+    await withFakeCodex(
+      `process.stdout.write(JSON.stringify({ type: 'item.completed', item: {
+        id: 'lisa-step', type: 'agent_message', text: 'Исправила причину остановки'
+      } }) + '\\n');`,
+      async () => {
+        console.log = (...args) => { printed.push(args.join(' ')); };
+        await runCodexWithTurnLimit(['exec', '--json', '-'], {
+          input: 'test', label: 'Лиза: тест', progressLabel: 'Лиза', maxTurns: 3,
+          timeoutMs: 5000, authenticationFile: null,
+        });
+      },
+    );
+  } finally {
+    console.log = originalLog;
+  }
+  assert.ok(printed.some((line) => line.includes('[Лиза step 1/3] agent_message')));
+  assert.ok(printed.some((line) => line.includes('[Лиза] Исправила причину остановки')));
+  assert.ok(printed.some((line) => line.includes('Лиза: сообщение Исправила причину остановки')));
+});
+
 test('runAgentOnIssue rejects freshly fetched mutable content before a fake Codex executable starts', async () => {
   const approvedIssue = {
     number: 66,

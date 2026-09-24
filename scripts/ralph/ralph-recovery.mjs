@@ -40,7 +40,8 @@ export function analyzeRecovery(config, issue, dependencies = {}) {
     if (git('show', '-s', '--format=%(trailers:key=Ralph-Issue,valueonly)', manualCommit) !== `#${issue.number}`) {
       blocked(`Ручной коммит должен содержать точный trailer Ralph-Issue: #${issue.number}.`);
     }
-    if (manualCommit === issue.startingCommit && workingPhases.has(issue.phase)) {
+    if (manualCommit === issue.startingCommit &&
+        (workingPhases.has(issue.phase) || issue.phase === 'review-failed')) {
       blocked('Ручной коммит не содержит продолжения сохранённой задачи.');
     }
     // Inspect every commit, not just the net diff: a change and its revert

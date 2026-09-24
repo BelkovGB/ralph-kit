@@ -22,6 +22,8 @@ test('persistent state survives restart and enforces branch identity', () => {
     const first = createStateStore(config, '--run', statePath);
     assert.equal(first.iterationsUsed, 0);
     first.reserveIteration();
+    first.reserveSupervisorCall();
+    first.grantSupervisorIteration();
     first.beginIssue(
       {
         number: 42,
@@ -34,6 +36,8 @@ test('persistent state survives restart and enforces branch identity', () => {
 
     const resumed = createStateStore(config, '--run', statePath);
     assert.equal(resumed.iterationsUsed, 1);
+    assert.equal(resumed.supervisorCalls, 1);
+    assert.equal(resumed.supervisorExtraIterations, 1);
     assert.equal(resumed.issue.number, 42);
     assert.equal(resumed.issue.phase, 'agent-running');
     assert.equal(resumed.issue.body, 'Requirements');
@@ -44,6 +48,25 @@ test('persistent state survives restart and enforces branch identity', () => {
 
     resumed.finish();
     assert.equal(existsSync(statePath), false);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('Lisa activity is saved for the GUI and cleared after a restarted run', () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'ralph-lisa-state-'));
+  const statePath = path.join(directory, 'state.json');
+  const config = { branch: 'feature/lisa', baseBranch: 'main', milestone: 'One' };
+  try {
+    const first = createStateStore(config, '--run', statePath);
+    first.reserveSupervisorCall();
+    assert.equal(first.state.supervisorActive, true);
+    const resumed = createStateStore(config, '--run', statePath);
+    assert.equal(resumed.state.supervisorActive, false);
+    resumed.reserveSupervisorCall();
+    resumed.finishSupervisorCall();
+    assert.equal(resumed.state.supervisorActive, false);
+    resumed.finish();
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -132,10 +155,14 @@ test('persistent state advances a phase atomically and resets its iteration budg
   try {
     const first = createStateStore(firstConfig, '--run', statePath);
     first.reserveIteration();
+    first.reserveSupervisorCall();
+    first.grantSupervisorIteration();
     assert.equal(first.iterationsUsed, 1);
     assert.equal(first.advancePhase(secondConfig), true);
     assert.equal(first.phaseIndex, 1);
     assert.equal(first.iterationsUsed, 0);
+    assert.equal(first.supervisorCalls, 0);
+    assert.equal(first.supervisorExtraIterations, 0);
 
     const resumed = createStateStore(secondConfig, '--run', statePath);
     assert.equal(resumed.phaseIndex, 1);

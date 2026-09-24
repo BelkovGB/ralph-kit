@@ -71,10 +71,17 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
       baseBranch: config.baseBranch,
       milestone: config.milestone,
       iterationsUsed: 0,
+      supervisorCalls: 0,
+      supervisorExtraIterations: 0,
+      supervisorActive: false,
       approvedIssueSnapshots: {},
       issue: null,
       updatedAt: new Date().toISOString(),
     };
+    writeJsonAtomic(statePath, state);
+  }
+  if (state?.supervisorActive && selectedMode === '--run') {
+    state.supervisorActive = false;
     writeJsonAtomic(statePath, state);
   }
 
@@ -154,6 +161,30 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
     get iterationsUsed() {
       return state?.iterationsUsed ?? 0;
     },
+    get supervisorCalls() {
+      return state?.supervisorCalls ?? 0;
+    },
+    get supervisorExtraIterations() {
+      return state?.supervisorExtraIterations ?? 0;
+    },
+    reserveSupervisorCall() {
+      if (!state) return null;
+      state.supervisorCalls = (state.supervisorCalls ?? 0) + 1;
+      state.supervisorActive = true;
+      persist();
+      return state.supervisorCalls;
+    },
+    finishSupervisorCall() {
+      if (!state) return;
+      state.supervisorActive = false;
+      persist();
+    },
+    grantSupervisorIteration() {
+      if (!state) return null;
+      state.supervisorExtraIterations = (state.supervisorExtraIterations ?? 0) + 1;
+      persist();
+      return state.supervisorExtraIterations;
+    },
     reserveIteration() {
       if (!state) return null;
       state.iterationsUsed += 1;
@@ -190,6 +221,9 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
       state.baseBranch = nextConfig.baseBranch;
       state.milestone = nextConfig.milestone;
       state.iterationsUsed = 0;
+      state.supervisorCalls = 0;
+      state.supervisorExtraIterations = 0;
+      state.supervisorActive = false;
       persist();
       return true;
     },

@@ -185,6 +185,7 @@ var roleWords = {
   implementation: 'разработка',
   validation: 'проверка',
   review: 'ревью',
+  supervisor: 'Лиза',
   'milestone-review': 'ревью milestone',
   summary: 'итог'
 };
@@ -197,7 +198,7 @@ function roleWord(value) {
 /* Запись без номера issue — ревью milestone: цикл пишет его отдельной
    строкой, потому что оно оплачено прогоном, а не какой-то одной issue. */
 function isReviewRow(task) {
-  return task.issue === null || task.issue === undefined;
+  return task.kind !== 'supervisor' && (task.issue === null || task.issue === undefined);
 }
 
 function cut(text, limit) {
@@ -231,6 +232,9 @@ function shownStateStamp(data) {
     run.turn,
     run.turnLimit,
     run.turnFinished,
+    run.supervisor && run.supervisor.call,
+    run.supervisor && run.supervisor.limit,
+    run.lisaMessage,
     run.validationFixAttempts,
     run.maxTestFixAttempts,
     run.reviewFixAttempts,

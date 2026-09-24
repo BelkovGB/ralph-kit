@@ -520,6 +520,7 @@ a { color: var(--accent); }
 .now-issue { font-weight: 500; }
 .now-stage { color: var(--accent); }
 .now-meta { color: var(--muted); }
+.now-message { flex-basis: 100%; color: var(--muted); }
 
 .sortbar {
   display: flex;
@@ -651,6 +652,7 @@ tr:last-child td { border-bottom: 0; }
 .bar-seg.s1 { background: var(--bar-1); }
 .bar-seg.s2 { background: var(--bar-2); }
 .bar-seg.s3 { background: var(--bar-3); }
+.bar-seg.s4 { background: var(--accent); }
 
 .legend { color: var(--muted); font-size: 12px; }
 
@@ -1391,9 +1393,10 @@ const scriptTail = `
     var parts = [
       { cls: 's1', label: 'разработка', ms: stageMs(s.implementation) },
       { cls: 's2', label: 'проверки', ms: stageMs(s.validation) },
-      { cls: 's3', label: 'ревью', ms: stageMs(s.review) }
+      { cls: 's3', label: 'ревью', ms: stageMs(s.review) },
+      { cls: 's4', label: 'Лиза', ms: stageMs(s.supervisor) }
     ];
-    var total = parts[0].ms + parts[1].ms + parts[2].ms;
+    var total = parts.reduce(function (sum, part) { return sum + part.ms; }, 0);
     if (total <= 0) return null;
     var box = document.createDocumentFragment();
     var bar = el('div', 'bar');
@@ -1421,7 +1424,8 @@ const scriptTail = `
       el(
         'span',
         'run-title',
-        'Попытка ' + (index + 1) + (run.iteration ? ' · итерация ' + run.iteration : '')
+        (run.kind === 'supervisor' ? 'Лиза' : 'Попытка ' + (index + 1)) +
+          (run.iteration ? ' · итерация ' + run.iteration : '')
       )
     );
     var when = [];
@@ -1526,14 +1530,18 @@ const scriptTail = `
         )
       );
     }
-    var stage = phaseWord(run.issuePhase);
+    var stage = run.supervisor
+      ? 'Лиза · вызов ' + outOf(run.supervisor.call, run.supervisor.limit)
+      : phaseWord(run.issuePhase);
     if (stage) box.appendChild(el('span', 'now-stage', stage));
     var meta = [];
     if (run.maxIterations) {
       meta.push('итерация ' + outOf(run.iterationsUsed || 0, run.maxIterations));
     }
     /* Шаг закрытой сессии не выдаём за текущий: между сессиями его нет. */
-    if (run.turn && !run.turnFinished) meta.push('шаг ' + outOf(run.turn, run.turnLimit));
+    if (run.turn && !run.turnFinished) {
+      meta.push((run.supervisor ? 'шаг Лизы ' : 'шаг ') + outOf(run.turn, run.turnLimit));
+    }
     if (run.validationFixAttempts) {
       meta.push('круг проверок ' + outOf(run.validationFixAttempts, run.maxTestFixAttempts));
     }
@@ -1544,6 +1552,9 @@ const scriptTail = `
        перерисовывать таблицу под карточкой. Часы прогона идут в строке
        состояния наверху, она живёт отдельно от вкладки. */
     if (meta.length) box.appendChild(el('span', 'now-meta', meta.join(' · ')));
+    if (run.supervisor && run.lisaMessage) {
+      box.appendChild(el('span', 'now-message', cut(String(run.lisaMessage), 160)));
+    }
     return box;
   }
 
@@ -1645,7 +1656,9 @@ const scriptTail = `
   /* Строка задачи и, когда она раскрыта, её попытки. */
   function appendTaskRows(tbody, task) {
     var review = isReviewRow(task);
-    var key = review ? 'milestone-review:' + (task.milestone || '') : String(task.issue);
+    var supervisor = task.kind === 'supervisor';
+    var key = review ? 'milestone-review:' + (task.milestone || '')
+      : supervisor ? 'supervisor:' + (task.milestone || '') : String(task.issue);
     var open = !!expanded[key];
     var row = el('tr', 'task-row');
     row.tabIndex = 0;
@@ -1653,7 +1666,9 @@ const scriptTail = `
 
     var first = el('td', 'task-id');
     first.appendChild(el('span', 'marker', open ? '−' : '+'));
-    if (review) {
+    if (supervisor) {
+      first.appendChild(el('span', 'task-kind', 'Лиза · помощь фазе'));
+    } else if (review) {
       first.appendChild(el('span', 'task-kind', 'Ревью milestone'));
     } else {
       first.appendChild(document.createTextNode('#' + task.issue));
@@ -1666,7 +1681,7 @@ const scriptTail = `
       }
     }
     row.appendChild(first);
-    row.appendChild(el('td', 'num', review ? '—' : num(task.attempts)));
+    row.appendChild(el('td', 'num', review || supervisor ? '—' : num(task.attempts)));
 
     /* У ревью milestone исход всегда один, а знать надо вердикт: он в reason. */
     var outcomeText =
@@ -1710,8 +1725,9 @@ const scriptTail = `
     if (!runs.length) {
       cell.appendChild(el('div', 'run-meta', 'Журнал не сохранил ни одной попытки'));
     } else {
-      runs.forEach(function (run, index) {
-        cell.appendChild(renderRun(run, index));
+      var attempt = 0;
+      runs.forEach(function (run) {
+        cell.appendChild(renderRun(run, run.kind === 'supervisor' ? null : attempt++));
       });
     }
     detailRow.appendChild(cell);

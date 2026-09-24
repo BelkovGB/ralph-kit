@@ -16,6 +16,15 @@
   "maxTurns": 50,
   "maxTestFixAttempts": 5,
   "maxReviewFixAttempts": 3,
+  "supervisor": {
+    "enabled": false,
+    "agentCli": "codex",
+    "model": "gpt-6-astra",
+    "effort": "low",
+    "maxInterventions": 3,
+    "maxAdditionalIterations": 3,
+    "maxTurns": 50
+  },
   "runtime": {
     "commandTimeoutMs": 300000,
     "validationTimeoutMs": 1800000,
@@ -28,7 +37,7 @@
     "maxPages": 20,
     "reviewRetryAttempts": 3
   },
-  "developmentModel": "claude-opus-5",
+  "developmentModel": "claude-opus-5-5",
   "developmentEffort": "medium",
   "developmentSkills": [],
   "reviewSeverityFloor": "P1",
@@ -44,14 +53,14 @@
   "validationArtifactPaths": [],
   "review": {
     "enabled": true,
-    "model": "claude-opus-5",
+    "model": "claude-opus-5-5",
     "effort": "high",
     "schemaFile": ".agents/review.schema.json",
     "outputFile": ".agents/last-review.json"
   },
   "milestoneReview": {
     "enabled": true,
-    "model": "claude-opus-5",
+    "model": "claude-opus-5-5",
     "effort": "max",
     "maxTurns": 50,
     "maxFindings": 10,

@@ -68,6 +68,9 @@ export function createSandboxedCodexEnvironment(source = process.env, options = 
 // явного override каждая роль получает текущий default CLI/модели. Передаём
 // эффективное значение сами, чтобы поведение не менялось вместе с default.
 export const codexModels = [
+  'gpt-6-astra',
+  'gpt-6-sol',
+  'gpt-6-luna',
   'gpt-5.6-sol',
   'gpt-5.6-terra',
   'gpt-5.6-luna',
@@ -77,7 +80,7 @@ export const codexModels = [
   'gpt-5.3-codex-spark',
 ];
 
-// Codex Desktop сейчас предлагает эти значения для моделей GPT-5.6. Проверка
+// Codex Desktop предлагает эти значения усилия. Проверка
 // конфигурации использует объединение, потому что CLI проверяет совместимость
 // модели и effort перед запуском, а список моделей обновляется независимо.
 export const reasoningEfforts = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
