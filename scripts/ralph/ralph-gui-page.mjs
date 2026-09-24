@@ -1227,6 +1227,7 @@ const scriptTail = `
   var settingsTab = readSettingsTab();
   // Пути полей, от значения которых зависят чужие списки вариантов.
   var dependencyPaths = Object.create(null);
+  var fieldDefaults = Object.create(null);
   // Выбранная группа справочника команд: терминал или чат с агентом.
   var commandsGroup = 0;
 
@@ -2020,9 +2021,11 @@ const scriptTail = `
     }
     // Смена такого поля перерисовывает экран: от него зависят чужие списки.
     dependencyPaths = Object.create(null);
+    fieldDefaults = Object.create(null);
     groups.forEach(function (group) {
       group.fields.forEach(function (field) {
         if (field.optionsDependOn) dependencyPaths[field.optionsDependOn] = true;
+        if (field.hasDefault) fieldDefaults[field.path] = field.fallback;
       });
     });
     return groups;
@@ -2066,7 +2069,7 @@ const scriptTail = `
   function optionList(field) {
     var raw = field.options;
     if (field.optionsDependOn) {
-      var key = draft ? getPath(draft, field.optionsDependOn) : '';
+      var key = dependentValue(field);
       raw = (field.options || {})[key] || [];
     }
     if (!Array.isArray(raw)) return [];
@@ -2078,13 +2081,18 @@ const scriptTail = `
     });
   }
 
+  function dependentValue(field) {
+    var key = draft ? getPath(draft, field.optionsDependOn) : undefined;
+    return isUnset(key) ? fieldDefaults[field.optionsDependOn] : key;
+  }
+
   /* Значение вне списка. Имя модели код списком не ограничивает — там это
      просто своё значение. Усилие проверяется по списку CLI (validateAgentRoles
      в ralph-config.mjs), и чужое значение остановит прогон, о чём надо сказать
      прямо. */
   function outsideWord(field) {
     if (field.allowCustom) return 'своё значение';
-    var key = field.optionsDependOn ? getPath(draft, field.optionsDependOn) : '';
+    var key = field.optionsDependOn ? dependentValue(field) : '';
     return key ? 'недопустимо для ' + key : 'нет в списке';
   }
 

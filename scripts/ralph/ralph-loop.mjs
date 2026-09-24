@@ -80,7 +80,6 @@ import {
   verifiedIssueCommit,
   verifyBaseHistory,
   verifyPushedHead,
-  verifyRepository,
   workingTreeEntries,
   workingTreePaths,
 } from './ralph-git.mjs';
@@ -117,7 +116,7 @@ import {
 
 import { buildIndependentReviewPrompt, renderPrompt } from './ralph-prompts.mjs';
 
-import { analyzeRecovery, applyRecoveryPlan, committedRecoveryPhases } from './ralph-recovery.mjs';
+import { analyzeRecovery, applyRecoveryPlan, committedRecoveryPhases, prepareRecovery } from './ralph-recovery.mjs';
 
 import { KIT_VERSION } from './ralph-version.mjs';
 import { effectiveLisaIterationReserve, runWithSupervisor } from './ralph-supervisor.mjs';
@@ -1558,16 +1557,12 @@ async function main() {
         hostWorkingTreeHash,
         ...(mode === '--accept-manual-commit' ? { manualCommit: process.argv[3] ?? '' } : {}),
       };
-      const recovery = analyzeRecovery(phaseConfig, activeStateStore()?.issue, recoveryOptions);
-      if (mode === '--run') applyRecoveryPlan(recovery, activeStateStore());
-      const repositoryState = verifyRepository(phaseConfig, mode === '--run');
+      const { repositoryState, accepted } = prepareRecovery(
+        phaseConfig, activeStateStore(), mode, recoveryOptions,
+      );
       if (mode === '--accept-manual-commit') {
-        // Re-read HEAD and the index immediately before persisting acceptance.
-        const confirmed = analyzeRecovery(phaseConfig, activeStateStore()?.issue, recoveryOptions);
-        if (confirmed.head !== recovery.head) fail('HEAD изменился во время принятия ручного коммита.');
-        applyRecoveryPlan(confirmed, activeStateStore());
         console.log('Ручной коммит принят. Следующий --run заново выполнит проверки и ревью; задача ещё не завершена.');
-        return { mode, accepted: confirmed.patch.commit };
+        return { mode, accepted };
       }
       // Слияние базы идёт до слепка control plane и после переключения ветки:
       // база может принести правки `.agents/**` или `scripts/ralph/**`, и
