@@ -103,9 +103,11 @@ test('подписи исходов, фаз и ролей', { skip }, async () =
   assert.equal(view.phaseWord('validating'), 'идут проверки');
   assert.equal(view.phaseWord('незнакомая'), 'незнакомая');
   assert.equal(view.roleWord('development'), 'разработка');
+  assert.equal(view.roleWord('supervisor'), 'Лиза');
   assert.equal(view.roleWord(null), 'агент');
 
   assert.equal(view.isReviewRow({ issue: null }), true);
+  assert.equal(view.isReviewRow({ issue: null, kind: 'supervisor' }), false);
   assert.equal(view.isReviewRow({ issue: 7 }), false);
 
   assert.equal(view.stageMs(5), 5);
@@ -129,6 +131,10 @@ test('слепок состояния меняется от показанных
   });
   assert.equal(view.shownStateStamp(base), same);
   assert.notEqual(view.shownStateStamp({ ...base, run: { ...base.run, turn: 28 } }), same);
+  assert.notEqual(view.shownStateStamp({ ...base,
+    run: { ...base.run, supervisor: { call: 2, limit: 3 } } }), same);
+  assert.notEqual(view.shownStateStamp({ ...base,
+    run: { ...base.run, lisaMessage: 'Разбираю ошибку' } }), same);
   // Разделитель — управляющий символ, а не текст «»: при переносе из
   // шаблона в модуль один уровень экранирования снимается.
   assert.equal(same.includes(String.fromCharCode(1)), true);

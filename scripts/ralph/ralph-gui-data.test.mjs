@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { rmSync } from 'node:fs';
+import { rmSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
 import test, { after } from 'node:test';
 
 import {
@@ -89,6 +90,55 @@ test('пульт берёт ход прогона из последних стр
   assert.equal(progress.turn, 12);
   assert.equal(progress.turnLimit, 50);
   assert.equal(progress.sessionFinished, false);
+});
+
+test('пульт показывает активный вызов Лизы и не переносит в него шаги Ralph', () => {
+  const root = tree({
+    'run.log': [
+      logLine('[claude step 49/50] работа Ralph'),
+      logLine('Лиза: вызов 2/3.'),
+      '',
+    ].join('\n'),
+  });
+  let progress = readRunProgress({ runtimeDir: root });
+  assert.deepEqual(progress.supervisor, { call: 2, limit: 3 });
+  assert.equal(progress.turn, null);
+
+  writeFileSync(path.join(root, 'run.log'), [
+    logLine('Лиза: вызов 2/3.'),
+    logLine('[Лиза step 4/30] чтение состояния'),
+    logLine('Лиза: сообщение Проверяю причину остановки'),
+    '',
+  ].join('\n'));
+  progress = readRunProgress({ runtimeDir: root });
+  assert.equal(progress.turn, 4);
+  assert.equal(progress.turnLimit, 30);
+  assert.equal(progress.lisaMessage, 'Проверяю причину остановки');
+
+  writeFileSync(path.join(root, 'run.log'), [
+    logLine('Лиза: вызов 2/3.'),
+    logLine('[Лиза step 4/30] чтение состояния'),
+    logLine('Лиза: сообщение Проверяю причину остановки'),
+    logLine('Лиза: вызов 2 завершён.'),
+    '',
+  ].join('\n'));
+  progress = readRunProgress({ runtimeDir: root });
+  assert.equal(progress.supervisor, null);
+  assert.equal(progress.lisaMessage, null);
+  assert.equal(progress.sessionFinished, true);
+});
+
+test('пульт видит Лизу по сохранённому состоянию, когда начало вызова вышло из хвоста журнала', () => {
+  const root = tree({
+    'run.lock': JSON.stringify({ pid: 42, mode: '--run' }),
+    'state.json': JSON.stringify({ supervisorActive: true, supervisorCalls: 2 }),
+    'ralph.config.json': JSON.stringify({ supervisor: { maxInterventions: 3 } }),
+    'run.log': `${logLine('[Лиза step 19/30] разбор сбоя')}\n`,
+  });
+  const state = readRunState({ runtimeDir: root, configPath: path.join(root, 'ralph.config.json'),
+    isProcessAlive: () => true });
+  assert.deepEqual(state.run.supervisor, { call: 2, limit: 3 });
+  assert.equal(state.run.turn, 19);
 });
 
 test('строка «Resume» тоже считается началом итерации', () => {
@@ -243,6 +293,8 @@ test('без журнала прогона числа остаются проп�
     turn: null,
     turnLimit: null,
     sessionFinished: false,
+    supervisor: null,
+    lisaMessage: null,
   });
 });
 
@@ -390,6 +442,31 @@ test('последняя попытка задачи решает, закрыт�
   assert.equal(spend.phases[0].attempts, 2);
 });
 
+test('записи Лизы видны отдельно и не увеличивают число попыток и ревью фазы', () => {
+  const root = metricsTree([
+    metricsEntry({ issue: 7, outcome: 'validation-failed', startedAt: '2026-09-01T10:00:00.000Z' }),
+    metricsEntry({ issue: 7, outcome: 'supervisor-resume', startedAt: '2026-09-01T10:10:00.000Z',
+      stages: { supervisor: { ms: 25000, runs: 1 } },
+      agents: [{ role: 'supervisor', turns: 5, outputTokens: 80 }] }),
+    metricsEntry({ issue: 7, outcome: 'completed', startedAt: '2026-09-01T10:20:00.000Z' }),
+    metricsEntry({ issue: null, outcome: 'supervisor-human', startedAt: '2026-09-01T11:00:00.000Z',
+      agents: [{ role: 'supervisor', turns: 3, outputTokens: 50 }] }),
+    metricsEntry({ issue: null, outcome: 'milestone-review', startedAt: '2026-09-01T12:00:00.000Z' }),
+  ]);
+  const spend = readTaskSpend({ metricsPath: path.join(root, 'issue-metrics.json'),
+    configPath: path.join(root, 'ralph.config.json') });
+  const issue = spend.tasks.find((task) => task.issue === 7);
+  const lisa = spend.tasks.find((task) => task.kind === 'supervisor');
+  assert.equal(issue.attempts, 2);
+  assert.equal(issue.runs[1].kind, 'supervisor');
+  assert.equal(issue.runs[1].roles[0].role, 'supervisor');
+  assert.equal(issue.runs[1].stages.supervisor.ms, 25000);
+  assert.equal(lisa.issue, null);
+  assert.equal(lisa.runs[0].kind, 'supervisor');
+  assert.equal(spend.totals.attempts, 2);
+  assert.equal(spend.totals.milestoneReviews, 1);
+});
+
 test('порядок работы внутри фазы читается по первой попытке задачи', () => {
   const root = metricsTree([
     metricsEntry({ issue: 8, startedAt: '2026-09-01T11:00:00.000Z' }),
@@ -419,6 +496,8 @@ test('пустой журнал прогона и журнал без строк
     turn: null,
     turnLimit: null,
     sessionFinished: false,
+    supervisor: null,
+    lisaMessage: null,
   });
 });
 

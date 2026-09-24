@@ -53,6 +53,25 @@ test('persistent state survives restart and enforces branch identity', () => {
   }
 });
 
+test('Lisa activity is saved for the GUI and cleared after a restarted run', () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'ralph-lisa-state-'));
+  const statePath = path.join(directory, 'state.json');
+  const config = { branch: 'feature/lisa', baseBranch: 'main', milestone: 'One' };
+  try {
+    const first = createStateStore(config, '--run', statePath);
+    first.reserveSupervisorCall();
+    assert.equal(first.state.supervisorActive, true);
+    const resumed = createStateStore(config, '--run', statePath);
+    assert.equal(resumed.state.supervisorActive, false);
+    resumed.reserveSupervisorCall();
+    resumed.finishSupervisorCall();
+    assert.equal(resumed.state.supervisorActive, false);
+    resumed.finish();
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('automatic issue approvals survive an AFK process restart', () => {
   const directory = mkdtempSync(path.join(tmpdir(), 'ralph-state-approvals-'));
   const statePath = path.join(directory, 'state.json');

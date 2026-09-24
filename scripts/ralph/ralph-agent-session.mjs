@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
+import { stripVTControlCharacters } from 'node:util';
 
 import {
   logDetail, logDetailError, retryDelayMs, terminateProcessTreeByPid, waitSync,
@@ -300,11 +301,16 @@ async function runObservedAgentSession(backend, args, options, sessionStartedMs)
     }
 
     publishLiveStatus({ type: 'session-progress', turns, toolResults, lastEventMs: Date.now() });
+    const progressLabel = options.progressLabel ?? backend.label;
     if (currentTurn !== null && event.stepLabel) {
-      console.log(`[${backend.label} step ${currentTurn}/${options.maxTurns}] ${event.stepLabel}`);
+      console.log(`[${progressLabel} step ${currentTurn}/${options.maxTurns}] ${event.stepLabel}`);
     }
-    if (event.log) logDetail(event.log);
-    if (event.errorLog) logDetailError(`[${backend.label}] ${event.errorLog}`);
+    if (event.log) logDetail(options.progressLabel ? `[${progressLabel}] ${event.log}` : event.log);
+    if (options.progressLabel && event.agentMessage) {
+      const summary = stripVTControlCharacters(event.agentMessage).replace(/\s+/gu, ' ').trim().slice(0, 160);
+      if (summary) console.log(`${progressLabel}: сообщение ${summary}`);
+    }
+    if (event.errorLog) logDetailError(`[${progressLabel}] ${event.errorLog}`);
   };
 
   child.stdout.on('data', (chunk) => {

@@ -4,6 +4,7 @@ import test from 'node:test';
 import { configPath, prepareConfig } from './ralph-config.mjs';
 import { runPhasePlan } from './ralph-loop.mjs';
 import { fieldGroups } from './ralph-gui-fields.mjs';
+import { readLiveStatus, resetLiveStatus } from './ralph-live-status.mjs';
 import { assertLisaWorkspaceUnchanged, effectiveLisaIterationReserve, runWithSupervisor,
   supervisorAgentConfig, supervisorPhaseConfig, supervisorPrompt } from './ralph-supervisor.mjs';
 
@@ -14,6 +15,7 @@ function fixture(overrides = {}) {
     get supervisorCalls() { return state.calls; },
     get supervisorExtraIterations() { return state.extraIterations; },
     reserveSupervisorCall() { state.calls += 1; return state.calls; },
+    finishSupervisorCall() {},
     grantSupervisorIteration() { state.extraIterations += 1; },
     updateIssue(patch) { Object.assign(state.issue, patch); },
   };
@@ -36,6 +38,23 @@ test('Lisa resumes Ralph with a bounded, persistent iteration reserve', async ()
   assert.deepEqual(limits, [2, 3]);
   assert.equal(state.calls, 1);
   assert.equal(state.extraIterations, 1);
+});
+
+test('Lisa publishes and closes her own live progress stage', async () => {
+  resetLiveStatus();
+  const { config, store } = fixture();
+  let runs = 0;
+  await runWithSupervisor(config, store, async () => {
+    if (runs++ === 0) throw new Error('blocked');
+    return { verdict: 'pass' };
+  }, async () => {
+    const activity = readLiveStatus().activity;
+    assert.equal(activity.kind, 'supervisor');
+    assert.equal(activity.active, true);
+    assert.match(activity.label, /Лиза: вызов 1\/3/);
+    return { verdict: 'resume', reason: 'fixed' };
+  });
+  assert.equal(readLiveStatus().activity.active, false);
 });
 
 test('Lisa can stop for a human without resuming Ralph', async () => {

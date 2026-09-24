@@ -40,7 +40,7 @@ const milestoneReviewKeyPrefix = 'milestone-review:';
 // Страница пульта получает тот же список интерполяцией, поэтому сервер и
 // страница не могут разойтись в формулировках.
 
-const stageNames = ['implementation', 'validation', 'review'];
+const stageNames = ['implementation', 'validation', 'review', 'supervisor'];
 
 // Заголовок issue, заведённой по замечанию ревью: severity в начале строки
 // ставит `findingIssueTitle` из `ralph-milestone-review.mjs`. По нему пульт
@@ -133,6 +133,9 @@ const sessionKilledPattern = new RegExp(
   `${logLinePrefix}Circuit breaker: [^\\n]*лимит (\\d+) шагов\\.`,
   'g',
 );
+const supervisorStartPattern = new RegExp(`${logLinePrefix}Лиза: вызов (\\d+)/(\\d+)\\.`, 'g');
+const supervisorEndPattern = new RegExp(`${logLinePrefix}Лиза: вызов (\\d+) завершён\\.`, 'g');
+const lisaMessagePattern = new RegExp(`${logLinePrefix}Лиза: сообщение ([^\\n]+)`, 'g');
 
 function emptyProgress() {
   return {
@@ -142,6 +145,8 @@ function emptyProgress() {
     turn: null,
     turnLimit: null,
     sessionFinished: false,
+    supervisor: null,
+    lisaMessage: null,
   };
 }
 
@@ -192,6 +197,11 @@ export function readRunProgress(dependencies = {}) {
   const step = lastMatch(stepLinePattern, text);
   const used = lastMatch(stepsUsedLinePattern, text);
   const killed = lastMatch(sessionKilledPattern, text);
+  const supervisorStart = lastMatch(supervisorStartPattern, text);
+  const supervisorEnd = lastMatch(supervisorEndPattern, text);
+  const lisaMessage = lastMatch(lisaMessagePattern, text);
+  const supervisorActive = supervisorStart &&
+    (!supervisorEnd || supervisorStart.index > supervisorEnd.index);
 
   // Состояние описывает та отметка, что стоит в журнале последней. Начало
   // итерации после конца сессии значит, что новая ещё не началась: шага нет
@@ -202,17 +212,24 @@ export function readRunProgress(dependencies = {}) {
     // Оборванная сессия дошла ровно до лимита: breaker срабатывает на нём.
     killed ? { kind: 'end', index: killed.index, turn: killed[1], limit: killed[1] } : null,
     iteration ? { kind: 'iteration', index: iteration.index } : null,
+    supervisorStart ? { kind: 'supervisor-start', index: supervisorStart.index } : null,
+    supervisorEnd ? { kind: 'end', index: supervisorEnd.index } : null,
   ].filter(Boolean);
   const last = marks.sort((left, right) => left.index - right.index).at(-1) ?? null;
-  const turns = last?.kind === 'iteration' ? null : last;
+  const turns = ['iteration', 'supervisor-start'].includes(last?.kind) ? null : last;
 
   return {
     iteration: iteration ? Number(iteration[1]) : null,
     maxIterations: iteration ? Number(iteration[2]) : null,
     issuesRemaining: iteration ? Number(iteration[3]) : null,
-    turn: turns ? Number(turns.turn) : null,
-    turnLimit: turns ? Number(turns.limit) : null,
+    turn: turns?.turn != null ? Number(turns.turn) : null,
+    turnLimit: turns?.limit != null ? Number(turns.limit) : null,
     sessionFinished: last?.kind === 'end',
+    supervisor: supervisorActive ? {
+      call: Number(supervisorStart[1]), limit: Number(supervisorStart[2]),
+    } : null,
+    lisaMessage: lisaMessage && (!supervisorEnd || lisaMessage.index > supervisorEnd.index)
+      ? lisaMessage[1] : null,
   };
 }
 
@@ -281,6 +298,11 @@ export function readRunState(dependencies = {}) {
       turn: progress.turn,
       turnLimit: progress.turnLimit,
       turnFinished: progress.sessionFinished,
+      supervisor: state?.supervisorActive ? {
+        call: state.supervisorCalls ?? null,
+        limit: config?.supervisor?.maxInterventions ?? null,
+      } : progress.supervisor,
+      lisaMessage: progress.lisaMessage,
       issuesRemaining: progress.issuesRemaining,
       stateUpdatedAt: state?.updatedAt ?? null,
       logUpdatedAt: fileModifiedAt(path.join(directory, 'run.log')),
@@ -386,7 +408,7 @@ function groupAgentsByRole(agents) {
   }));
 }
 
-/** Стадии выравниваются до трёх известных: страница показывает пропуск, а не дыру. */
+/** Стадии выравниваются до известных: страница показывает пропуск, а не дыру. */
 function normalizeStages(stages) {
   const source = stages ?? {};
 
@@ -406,12 +428,17 @@ function normalizeStages(stages) {
   );
 }
 
+function isSupervisorRecord(entry) {
+  return typeof entry.outcome === 'string' && entry.outcome.startsWith('supervisor-');
+}
+
 function normalizeRun(entry) {
   const roles = groupAgentsByRole(Array.isArray(entry.agents) ? entry.agents : []);
   const tokens = roles.reduce((sum, role) => addTokens(sum, role.tokens), emptyTokens());
   const silentSessions = roles.reduce((count, role) => count + role.sessionsWithoutTokens, 0);
 
   return {
+    kind: isSupervisorRecord(entry) ? 'supervisor' : 'attempt',
     iteration: entry.iteration ?? null,
     startedAt: entry.startedAt ?? null,
     finishedAt: entry.finishedAt ?? null,
@@ -494,7 +521,7 @@ function phaseRollup(tasks, plannedOrder) {
       phase.firstStartedAt = task.firstStartedAt;
     }
     if (task.issue === null) {
-      phase.milestoneReviews += task.attempts;
+      if (task.kind === 'milestone-review') phase.milestoneReviews += task.attempts;
       continue;
     }
     phase.tasks += 1;
@@ -559,12 +586,15 @@ export function readTaskSpend(dependencies = {}) {
   const byIssue = new Map();
   for (const entry of entries) {
     const issue = entry.issue ?? null;
+    const supervisor = isSupervisorRecord(entry);
     const key =
-      issue === null ? `${milestoneReviewKeyPrefix}${entry.milestone ?? ''}` : String(issue);
+      issue === null ? `${supervisor ? 'supervisor:' : milestoneReviewKeyPrefix}${entry.milestone ?? ''}`
+        : String(issue);
     let task = byIssue.get(key);
     if (!task) {
       task = {
         issue,
+        kind: issue === null ? (supervisor ? 'supervisor' : 'milestone-review') : 'issue',
         title: null,
         milestone: entry.milestone ?? null,
         attempts: 0,
@@ -582,7 +612,7 @@ export function readTaskSpend(dependencies = {}) {
       task.title = entry.issueTitle;
     }
     const run = normalizeRun(entry);
-    task.attempts += 1;
+    if (run.kind !== 'supervisor') task.attempts += 1;
     task.wallMs += run.wallMs;
     task.sessions += run.roles.reduce((count, role) => count + role.sessions, 0);
     task.sessionsWithoutTokens += run.sessionsWithoutTokens;
@@ -613,7 +643,7 @@ export function readTaskSpend(dependencies = {}) {
     (sum, task) => ({
       tasks: sum.tasks + (task.issue === null ? 0 : 1),
       attempts: sum.attempts + (task.issue === null ? 0 : task.attempts),
-      milestoneReviews: sum.milestoneReviews + (task.issue === null ? task.attempts : 0),
+      milestoneReviews: sum.milestoneReviews + (task.kind === 'milestone-review' ? task.attempts : 0),
       wallMs: sum.wallMs + task.wallMs,
       sessions: sum.sessions + task.sessions,
       sessionsWithoutTokens: sum.sessionsWithoutTokens + task.sessionsWithoutTokens,
