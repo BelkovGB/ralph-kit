@@ -1208,27 +1208,28 @@ test('a version 1.1 Codex config with minimal effort remains valid', () => {
   );
 });
 
-test('the milestone review marker records the effective model and effort', () => {
-  const config = loadConfig();
-  const marker = milestoneReviewMarker(
-    config,
-    { number: 8, title: 'Phase 8', description: '' },
-    { number: 61, headRefOid: 'a'.repeat(40) },
-  );
-  // Маркер обязан нести действующие модель и усилие, какими бы они ни были:
-  // от них зависит, засчитывается ли кешированный PASS. Сравнение подстрокой,
-  // а не регулярным выражением: в имени модели встречаются точки.
-  const suffix = `model:${config.milestoneReview.model} effort:${config.milestoneReview.effort} -->`;
-  assert.equal(marker.endsWith(suffix), true, marker);
-  // A different effort is a different review, so the cached PASS must not match.
-  const lowEffortMarker = milestoneReviewMarker(
-    { ...config, milestoneReview: { ...config.milestoneReview, effort: 'low' } },
-    { number: 8, title: 'Phase 8', description: '' },
-    { number: 61, headRefOid: 'a'.repeat(40) },
-  );
-  assert.notEqual(lowEffortMarker, marker);
-  assert.equal(milestonePassReviewIsClean(`${marker}\nirrelevant body`, lowEffortMarker), false);
-});
+for (const effort of ['low', 'medium']) {
+  test(`the milestone review marker records the effective model and effort (${effort})`, () => {
+    const original = loadConfig();
+    const config = { ...original, milestoneReview: { ...original.milestoneReview, effort } };
+    const marker = milestoneReviewMarker(
+      config,
+      { number: 8, title: 'Phase 8', description: '' },
+      { number: 61, headRefOid: 'a'.repeat(40) },
+    );
+    // Проверяем действующие модель и усилие без зависимости от конфига проекта.
+    const suffix = `model:${config.milestoneReview.model} effort:${effort} -->`;
+    assert.equal(marker.endsWith(suffix), true, marker);
+    const otherEffort = effort === 'low' ? 'medium' : 'low';
+    const otherEffortMarker = milestoneReviewMarker(
+      { ...config, milestoneReview: { ...config.milestoneReview, effort: otherEffort } },
+      { number: 8, title: 'Phase 8', description: '' },
+      { number: 61, headRefOid: 'a'.repeat(40) },
+    );
+    assert.notEqual(otherEffortMarker, marker);
+    assert.equal(milestonePassReviewIsClean(`${marker}\nirrelevant body`, otherEffortMarker), false);
+  });
+}
 
 const escape = String.fromCharCode(27);
 

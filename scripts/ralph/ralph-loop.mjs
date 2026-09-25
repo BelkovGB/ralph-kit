@@ -947,7 +947,9 @@ export function printCheck(
   issues,
   budget = iterationBudget(config, null),
 ) {
-  console.log('Ralph Loop настроен корректно.');
+  console.log('Диагностика конфигурации Ralph Loop завершена.');
+  console.log(`Состояние запуска: active=${config.active === true}`);
+  console.log('Агент и команды проверок проекта не запускались; готовность фазы требует их отдельной проверки.');
   console.log(`Версия набора: ${KIT_VERSION}`);
   console.log(`Фаза: ${(config.phaseIndex ?? 0) + 1}/${config.phaseCount ?? 1}`);
   console.log(`Репозиторий: ${repository}`);
@@ -990,14 +992,14 @@ export function printCheck(
   } else {
     console.log('Открытых issues нет; режим --run попытается создать PR.');
   }
-  // Журнал внутри scripts/ralph — ловушка обновления: каталог перезаписывают
-  // целиком, и журнал проекта погибает вместе с ним. Проверка по строке
+  // Журнал внутри scripts/ralph легко заменить образцом при обновлении.
+  // Установщик обязан сохранить его содержимое. Проверка по строке
   // конфига, а не по диску: предупреждение нужно до того, как файл потеряли.
   const approvedLedger = String(config.approvedIssueSnapshotsFile ?? '').replaceAll('\\', '/');
   if (approvedLedger.startsWith('scripts/ralph/')) {
     console.log(
-      `ВНИМАНИЕ: журнал одобренных issues лежит в ${approvedLedger}, а этот каталог ` +
-        'обновление набора перезаписывает целиком. Перенесите файл, например в ' +
+      `ВНИМАНИЕ: журнал одобренных issues лежит в ${approvedLedger}; ` +
+        'обновление набора перезаписывает файлы поставки в этом каталоге. Сохраните журнал и перенесите его, например в ' +
         '.agents/approved-issues.json, поправьте "approvedIssueSnapshotsFile" и ' +
         'сумму в конфиге; порядок описан в INSTALL.md набора.',
     );
@@ -1023,6 +1025,20 @@ export function printCheck(
         projectRoot,
         configPath,
       )} и закоммитьте конфигурацию; осталось будет пересчитано автоматически.`,
+    );
+  }
+  if (config.stopAfterFirstIssue) {
+    console.log('Пробный режим: остановка после первой завершённой issue, без PR и ревью всей фазы.');
+  } else if (budget.remaining > 0 && budget.remaining < issues.length) {
+    console.log(
+      'ВНИМАНИЕ: бюджета итераций меньше, чем открытых issues; полная фаза может остановиться до завершения. ' +
+        'Учтите также повторные попытки и новые задачи ревью.',
+    );
+  }
+  if (config.milestoneReview.enabled && config.autoApproveConfiguredIssues === false) {
+    console.log(
+      'ВНИМАНИЕ: autoApproveConfiguredIssues=false — новые issues ревью фазы требуют ' +
+        'ручного добавления одобренных снимков; непрерывное автоисправление остановится.',
     );
   }
   return budget;
@@ -1487,8 +1503,8 @@ async function main() {
   }
 
   const config = loadConfig();
-  // Проверяем, включён ли Ralph Loop.
-  if (!config.active) {
+  // Диагностика нужна до включения цикла. Изменяющие режимы остаются выключены.
+  if (!config.active && mode !== '--check') {
     console.log('Ralph Loop выключен: active=false.');
     return;
   }
