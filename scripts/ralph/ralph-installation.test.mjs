@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,12 +13,25 @@ test('inactive CLI diagnoses missing tools without enabling the loop', () => {
   const root = mkdtempSync(path.join(tmpdir(), 'ralph-installation-'));
   const source = fileURLToPath(new URL('../..', import.meta.url));
   try {
-    for (const relative of ['scripts/ralph', '.agents', '.claude']) {
-      cpSync(path.join(source, relative), path.join(root, relative), { recursive: true });
-    }
+    cpSync(path.join(source, 'scripts/ralph'), path.join(root, 'scripts/ralph'), { recursive: true });
+    mkdirSync(path.join(root, '.agents'));
+    mkdirSync(path.join(root, 'docs'));
+    writeFileSync(path.join(root, '.agents/RALPH.md'), 'Fixture operator guide.\n');
+    // The installed project's paths, skills and account must not affect this fixture.
+    const ledger = '{}\n';
+    writeFileSync(path.join(root, 'docs/rules.md'), 'Fixture rules.\n');
+    writeFileSync(path.join(root, 'docs/approved.json'), ledger);
     const configPath = path.join(root, '.agents/ralph.config.json');
-    const config = JSON.parse(readFileSync(configPath, 'utf8'));
-    config.active = false;
+    const config = {
+      active: false,
+      phases: [{ milestone: 'Fixture phase', branch: 'ralph/fixture' }],
+      prompt: 'Implement issue #{issue_number}: {issue_title}',
+      rulesFile: 'docs/rules.md',
+      approvedIssueSnapshotsFile: 'docs/approved.json',
+      approvedIssueSnapshotsHash: createHash('sha256').update(ledger).digest('hex'),
+      review: { enabled: false, model: 'fixture-model' },
+      milestoneReview: { enabled: false, model: 'fixture-model' },
+    };
     writeFileSync(configPath, JSON.stringify(config));
     const before = readFileSync(configPath, 'utf8');
     // No executable tools and no network: diagnostics must reach the tool check,
