@@ -45,7 +45,7 @@ export function terminalSnapshot(store, metrics, startedMs, now = Date.now(), li
     : session.turns === 0 && session.toolResults === 0 ? 'Ждём первый рабочий шаг'
       : 'Ждём следующее событие агента';
   if (operation) stage = commandPurpose[operation.label] ?? `Выполняется ${operation.label}`;
-  if (supervisor) stage = `Лиза · ${stage}`;
+  if (supervisor) stage = `Lisa · ${stage}`;
   const issueWait = session?.active && issue && !phaseActivity && !operation ? stage : null;
   if (issueWait) stage = stages[issue.phase] ?? issue.phase;
   const pair = (value, limit) => `${value ?? '—'}/${limit ?? '—'}`;
@@ -60,7 +60,7 @@ export function terminalSnapshot(store, metrics, startedMs, now = Date.now(), li
     `Отказы ревью: ${pair(issue ? (issue.reviewFixAttempts ?? 0) : null, config.maxReviewFixAttempts)}`);
   if (session) {
     const end = session.active ? now : session.endedMs;
-    counters.push(`${supervisor ? 'Шаги Лизы' : 'Шаги агента'}: ${pair(session.turns, session.maxTurns)}`,
+    counters.push(`${supervisor ? 'Шаги Lisa' : 'Шаги агента'}: ${pair(session.turns, session.maxTurns)}`,
       `Ответы инструментов: ${session.toolResults}`,
       `Агент: ${duration(end - session.startedMs)} / ${duration(session.timeoutMs)}`);
     if (session.active) counters.push(session.lastEventMs === null

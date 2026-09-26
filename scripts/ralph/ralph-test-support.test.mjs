@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { repositoryGitDirectory } from './ralph-test-support.mjs';
+import { repositoryGitDirectory, withFakeGh } from './ralph-test-support.mjs';
 
 /**
  * Каталог фейковых бинарей обязан находиться и в git worktree.
@@ -50,5 +52,25 @@ test('без .git возвращается путь для создания', ()
     assert.equal(existsSync(path.join(root, '.git')), false);
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('fake gh cleanup waits for a briefly locked Windows executable', async () => {
+  let directory;
+  let closed;
+  try {
+    await withFakeGh(`
+      require('node:fs').writeSync(1, 'ready');
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500);
+    `, async (fixture) => {
+      directory = fixture.directory;
+      const child = spawn(path.join(directory, process.platform === 'win32' ? 'gh.exe' : 'gh'),
+        ['test'], { stdio: ['ignore', 'pipe', 'pipe'] });
+      closed = once(child, 'close');
+      await once(child.stdout, 'data');
+    });
+    assert.equal(existsSync(directory), false);
+  } finally {
+    if (closed) await closed;
   }
 });

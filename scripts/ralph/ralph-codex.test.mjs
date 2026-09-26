@@ -34,7 +34,7 @@ test('Lisa step and message carry her name in CLI output', async () => {
       async () => {
         console.log = (...args) => { printed.push(args.join(' ')); };
         await runCodexWithTurnLimit(['exec', '--json', '-'], {
-          input: 'test', label: 'Лиза: тест', progressLabel: 'Лиза', maxTurns: 3,
+          input: 'test', label: 'Lisa: тест', progressLabel: 'Lisa', maxTurns: 3,
           timeoutMs: 5000, authenticationFile: null,
         });
       },
@@ -42,9 +42,9 @@ test('Lisa step and message carry her name in CLI output', async () => {
   } finally {
     console.log = originalLog;
   }
-  assert.ok(printed.some((line) => line.includes('[Лиза step 1/3] agent_message')));
-  assert.ok(printed.some((line) => line.includes('[Лиза] Исправила причину остановки')));
-  assert.ok(printed.some((line) => line.includes('Лиза: сообщение Исправила причину остановки')));
+  assert.ok(printed.some((line) => line.includes('[Lisa step 1/3] agent_message')));
+  assert.ok(printed.some((line) => line.includes('[Lisa] Исправила причину остановки')));
+  assert.ok(printed.some((line) => line.includes('Lisa: сообщение Исправила причину остановки')));
 });
 
 test('runAgentOnIssue rejects freshly fetched mutable content before a fake Codex executable starts', async () => {

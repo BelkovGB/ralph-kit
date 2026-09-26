@@ -103,7 +103,7 @@ test('подписи исходов, фаз и ролей', { skip }, async () =
   assert.equal(view.phaseWord('validating'), 'идут проверки');
   assert.equal(view.phaseWord('незнакомая'), 'незнакомая');
   assert.equal(view.roleWord('development'), 'разработка');
-  assert.equal(view.roleWord('supervisor'), 'Лиза');
+  assert.equal(view.roleWord('supervisor'), 'Lisa');
   assert.equal(view.roleWord(null), 'агент');
 
   assert.equal(view.isReviewRow({ issue: null }), true);

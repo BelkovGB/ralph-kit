@@ -1405,7 +1405,7 @@ const scriptTail = `
       { cls: 's1', label: 'разработка', ms: stageMs(s.implementation) },
       { cls: 's2', label: 'проверки', ms: stageMs(s.validation) },
       { cls: 's3', label: 'ревью', ms: stageMs(s.review) },
-      { cls: 's4', label: 'Лиза', ms: stageMs(s.supervisor) }
+      { cls: 's4', label: 'Lisa', ms: stageMs(s.supervisor) }
     ];
     var total = parts.reduce(function (sum, part) { return sum + part.ms; }, 0);
     if (total <= 0) return null;
@@ -1435,7 +1435,7 @@ const scriptTail = `
       el(
         'span',
         'run-title',
-        (run.kind === 'supervisor' ? 'Лиза' : 'Попытка ' + (index + 1)) +
+        (run.kind === 'supervisor' ? 'Lisa' : 'Попытка ' + (index + 1)) +
           (run.iteration ? ' · итерация ' + run.iteration : '')
       )
     );
@@ -1542,7 +1542,7 @@ const scriptTail = `
       );
     }
     var stage = run.supervisor
-      ? 'Лиза · вызов ' + outOf(run.supervisor.call, run.supervisor.limit)
+      ? 'Lisa · вызов ' + outOf(run.supervisor.call, run.supervisor.limit)
       : phaseWord(run.issuePhase);
     if (stage) box.appendChild(el('span', 'now-stage', stage));
     var meta = [];
@@ -1551,7 +1551,7 @@ const scriptTail = `
     }
     /* Шаг закрытой сессии не выдаём за текущий: между сессиями его нет. */
     if (run.turn && !run.turnFinished) {
-      meta.push((run.supervisor ? 'шаг Лизы ' : 'шаг ') + outOf(run.turn, run.turnLimit));
+      meta.push((run.supervisor ? 'шаг Lisa ' : 'шаг ') + outOf(run.turn, run.turnLimit));
     }
     if (run.validationFixAttempts) {
       meta.push('круг проверок ' + outOf(run.validationFixAttempts, run.maxTestFixAttempts));
@@ -1678,7 +1678,7 @@ const scriptTail = `
     var first = el('td', 'task-id');
     first.appendChild(el('span', 'marker', open ? '−' : '+'));
     if (supervisor) {
-      first.appendChild(el('span', 'task-kind', 'Лиза · помощь фазе'));
+      first.appendChild(el('span', 'task-kind', 'Lisa · помощь фазе'));
     } else if (review) {
       first.appendChild(el('span', 'task-kind', 'Ревью milestone'));
     } else {
