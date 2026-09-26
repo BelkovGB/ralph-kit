@@ -680,6 +680,7 @@ for (const output of [
   { stdout: 'PASS handles ECONNRESET correctly', stderr: 'FAIL total: expected 42, received 41' },
   { stdout: '', stderr: 'PASS handles ECONNRESET correctly\nFAIL total: expected 42, received 41' },
   { stdout: 'Error: read ECONNRESET', stderr: '' },
+  { stdout: 'AssertionError: expected 42', stderr: 'Error: read ECONNRESET' },
 ]) {
   test(`connection retry ignores non-diagnostic output ${JSON.stringify(output)}`, () => {
     let attempts = 0;

@@ -267,9 +267,10 @@ function hostShellCommand(script, platform = process.platform) {
 // реальной команды уже включает оба потока: используем его только у ошибок без них.
 function isConnectionInterruption(error) {
   if (error.code !== 'RALPH_COMMAND_FAILED') return false;
+  const allOutput = stripAnsi([error.message, error.stdout, error.stderr].filter(Boolean).join('\n'));
+  if (/\b(?:AssertionError|SyntaxError|TypeError|ReferenceError)\b/u.test(allOutput)) return false;
   const hasStreams = error.stdout !== undefined || error.stderr !== undefined;
   const output = stripAnsi(String(hasStreams ? (error.stderr ?? '') : error.message));
-  if (/\b(?:AssertionError|SyntaxError|TypeError|ReferenceError)\b/u.test(output)) return false;
   return /^\s*(?:Error:\s*[^\r\n]*\b(?:ECONNRESET|ECONNABORTED)\b|(?:ConnectionAbortedError|ConnectionResetError):)/mu.test(output);
 }
 
