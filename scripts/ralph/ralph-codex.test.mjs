@@ -286,6 +286,54 @@ test('Codex review sessions stay within one agent', () => {
   assert.ok(!args.includes('--sandbox'));
 });
 
+test('Codex command steps show a bounded single-line command on start and completion', () => {
+  for (const type of ['item.started', 'item.completed']) {
+    const event = readCodexEvent(JSON.stringify({ type, item: {
+      id: 'command-1', type: 'command_execution',
+      command: '\u001b[31mgit\t diff\r\n --stat\u001b[0m\u0007',
+    } }));
+    assert.equal(event.stepId, 'command-1');
+    assert.equal(event.stepLabel, 'Команда: git diff --stat');
+  }
+  const long = readCodexEvent(JSON.stringify({ type: 'item.started', item: {
+    id: 'long', type: 'command_execution', command: 'x'.repeat(200),
+  } }));
+  assert.equal(long.stepLabel, `Команда: ${'x'.repeat(159)}…`);
+});
+
+test('Codex command steps tolerate missing and malformed command fields', () => {
+  for (const command of [undefined, null, 42, {}, '', ' \n\t']) {
+    const event = readCodexEvent(JSON.stringify({ type: 'item.started', item: {
+      id: 'unknown-command', type: 'command_execution', command,
+    } }));
+    assert.equal(event.stepLabel, 'Выполняет команду');
+  }
+});
+
+test('Codex command label reaches progress output once without changing step count', async () => {
+  const printed = [];
+  const originalLog = console.log;
+  try {
+    await withFakeCodex(`
+      for (const type of ['item.started', 'item.completed']) {
+        process.stdout.write(JSON.stringify({ type, item: {
+          id: 'command', type: 'command_execution', command: 'git diff --stat'
+        } }) + '\\n');
+      }
+    `, async () => {
+      console.log = (...args) => printed.push(args.join(' '));
+      await runCodexWithTurnLimit(['exec', '--json', '-'], {
+        input: 'test', label: 'test', maxTurns: 1, timeoutMs: 5000, authenticationFile: null,
+      });
+    });
+  } finally {
+    console.log = originalLog;
+  }
+  assert.deepEqual(printed.filter(line => line.includes(' step ')), [
+    '[Codex step 1/1] Команда: git diff --stat',
+  ]);
+});
+
 test('Codex turn.completed раскладывает usage на непересекающиеся категории', () => {
   const event = readCodexEvent(
     JSON.stringify({
