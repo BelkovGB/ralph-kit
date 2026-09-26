@@ -263,12 +263,14 @@ function hostShellCommand(script, platform = process.platform) {
   return { command: 'sh', args: ['-eu', '-c', script] };
 }
 
-// A narrow transport failure signal, not a generic failed-test retry.
+// stdout может содержать названия успешных тестов с ECONNRESET. message
+// реальной команды уже включает оба потока: используем его только у ошибок без них.
 function isConnectionInterruption(error) {
   if (error.code !== 'RALPH_COMMAND_FAILED') return false;
-  const output = stripAnsi([error.message, error.stdout, error.stderr].filter(Boolean).join('\n'));
+  const hasStreams = error.stdout !== undefined || error.stderr !== undefined;
+  const output = stripAnsi(String(hasStreams ? (error.stderr ?? '') : error.message));
   if (/\b(?:AssertionError|SyntaxError|TypeError|ReferenceError)\b/u.test(output)) return false;
-  return /\b(?:ECONNRESET|ECONNABORTED)\b|\b(?:ConnectionAbortedError|ConnectionResetError):/u.test(output);
+  return /^\s*(?:Error:\s*[^\r\n]*\b(?:ECONNRESET|ECONNABORTED)\b|(?:ConnectionAbortedError|ConnectionResetError):)/mu.test(output);
 }
 
 export function runConfiguredScripts(config, scripts, label, options = {}) {

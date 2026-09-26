@@ -676,6 +676,27 @@ function connectionError(code = 'RALPH_COMMAND_FAILED', text = 'Error: read ECON
   return Object.assign(new Error(text), { code });
 }
 
+for (const output of [
+  { stdout: 'PASS handles ECONNRESET correctly', stderr: 'FAIL total: expected 42, received 41' },
+  { stdout: '', stderr: 'PASS handles ECONNRESET correctly\nFAIL total: expected 42, received 41' },
+  { stdout: 'Error: read ECONNRESET', stderr: '' },
+]) {
+  test(`connection retry ignores non-diagnostic output ${JSON.stringify(output)}`, () => {
+    let attempts = 0;
+    const error = Object.assign(connectionError('RALPH_COMMAND_FAILED',
+      `Command failed\n${output.stdout}\n${output.stderr}`), output);
+    assert.throws(() => runConfiguredValidation(hostValidationConfig({ preflightScripts: [] }), {
+      retryConnectionFailure: true,
+      run(command, args, options) {
+        if (command === 'git') return unchangedHostTreeRun()(command, args, options);
+        attempts += 1;
+        throw error;
+      },
+    }), observed => observed === error);
+    assert.equal(attempts, 1);
+  });
+}
+
 for (const scenario of ['disabled', 'assertion', 'timeout', 'preflight']) {
   test(`connection retry excludes ${scenario}`, () => {
     let attempts = 0;

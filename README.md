@@ -540,8 +540,9 @@ node scripts/ralph/ralph-loop.mjs --run
 ### Разрыв соединения при повторной проверке готового коммита
 
 При восстановлении issue из `committed`, `pushed`, `reviewing` или `closing`
-Ralph допускает один повтор проверочной команды с диагностикой `ECONNRESET`,
-`ECONNABORTED`, `ConnectionResetError` или `ConnectionAbortedError`.
+Ralph допускает один повтор проверочной команды со строкой ошибки в stderr:
+`Error: … ECONNRESET`, `Error: … ECONNABORTED`, `ConnectionResetError:` или
+`ConnectionAbortedError:`. Упоминание кода в названии теста или stdout не подходит.
 Это ограниченная попытка восстановления, а не подтверждение временной природы сбоя.
 Первая ошибка сохраняется в журнале; повторный сбой передаётся обычному механизму
 восстановления и Lisa. Общий таймаут проверки не сбрасывается. На весь набор команд
