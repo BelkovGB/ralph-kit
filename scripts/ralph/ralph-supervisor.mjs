@@ -2,6 +2,8 @@ import { runDevelopmentSession, verifyAgentAuthentication } from './ralph-agent-
 import { publishLiveStatus, reportActivity } from './ralph-live-status.mjs';
 import { assertTrustedControlFilesUnchanged } from './ralph-validation-runner.mjs';
 import { run } from './ralph-process-runner.mjs';
+import { analyzeRecovery, committedRecoveryPhases } from './ralph-recovery.mjs';
+import { isAncestorCommit } from './ralph-git.mjs';
 import { beginIssueMetrics, currentIssueMetrics, finishIssueMetrics,
   formatIssueMetrics, startStage } from './ralph-run-metrics.mjs';
 
@@ -28,6 +30,10 @@ export function supervisorPrompt(config, state, error, call) {
     `Правила Ralph: ${config.rulesFile ?? '.agents/ralph-rules.md'}. Прочитай их и AGENTS.md.`,
     issue?.body ? `Сохранённый текст задачи:\n${issue.body}` : '',
     'Проверь git status, сохранённое состояние и журнал Ralph. Исправь причину остановки в пределах текущей задачи.',
+    'Перед resume проверь итоговый diff, выполни релевантные проверки и убедись, что ветка и HEAD прежние, чужая работа сохранена, а изменения относятся к текущей задаче. Не объявляй готовность только по факту правки файла.',
+    'Разрешено найти уже установленные инструменты, использовать их абсолютные пути или добавить их каталог в PATH только своего проверочного процесса и повторить диагностику. Изменение PATH дочерней команды не переносится в будущие проверки Ralph: проверь их штатное окружение; если для него требуется изменение конфигурации, запроси оператора.',
+    'Установка ПО, постоянное изменение окружения и исправления вне текущей задачи требуют отдельного разрешения оператора. Не меняй системную защиту или доступы.',
+    'Не редактируй state.json и локи. После resume оркестратор сам проверит восстановление и согласует этап с рабочим деревом, отменит устаревшие результаты проверок и ревью. При небезопасном состоянии он сохранит работу и запросит человека.',
     'Не меняй цель задачи и критерии приёмки, не отключай проверки и не меняй лимиты, настройки Ralph или доверенные инструкции.',
     'Не удаляй незавершённую работу, не создавай commit и не переключай ветку. Не запускай второй Ralph Loop: оболочка продолжит его после твоего ответа.',
     'Если нужен доступ, согласование, решение за пределами задачи или безопасное исправление невозможно, запроси человека.',
@@ -59,11 +65,43 @@ export function effectiveLisaIterationReserve(config, store) {
     config.supervisor.maxAdditionalIterations);
 }
 
-function workspaceIdentity() {
+function workspaceIdentity(execute = run) {
   return {
-    branch: run('git', ['branch', '--show-current']).stdout,
-    head: run('git', ['rev-parse', 'HEAD']).stdout,
+    branch: execute('git', ['branch', '--show-current']).stdout,
+    head: execute('git', ['rev-parse', 'HEAD']).stdout,
   };
+}
+
+/** Validate the next recovery before persisting a supervisor's uncommitted fix. */
+export function prepareLisaResume(config, store, before, dependencies = {}) {
+  const execute = dependencies.run ?? run;
+  const after = workspaceIdentity(execute);
+  assertLisaWorkspaceUnchanged(before, after);
+  const status = execute('git', ['status', '--porcelain']).stdout;
+  const issue = store.issue;
+  if (!status) return analyzeRecovery(config, issue, { run: execute });
+  const allowed = new Set(['review-failed', 'committed', 'pushed', 'reviewing',
+    'closing', 'agent-running', 'working-tree', 'validating']);
+  if (!issue || !allowed.has(issue.phase)) {
+    throw new Error('Lisa: рабочее дерево требует ручного восстановления исходного этапа.');
+  }
+  const committed = committedRecoveryPhases.includes(issue.phase);
+  const expectedHead = committed
+    ? issue.recoveryHead ?? issue.pushedHead ?? issue.commit : issue.startingCommit;
+  if (after.head !== expectedHead || (committed &&
+      (!issue.commit || !isAncestorCommit(issue.commit, after.head, execute)))) {
+    throw new Error('Lisa: HEAD не соответствует сохранённой задаче; нужен оператор.');
+  }
+  const patch = {
+    phase: 'working-tree', startingCommit: after.head,
+    commit: null, recoveryHead: null, pushedHead: null, reviewedCommit: null,
+    expectedTree: null, commitMessage: null,
+    validationExpectedTreeHash: null, validationFailureFingerprint: null,
+    ...(issue.phase === 'review-failed' ? { reviewFixAttempts: 0 } : {}),
+  };
+  const plan = analyzeRecovery(config, { ...issue, ...patch }, { run: execute });
+  store.updateIssue(patch);
+  return plan;
 }
 
 export function assertLisaWorkspaceUnchanged(before, after) {
@@ -114,6 +152,14 @@ export async function requestLisa(config, store, error, call) {
     assertTrustedControlFilesUnchanged(config);
     assertLisaWorkspaceUnchanged(before, workspaceIdentity());
     const answer = parseLisaAnswer(session.lastAgentMessage);
+    if (answer.verdict === 'resume') {
+      try {
+        prepareLisaResume(config, store, before);
+      } catch (cause) {
+        answer.verdict = 'human';
+        answer.reason = `Lisa: продолжение не подготовлено; работа сохранена. ${cause.message}`;
+      }
+    }
     outcome = { outcome: `supervisor-${answer.verdict}`, reason: answer.reason };
     return answer;
   } catch (cause) {
