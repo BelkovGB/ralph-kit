@@ -5,6 +5,9 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
+import { logDetailError } from './ralph-runtime.mjs';
+import { stripAnsi } from './ralph-failure-summary.mjs';
+
 import { fail } from './ralph-scope.mjs';
 import { credentialFreeEnvironment, run } from './ralph-process-runner.mjs';
 import { agentInstructionFiles, trustedFileHash } from './ralph-config.mjs';
@@ -260,6 +263,14 @@ function hostShellCommand(script, platform = process.platform) {
   return { command: 'sh', args: ['-eu', '-c', script] };
 }
 
+// A narrow transport failure signal, not a generic failed-test retry.
+function isConnectionInterruption(error) {
+  if (error.code !== 'RALPH_COMMAND_FAILED') return false;
+  const output = stripAnsi([error.message, error.stdout, error.stderr].filter(Boolean).join('\n'));
+  if (/\b(?:AssertionError|SyntaxError|TypeError|ReferenceError)\b/u.test(output)) return false;
+  return /\b(?:ECONNRESET|ECONNABORTED)\b|\b(?:ConnectionAbortedError|ConnectionResetError):/u.test(output);
+}
+
 export function runConfiguredScripts(config, scripts, label, options = {}) {
   const execute = options.run ?? run;
   // Preflight готовит окружение и по своему контракту вправе менять дерево:
@@ -322,7 +333,28 @@ export function runConfiguredScripts(config, scripts, label, options = {}) {
   try {
     for (const script of preparation) runScript(script);
     baseline = hostWorkingTreeEntries({ run: execute });
-    for (const script of guarded) runScript(script);
+    let connectionRetryUsed = false;
+    for (const script of guarded) {
+      try {
+        runScript(script);
+      } catch (error) {
+        if (!options.retryConnectionFailure || connectionRetryUsed || !isConnectionInterruption(error)) {
+          throw error;
+        }
+        // Never retry a test that changed files: the final guard reports the mutation.
+        if (changedTreePaths(baseline, hostWorkingTreeEntries({ run: execute })).length > 0) throw error;
+        assertTrustedControlFilesUnchanged(config);
+        connectionRetryUsed = true;
+        logDetailError([error.message, error.stdout, error.stderr].filter(Boolean).join('\n').slice(-100_000));
+        console.error(`${label}: разрыв соединения; один повтор команды проверки в оставшемся лимите времени.`);
+        try {
+          runScript(script);
+        } catch (retryError) {
+          retryError.cause ??= error;
+          throw retryError;
+        }
+      }
+    }
   } catch (error) {
     failure = error;
   }

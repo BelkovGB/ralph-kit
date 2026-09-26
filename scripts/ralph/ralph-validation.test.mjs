@@ -616,3 +616,107 @@ test('уборка идёт до preflight, а не после него', () => 
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+
+test('committed recovery retries a connection failure once before escalation', () => {
+  let attempts = 0;
+  const first = Object.assign(new Error('command failed'), {
+    code: 'RALPH_COMMAND_FAILED', stderr: 'ConnectionAbortedError: [WinError 10053] connection aborted',
+  });
+  runConfiguredValidation(hostValidationConfig({ preflightScripts: [] }), {
+    retryConnectionFailure: true,
+    run(command, args, options) {
+      if (command === 'git') return unchangedHostTreeRun()(command, args, options);
+      if (++attempts === 1) throw first;
+      return { status: 0, stdout: '', stderr: '' };
+    },
+  });
+  assert.equal(attempts, 2);
+});
+
+
+function connectionError(code = 'RALPH_COMMAND_FAILED', text = 'Error: read ECONNRESET') {
+  return Object.assign(new Error(text), { code });
+}
+
+for (const scenario of ['disabled', 'assertion', 'timeout', 'preflight']) {
+  test(`connection retry excludes ${scenario}`, () => {
+    let attempts = 0;
+    const error = connectionError(
+      scenario === 'timeout' ? 'RALPH_COMMAND_TIMEOUT' : 'RALPH_COMMAND_FAILED',
+      scenario === 'assertion' ? 'AssertionError: expected ECONNRESET' : 'Error: read ECONNRESET',
+    );
+    assert.throws(() => runConfiguredValidation(hostValidationConfig({
+      preflightScripts: scenario === 'preflight' ? ['prepare'] : [],
+    }), {
+      retryConnectionFailure: scenario !== 'disabled',
+      run(command, args, options) {
+        if (command === 'git') return unchangedHostTreeRun()(command, args, options);
+        attempts += 1;
+        throw error;
+      },
+    }), observed => observed === error);
+    assert.equal(attempts, 1);
+  });
+}
+
+test('second connection failure escalates with the original cause', () => {
+  let attempts = 0;
+  const first = connectionError();
+  const second = connectionError();
+  assert.throws(() => runConfiguredValidation(hostValidationConfig({ preflightScripts: [] }), {
+    retryConnectionFailure: true,
+    run(command, args, options) {
+      if (command === 'git') return unchangedHostTreeRun()(command, args, options);
+      throw ++attempts === 1 ? first : second;
+    },
+  }), error => error === second && error.cause === first && error.code === 'RALPH_VALIDATION_FAILED');
+  assert.equal(attempts, 2);
+});
+
+test('retry budget is shared across all validation commands', () => {
+  const calls = [];
+  assert.throws(() => runConfiguredValidation(hostValidationConfig({
+    preflightScripts: [], validationScripts: ['first', 'second'],
+  }), {
+    retryConnectionFailure: true,
+    run(command, args, options) {
+      if (command === 'git') return unchangedHostTreeRun()(command, args, options);
+      calls.push(args.at(-1));
+      if (calls.length !== 2) throw connectionError();
+      return { status: 0, stdout: '', stderr: '' };
+    },
+  }), /ECONNRESET/u);
+  assert.deepEqual(calls, ['first', 'first', 'second']);
+});
+
+test('a connection failure that changes the tree is never retried', () => {
+  let attempts = 0;
+  assert.throws(() => runConfiguredValidation(hostValidationConfig({ preflightScripts: [] }), {
+    retryConnectionFailure: true,
+    run(command) {
+      if (command === 'git') return {
+        status: 0, stdout: attempts ? 'README.md\0CHANGELOG.md\0' : 'README.md\0', stderr: '',
+      };
+      attempts += 1;
+      throw connectionError();
+    },
+  }), error => error.code === 'RALPH_VALIDATION_MUTATED');
+  assert.equal(attempts, 1);
+});
+
+test('connection retry cannot reset the total validation deadline', (t) => {
+  let now = 0;
+  t.mock.method(Date, 'now', () => now);
+  let attempts = 0;
+  assert.throws(() => runConfiguredValidation(hostValidationConfig({ preflightScripts: [] }), {
+    retryConnectionFailure: true,
+    run(command, args, options) {
+      if (command === 'git') return unchangedHostTreeRun()(command, args, options);
+      attempts += 1;
+      now = 9001;
+      throw connectionError();
+    },
+  }), error => error.code === 'RALPH_COMMAND_TIMEOUT' && error.cause?.message.includes('ECONNRESET'));
+  assert.equal(attempts, 1);
+});
