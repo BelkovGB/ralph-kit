@@ -783,7 +783,7 @@ export async function runAgentOnIssue(config, repository, issue, rules) {
     );
     const resumePhase = storedIssue.phase;
     try {
-      measuredValidation(() => runConfiguredValidation(config));
+      measuredValidation(() => runConfiguredValidation(config, { retryConnectionFailure: true }));
     } catch (error) {
       activeStateStore().updateIssue({
         phase: resumePhase,
