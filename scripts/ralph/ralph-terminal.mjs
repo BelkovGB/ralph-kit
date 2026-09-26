@@ -41,47 +41,65 @@ export function terminalSnapshot(store, metrics, startedMs, now = Date.now(), li
   };
   let stage = issue ? (stages[issue.phase] ?? issue.phase) : 'Подготовка';
   if (phaseActivity) stage = 'Выполняется';
-  if (session?.active) stage = session.lastEventMs === null ? 'Ждём первое событие агента'
+  const wait = session?.active ? session.lastEventMs === null ? 'Ждём первое событие агента'
     : session.turns === 0 && session.toolResults === 0 ? 'Ждём первый рабочий шаг'
-      : 'Ждём следующее событие агента';
+      : 'Ждём следующее событие агента' : null;
+  if (wait) stage = wait;
   if (operation) stage = commandPurpose[operation.label] ?? `Выполняется ${operation.label}`;
   if (supervisor) stage = `Lisa · ${stage}`;
   const issueWait = session?.active && issue && !phaseActivity && !operation ? stage : null;
   if (issueWait) stage = stages[issue.phase] ?? issue.phase;
+  const ended = activity?.kind === 'failed' || activity?.kind === 'finished' || (store && !state);
+  const headline = ended ? activity?.kind === 'failed' ? 'Прогон остановлен с ошибкой' : 'Прогон завершён'
+    : supervisor ? 'Lisa: восстановление работы'
+      : phaseActivity ? activity.label
+        : issue ? `Задача #${issue.number} · ${stages[issue.phase] ?? issue.phase}`
+          : operation ? commandPurpose[operation.label] ?? `Выполняется ${operation.label}` : 'Подготовка запуска';
+  const detail = ended ? null : operation ? commandPurpose[operation.label] ?? `Выполняется ${operation.label}` : wait;
   const pair = (value, limit) => `${value ?? '—'}/${limit ?? '—'}`;
-  const counters = [];
-  if (issueWait) counters.push(issueWait);
+  const runCounters = [];
+  const checkCounters = [];
+  const sessionCounters = [];
   if (live.queueProgress) {
     const { completedInRun, remaining, parked } = live.queueProgress;
-    counters.push(`Сделано в прогоне фазы: ${completedInRun}`, `В очереди: ${remaining} · отложено: ${parked}`);
+    runCounters.push(`Сделано в прогоне фазы: ${completedInRun}`, `В очереди: ${remaining} · отложено: ${parked}`);
   }
-  counters.push(`Итерации: ${pair(state?.iterationsUsed, config.maxIterations)}`);
-  if (!phaseActivity) counters.push(`Исправления тестов: ${pair(issue?.validationFixAttempts, config.maxTestFixAttempts)}`,
+  runCounters.push(`Итерации: ${pair(state?.iterationsUsed, config.maxIterations)}`);
+  if (config.supervisorEnabled === true) {
+    runCounters.push(`Вызовы Lisa за прогон: ${live.supervisorCalls ?? '—'}`,
+      `Вызовы Lisa в фазе: ${pair(state?.supervisorCalls, config.maxSupervisorCalls)}`);
+  } else if (config.supervisorEnabled === false) runCounters.push('Lisa: выключена');
+  if (!phaseActivity) checkCounters.push(`Исправления тестов: ${pair(issue?.validationFixAttempts, config.maxTestFixAttempts)}`,
     `Отказы ревью: ${pair(issue ? (issue.reviewFixAttempts ?? 0) : null, config.maxReviewFixAttempts)}`);
   if (session) {
     const end = session.active ? now : session.endedMs;
-    counters.push(`${supervisor ? 'Шаги Lisa' : 'Шаги агента'}: ${pair(session.turns, session.maxTurns)}`,
+    sessionCounters.push(`${supervisor ? 'Шаги Lisa' : 'Шаги агента'}: ${pair(session.turns, session.maxTurns)}`,
       `Ответы инструментов: ${session.toolResults}`,
       `Агент: ${duration(end - session.startedMs)} / ${duration(session.timeoutMs)}`);
-    if (session.active) counters.push(session.lastEventMs === null
+    if (session.active) sessionCounters.push(session.lastEventMs === null
       ? `Первый ответ: ${duration(now - session.startedMs)} / ${duration(session.firstEventTimeoutMs)}`
       : `Без событий: ${duration(now - session.lastEventMs)} / ${duration(session.idleTimeoutMs)}`);
     if (session.active) {
       const idleRemaining = session.lastEventMs === null
         ? session.firstEventTimeoutMs - (now - session.startedMs)
         : session.idleTimeoutMs - (now - session.lastEventMs);
-      counters.push(`До остановки: ${duration(Math.min(idleRemaining, session.timeoutMs - (now - session.startedMs)))}`);
+      sessionCounters.push(`До остановки: ${duration(Math.min(idleRemaining, session.timeoutMs - (now - session.startedMs)))}`);
     }
   }
-  if (live.network) counters.push(`Сеть${live.network.active ? '' : ', последняя'}: ${pair(live.network.attempt, live.network.attempts)}`);
+  if (live.network) sessionCounters.push(`Сеть${live.network.active ? '' : ', последняя'}: ${pair(live.network.attempt, live.network.attempts)}`);
   if (live.review && metrics && live.review.startedMs >= metrics.startedMs) {
-    counters.push(`Запуск ревью${live.review.active ? '' : ', последний'}: ${pair(live.review.attempt, live.review.attempts)}`);
+    checkCounters.push(`Запуск ревью${live.review.active ? '' : ', последний'}: ${pair(live.review.attempt, live.review.attempts)}`);
   }
-  if (operation) counters.push(`Команда: ${operation.label}`, `Время команды: ${duration(now - operation.startedMs)} / ${duration(operation.timeoutMs)}`);
+  if (operation) sessionCounters.push(`Команда: ${operation.label}`, `Время команды: ${duration(now - operation.startedMs)} / ${duration(operation.timeoutMs)}`);
   return {
+    headline,
+    detail,
     issueKey: issue || metrics?.issue != null ? `${state?.phaseIndex ?? 0}:${issue?.number ?? metrics.issue}`
       : metrics ? `stage:${metrics.startedMs}` : null,
-    counters,
+    counters: [...runCounters, ...checkCounters, ...sessionCounters],
+    counterGroups: { run: runCounters, checks: checkCounters, session: sessionCounters },
+    compactSessionCounters: session
+      ? [`${sessionCounters[0]} · ответы: ${session.toolResults}`, ...sessionCounters.slice(2)] : sessionCounters,
     status: activity?.kind === 'failed' ? 'Остановлен' : activity?.kind === 'finished' || (store && !state)
       ? 'Завершён' : session?.active && !operation ? 'Ожидание агента' : 'Работает',
     phase: state ? `${store.phaseIndex + 1}/${store.phaseCount}` : '—',
@@ -99,7 +117,7 @@ export function terminalSnapshot(store, metrics, startedMs, now = Date.now(), li
 }
 
 export function parseUiOption(mode, args) {
-  if (args.length === 0) return 'plain';
+  if (args.length === 0) return mode === '--run' ? 'split' : 'plain';
   if (args.length === 1 && args[0] === '--ui=plain') return 'plain';
   if (mode === '--run' && args.length === 1 && args[0] === '--ui=split') return 'split';
   throw new Error('Используйте --run --ui=split или --ui=plain.');
@@ -122,30 +140,46 @@ function fit(value, width) {
 export function renderTerminal(snapshot, events, columns, rows) {
   const width = Math.max(1, Math.floor(columns) - 1);
   const height = Math.max(1, Math.floor(rows) - 1);
-  const summary = [
-    'RALPH · ' + (snapshot.status ?? 'Работает'),
-    `Фаза ${snapshot.phase ?? '—'}`,
-    `Milestone: ${snapshot.milestone ?? '—'}`,
+  const groups = snapshot.counterGroups ?? {
+    run: [], checks: snapshot.counters ?? [
+      `Итерация фазы: ${snapshot.iteration ?? '—'}`, `Исправлений тестов: ${snapshot.fixes ?? '—'}`,
+    ], session: [],
+  };
+  const header = `СЕЙЧАС: ${snapshot.headline ?? snapshot.stage ?? 'Подготовка запуска'}`;
+  const summaryWith = sessionRows => [
+    '── ПРОГОН ──',
+    `Фаза ${snapshot.phase ?? '—'} · Milestone: ${snapshot.milestone ?? '—'}`,
+    ...groups.run,
     '',
-    snapshot.issue ?? 'Подготовка запуска',
-    `Этап: ${snapshot.stage ?? 'Подготовка'}`,
-    ...(snapshot.counters ?? [`Итерация фазы: ${snapshot.iteration ?? '—'}`, `Исправлений тестов: ${snapshot.fixes ?? '—'}`]),
+    '── ЗАДАЧА И ПРОВЕРКИ ──',
+    ...(snapshot.issue && snapshot.issue !== snapshot.headline ? [snapshot.issue] : []),
+    ...(snapshot.detail && snapshot.detail !== snapshot.headline ? [snapshot.detail] : []),
+    ...groups.checks,
+    '',
+    '── СЕССИЯ И ВРЕМЯ ──',
     `${snapshot.timeLabel ?? 'Сессия задачи'}: ${snapshot.issueTime ?? '—'}`,
     `Прогон: ${snapshot.runTime ?? '—'}`,
+    ...sessionRows,
   ];
+  const stacked = width < 89 || height < 15;
+  const summaryRoom = Math.max(0, height - (stacked ? 5 : 2));
+  let summary = summaryWith(groups.session);
+  if (summary.length > summaryRoom && snapshot.compactSessionCounters) {
+    summary = summaryWith(snapshot.compactSessionCounters);
+  }
   const footer = 'Tab лог · Ctrl+C остановить · run.log';
-  if (width < 89 || height < 15) {
-    const top = summary.filter(Boolean).slice(0, Math.max(1, height - 4));
-    const room = Math.max(0, height - top.length - 2);
-    return [...top, '── События ──', ...(room ? events.slice(-room) : []), footer]
+  if (stacked) {
+    const top = summary.slice(0, summaryRoom);
+    const room = Math.max(0, height - top.length - 3);
+    return [header, ...top, '── События ──', ...(room ? events.slice(-room) : []), footer]
       .slice(0, height).map(line => fit(line, width)).join('\n');
   }
   const left = Math.floor(width * 0.38);
   const right = width - left - 3;
   const eventRows = ['СОБЫТИЯ', ...events.slice(-(height - 3))];
-  const lines = Array.from({ length: height - 1 }, (_, index) =>
+  const lines = Array.from({ length: height - 2 }, (_, index) =>
     `${fit(summary[index] ?? '', left)} │ ${fit(eventRows[index] ?? '', right)}`);
-  return [...lines, fit(footer, width)].join('\n');
+  return [fit(header, width), ...lines, fit(footer, width)].join('\n');
 }
 
 export function createTerminal({ output = process.stdout, errorOutput = process.stderr, input = process.stdin,

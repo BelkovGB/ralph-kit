@@ -349,6 +349,7 @@ export const outcomeDescriptions = {
   RALPH_COMMAND_FAILED: 'команда прогона вернула ошибку',
   RALPH_COMMAND_NOT_FOUND: 'Ralph не нашёл команду прогона',
   RALPH_COMMAND_TIMEOUT: 'команда прогона не уложилась в срок',
+  RALPH_COMMAND_IDLE_TIMEOUT: 'команда не сообщала о прогрессе',
   RALPH_COMMAND_TERMINATED: 'команду прогона прервали снаружи',
   aborted: 'прогон прервали',
 };

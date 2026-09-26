@@ -5,6 +5,17 @@ import { retryTransientOperation } from './ralph-runtime.mjs';
 import { createSandboxRoot, runAgentSession, runReviewWithRetries } from './ralph-agent-session.mjs';
 import { run, runtimeSettings } from './ralph-process-runner.mjs';
 
+test('Lisa run calls survive phase changes and reset only for a new run', () => {
+  resetLiveStatus();
+  assert.equal(readLiveStatus().supervisorCalls, 0);
+  publishLiveStatus({ type: 'supervisor-call' });
+  publishLiveStatus({ type: 'phase-config', phaseConfig: {} });
+  publishLiveStatus({ type: 'supervisor-call' });
+  assert.equal(readLiveStatus().supervisorCalls, 2);
+  resetLiveStatus();
+  assert.equal(readLiveStatus().supervisorCalls, 0);
+});
+
 test('session observations reset counts and retain actual final counters', () => {
   resetLiveStatus();
   publishLiveStatus({ type: 'session-start', startedMs: 100, maxTurns: 5 });
