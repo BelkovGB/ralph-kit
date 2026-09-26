@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'nod
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { analyzeRecovery, applyRecoveryPlan, prepareRecovery } from './ralph-recovery.mjs';
+import { analyzeRecovery, applyRecoveryPlan, committedValidationFailurePatch, prepareRecovery } from './ralph-recovery.mjs';
 import { createStateStore } from './ralph-state-store.mjs';
 
 function fixture(t) {
@@ -36,6 +36,30 @@ function fixture(t) {
   const analyze = (options = {}) => analyzeRecovery(config, store.issue, { run, ...options });
   return { root, run, git, commit, base, manual, config, store, statePath, analyze };
 }
+
+test('failed committed validation accepts a fix at the same HEAD without reusing old review', (t) => {
+  const f = fixture(t);
+  f.store.updateIssue({ phase: 'committed', commit: f.manual, recoveryHead: f.manual,
+    pushedHead: f.manual, reviewedCommit: f.manual, reviewFixAttempts: 2 });
+  f.store.updateIssue(committedValidationFailurePatch(f.store.issue, { code: 'RALPH_VALIDATION_FAILED' }));
+  writeFileSync(path.join(f.root, 'app.txt'), 'Lisa fix awaiting validation');
+  assert.equal(f.analyze().kind, 'ready');
+  assert.equal(f.store.issue.startingCommit, f.manual);
+  assert.equal(f.store.issue.phase, 'working-tree');
+  assert.equal(f.store.issue.validationFixAttempts, 3);
+  assert.equal(f.store.issue.reviewFixAttempts, 2);
+  for (const field of ['commit', 'recoveryHead', 'pushedHead', 'reviewedCommit']) {
+    assert.equal(f.store.issue[field], null);
+  }
+  assert.equal(f.git('rev-parse', 'HEAD'), f.manual);
+});
+
+test('auth, trust and validation mutation failures retain strict committed recovery', () => {
+  for (const code of ['RALPH_AGENT_AUTH', 'RALPH_CONTROL_PLANE_CHANGED', 'RALPH_VALIDATION_MUTATED',
+    'RALPH_PREFLIGHT_FAILED', 'RALPH_RECOVERY_BLOCKED']) {
+    assert.deepEqual(committedValidationFailurePatch({ phase: 'committed', commit: 'saved' }, { code }), {});
+  }
+});
 
 test('check detects the real manual-commit stop without changing git or state', (t) => {
   const f = fixture(t);

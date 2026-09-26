@@ -385,6 +385,15 @@ export const fieldGroups = [
         default: 3600000,
       },
       {
+        path: 'runtime.commandIdleTimeoutMs',
+        section: 'Таймауты',
+        label: 'Команда без вывода',
+        type: 'number',
+        hint: 'Предел тишины stdout/stderr любой команды. Возможное зависание останавливает дерево процессов и передаётся Лизе. Для долгих молчаливых команд увеличьте лимит. 600000 — 10 минут.',
+        unit: 'мс',
+        default: 600000,
+      },
+      {
         path: 'runtime.agentTimeoutMs',
         section: 'Таймауты',
         label: 'Таймаут сессии агента',

@@ -116,7 +116,7 @@ import {
 
 import { buildIndependentReviewPrompt, renderPrompt } from './ralph-prompts.mjs';
 
-import { analyzeRecovery, applyRecoveryPlan, committedRecoveryPhases, prepareRecovery } from './ralph-recovery.mjs';
+import { analyzeRecovery, applyRecoveryPlan, committedRecoveryPhases, committedValidationFailurePatch, prepareRecovery } from './ralph-recovery.mjs';
 
 import { KIT_VERSION } from './ralph-version.mjs';
 import { effectiveLisaIterationReserve, runWithSupervisor } from './ralph-supervisor.mjs';
@@ -778,7 +778,11 @@ export async function runAgentOnIssue(config, repository, issue, rules) {
     try {
       measuredValidation(() => runConfiguredValidation(config));
     } catch (error) {
-      activeStateStore().updateIssue({ phase: resumePhase, ...recordedFailure(error) });
+      activeStateStore().updateIssue({
+        phase: resumePhase,
+        ...committedValidationFailurePatch(storedIssue, error),
+        ...recordedFailure(error),
+      });
       throw error;
     }
     return reviewAndCloseCommittedIssue(config, repository, issue, commit);

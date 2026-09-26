@@ -740,6 +740,7 @@ function validateRuntimeSettings(config) {
   }
   for (const field of [
     'commandTimeoutMs',
+    'commandIdleTimeoutMs',
     'validationTimeoutMs',
     'validationRunTimeoutMs',
     'agentTimeoutMs',

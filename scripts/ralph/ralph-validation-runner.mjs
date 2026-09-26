@@ -353,7 +353,7 @@ export function runConfiguredScripts(config, scripts, label, options = {}) {
   }
 
   if (failure) {
-    if (!['RALPH_COMMAND_TIMEOUT', 'RALPH_VALIDATION_MUTATED'].includes(failure.code)) {
+    if (!['RALPH_COMMAND_TIMEOUT', 'RALPH_COMMAND_IDLE_TIMEOUT', 'RALPH_VALIDATION_MUTATED'].includes(failure.code)) {
       failure.code = 'RALPH_VALIDATION_FAILED';
     }
     failure.script = activeScript;

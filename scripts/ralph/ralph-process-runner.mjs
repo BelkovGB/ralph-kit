@@ -32,6 +32,7 @@ const commandRunnerPath = path.join(scriptDirectory, 'ralph-command-runner.mjs')
 // и ранние проверки запускают команды до `loadConfig`.
 export const defaultRuntimeSettings = Object.freeze({
   commandTimeoutMs: 300_000,
+  commandIdleTimeoutMs: 600_000,
   validationTimeoutMs: 1_800_000,
   validationRunTimeoutMs: 3_600_000,
   agentTimeoutMs: 5_400_000,
@@ -345,11 +346,11 @@ function runCommand(name, args, options = {}) {
 
 function runObservedCommand(name, args, options, timeoutMs, startedAt) {
   const commandTarget = commandSpec(name, args);
-  const useCommandRunner = process.platform === 'win32';
+  const useCommandRunner = true;
   const command = useCommandRunner ? process.execPath : commandTarget.command;
   const commandArgs = useCommandRunner ? [commandRunnerPath] : commandTarget.commandArgs;
   const captureTerminal = options.inherit && hasTerminalSink();
-  const stdio = options.inherit && !captureTerminal ? ['pipe', 'inherit', 'inherit'] : 'pipe';
+  const stdio = 'pipe';
   // Когда окружение не задано, дочерний процесс наследует окружение вызывающего.
   // Защита от подмены батника обязана попасть в оба случая, поэтому окружение
   // здесь всегда выписывается явно.
@@ -375,6 +376,7 @@ function runObservedCommand(name, args, options, timeoutMs, startedAt) {
           cwd: projectRoot,
           input: options.input,
           timeoutMs,
+          idleTimeoutMs: options.idleTimeoutMs ?? settings.commandIdleTimeoutMs,
           env: childEnvironment,
         })
       : options.input,
@@ -386,6 +388,19 @@ function runObservedCommand(name, args, options, timeoutMs, startedAt) {
     ...(childEnvironment === undefined ? {} : { env: childEnvironment }),
   });
 
+  if (options.inherit && !captureTerminal) {
+    if (result.stdout) process.stdout.write(result.stdout);
+    if (result.stderr) process.stderr.write(result.stderr);
+  }
+  const idleTimedOut = result.status === 124 &&
+    String(result.stderr ?? '').includes('RALPH_COMMAND_IDLE_TIMEOUT:');
+  if (idleTimedOut) {
+    const idleTimeoutMs = options.idleTimeoutMs ?? settings.commandIdleTimeoutMs;
+    const error = commandTimeoutError(name, args, idleTimeoutMs, result);
+    error.code = 'RALPH_COMMAND_IDLE_TIMEOUT';
+    error.message = `Команда ${name} ${args[0] ?? ''}: нет вывода stdout/stderr ${idleTimeoutMs} ms; возможное зависание. Дерево процессов остановлено.`;
+    throw error;
+  }
   const commandRunnerTimedOut =
     useCommandRunner &&
     result.status === 124 &&

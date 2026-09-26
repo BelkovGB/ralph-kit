@@ -6,6 +6,22 @@ import { filesChangedBetween, isAncestorCommit, validateRecoveredCommit, verifyR
 export const committedRecoveryPhases = ['committed', 'pushed', 'reviewing', 'closing'];
 const workingPhases = new Set(['agent-running', 'working-tree', 'validating', 'validation-mutated']);
 
+/** A failed revalidation needs a new fix on top of the preserved commit. */
+export function committedValidationFailurePatch(issue, error) {
+  if (!['RALPH_VALIDATION_FAILED', 'RALPH_COMMAND_IDLE_TIMEOUT'].includes(error.code) || !committedRecoveryPhases.includes(issue.phase)) {
+    return {};
+  }
+  return {
+    phase: 'working-tree',
+    startingCommit: issue.recoveryHead ?? issue.pushedHead ?? issue.commit,
+    foreignPaths: [],
+    commit: null, recoveryHead: null, pushedHead: null, reviewedCommit: null,
+    expectedTree: null, commitMessage: null,
+    validationExpectedTreeHash: null, validationFailureFingerprint: null,
+    validationFixAttempts: (issue.validationFixAttempts ?? 0) + 1,
+  };
+}
+
 function blocked(message) {
   throw Object.assign(new Error(message), { code: 'RALPH_RECOVERY_BLOCKED' });
 }

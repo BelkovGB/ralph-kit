@@ -22,10 +22,31 @@ const child = spawn(request.command, request.args, {
   ...(request.env === undefined ? {} : { env: request.env }),
   stdio: ['pipe', 'pipe', 'pipe'],
   windowsHide: true,
+  detached: process.platform !== 'win32',
 });
 let settled = false;
 let timedOut = false;
 let forceExitTimer;
+let idleTimer;
+
+function expire(marker) {
+  if (settled || timedOut) return;
+  timedOut = true;
+  clearTimeout(idleTimer);
+  process.stderr.write(`${marker}\n`);
+  killTree();
+  forceExitTimer = setTimeout(() => process.exit(124), 10_000);
+}
+
+function noteProgress() {
+  clearTimeout(idleTimer);
+  if (!timedOut && Number.isInteger(request.idleTimeoutMs) && request.idleTimeoutMs > 0) {
+    idleTimer = setTimeout(() => expire(`RALPH_COMMAND_IDLE_TIMEOUT:${request.idleTimeoutMs}`), request.idleTimeoutMs);
+  }
+}
+child.stdout.on('data', noteProgress);
+child.stderr.on('data', noteProgress);
+noteProgress();
 
 child.stdout.pipe(process.stdout);
 child.stderr.pipe(process.stderr);
@@ -37,8 +58,7 @@ child.stdin.on('error', (error) => {
 child.stdin.end(request.input);
 
 // Похоже на terminateProcessTreeByPid из ralph-runtime.mjs, но объединять их
-// нельзя по двум причинам. Здесь дочерний процесс запускается без detached, то
-// есть своей группы у него нет и kill(-pid) на POSIX промахнётся. И этот shim
+// нельзя: этот shim
 // стартует на каждую внешнюю команду, поэтому лишний импорт — время запуска на
 // каждый git, gh и вызов CLI агента.
 function killTree() {
@@ -52,22 +72,21 @@ function killTree() {
     return;
   }
   try {
-    process.kill(child.pid, 'SIGKILL');
+    process.kill(-child.pid, 'SIGKILL');
   } catch {
     // Дочерний процесс уже завершён.
   }
 }
 
 const timeout = setTimeout(() => {
-  timedOut = true;
-  killTree();
-  forceExitTimer = setTimeout(() => process.exit(124), 10_000);
+  expire(`RALPH_COMMAND_TIMEOUT:${request.timeoutMs}`);
 }, request.timeoutMs);
 
 child.once('error', (error) => {
   if (settled) return;
   settled = true;
   clearTimeout(timeout);
+  clearTimeout(idleTimer);
   clearTimeout(forceExitTimer);
   process.stderr.write(
     `RALPH_COMMAND_RUNNER_LAUNCH_ERROR:${error.code ?? 'UNKNOWN'}: ${error.message}\n`,
@@ -79,9 +98,9 @@ child.once('close', (code, signal) => {
   if (settled) return;
   settled = true;
   clearTimeout(timeout);
+  clearTimeout(idleTimer);
   clearTimeout(forceExitTimer);
   if (timedOut) {
-    process.stderr.write(`RALPH_COMMAND_TIMEOUT:${request.timeoutMs}\n`);
     process.exitCode = 124;
     return;
   }

@@ -43,6 +43,16 @@ function unchangedHostTreeRun(calls = []) {
   };
 }
 
+test('idle watchdog failure retains its cause through host validation', () => {
+  const ordinary = unchangedHostTreeRun();
+  assert.throws(() => runConfiguredScripts(hostValidationConfig(), ['pnpm check'], 'Validation', {
+    run(command, args, options) {
+      if (command === 'git') return ordinary(command, args, options);
+      throw Object.assign(new Error('silent command'), { code: 'RALPH_COMMAND_IDLE_TIMEOUT' });
+    },
+  }), error => error.code === 'RALPH_COMMAND_IDLE_TIMEOUT');
+});
+
 test('проверки идут в проекте: preflight, затем набор, с окружением из конфига', () => {
   const calls = [];
   const result = runConfiguredScripts(hostValidationConfig(), ['pnpm check'], 'Validation', {

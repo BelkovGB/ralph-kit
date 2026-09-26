@@ -197,6 +197,7 @@ function lifecycleConfig(repository, reviewOutputPath) {
     validationScripts: [],
     validationArtifactPaths: [],
     maxReviewFixAttempts: 2,
+    supervisor: { ...loadConfig().supervisor, enabled: false },
     review: { ...loadConfig().review, enabled: true, outputPath: reviewOutputPath },
   };
 }
@@ -377,7 +378,7 @@ test('пройденное на прошлом прогоне ревью не п
   });
 });
 
-test('принятый ручной commit повторяет validation и ревью без разработки', async () => {
+test('failed validation of a manual commit returns to development before validation and review', async () => {
   await withLifecycleStand('ralph/lifecycle-manual', passVerdict, async (stand) => {
     const store = recordingStateStore({
       number: issueNumber,
@@ -423,8 +424,13 @@ test('принятый ручной commit повторяет validation и ре
     assert.deepEqual(codexInvocations(stand.reviewOutputPath), ['validation']);
     assert.equal(stand.gh.issueState().state, 'open');
     assert.equal(stand.gh.calls().some((call) => call.method === 'PATCH'), false);
-    assert.equal(store.issue.phase, 'committed');
-    assert.equal(store.issue.commit, stand.repository.commit);
+    assert.equal(store.issue.phase, 'working-tree');
+    assert.equal(store.issue.startingCommit, stand.repository.commit);
+    assert.equal(store.issue.commit, null);
+    assert.equal(store.issue.recoveryHead, null);
+    assert.equal(store.issue.reviewedCommit, null);
+    assert.equal(store.issue.validationFixAttempts, 1);
+    assert.equal(store.issue.lastFailureSummary.code, 'RALPH_VALIDATION_FAILED');
 
     writeValidation(0);
     const result = await runAgentOnIssue(config, 'owner/repository', lifecycleIssue(), 'rules');
@@ -434,6 +440,7 @@ test('принятый ручной commit повторяет validation и ре
     assert.equal(result.review.verdict, 'pass');
     assert.deepEqual(codexInvocations(stand.reviewOutputPath), [
       'validation',
+      'development',
       'validation',
       'review',
     ]);

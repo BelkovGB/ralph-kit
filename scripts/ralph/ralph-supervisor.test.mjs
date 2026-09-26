@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
+import { committedValidationFailurePatch } from './ralph-recovery.mjs';
 import { configPath, prepareConfig } from './ralph-config.mjs';
 import { runPhasePlan } from './ralph-loop.mjs';
 import { fieldGroups } from './ralph-gui-fields.mjs';
@@ -39,6 +40,30 @@ test('Lisa resumes Ralph with a bounded, persistent iteration reserve', async ()
   assert.equal(state.calls, 1);
   assert.equal(state.extraIterations, 1);
 });
+
+for (const failureCode of ['RALPH_VALIDATION_FAILED', 'RALPH_COMMAND_IDLE_TIMEOUT']) {
+test(`Lisa receives ${failureCode} as a resumable fix`, async () => {
+  const { config, state, store } = fixture();
+  Object.assign(state.issue, { phase: 'committed', commit: 'saved-head', recoveryHead: 'saved-head' });
+  let attempts = 0;
+  await runWithSupervisor(config, store, async () => {
+    if (attempts++ === 0) {
+      const error = Object.assign(new Error('tests failed'), { code: failureCode });
+      store.updateIssue(committedValidationFailurePatch(state.issue, error));
+      throw error;
+    }
+    assert.equal(state.issue.phase, 'working-tree');
+    assert.equal(state.issue.startingCommit, 'saved-head');
+    return { verdict: 'pass' };
+  }, async () => {
+    assert.equal(state.issue.phase, 'working-tree');
+    assert.equal(state.issue.commit, null);
+    return { verdict: 'resume', reason: 'test isolation repaired' };
+  });
+  assert.equal(attempts, 2);
+  assert.equal(state.calls, 1);
+});
+}
 
 test('Lisa publishes and closes her own live progress stage', async () => {
   resetLiveStatus();
