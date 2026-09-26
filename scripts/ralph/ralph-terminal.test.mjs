@@ -89,8 +89,46 @@ test('left column groups run, checks and session without losing overall time at 
   const left = renderTerminal(snapshot, [], 140, 24).split('\n').map(line => line.split(' │ ')[0]).join('\n');
   assert.match(left, /ПРОГОН[\s\S]*Фаза 1\/2[\s\S]*ЗАДАЧА И ПРОВЕРКИ[\s\S]*Исправления тестов[\s\S]*СЕССИЯ И ВРЕМЯ[\s\S]*Прогон: 0:01:01/);
   assert.match(left, /До остановки: 0:00:10/);
+  assert.match(left, /Шаги агента: 8\/17 · ответы: 6/);
+  assert.match(renderTerminal(snapshot, [], 140, 40), /Ответы инструментов: 6/);
   assert.match(left, /Вызовы Lisa в фазе: 2\/3/);
   assert.equal((left.match(/^── /gm) ?? []).length, 3);
+  assert.match(left, /^СЕЙЧАС: Задача #42 · Проверки/);
+  assert.match(left, /\n *\n── ЗАДАЧА И ПРОВЕРКИ/);
+  assert.match(left, /\n *\n── СЕССИЯ И ВРЕМЯ/);
+});
+
+test('headline keeps task context while commands and agent waits change', () => {
+  const store = { state: {}, issue: { number: 42, phase: 'validating' } };
+  const metrics = { issue: 42, startedMs: 1000 };
+  const live = { operation: { label: 'git status', active: true, startedMs: 2000, timeoutMs: 10000 } };
+  let snapshot = terminalSnapshot(store, metrics, 0, 3000, live);
+  assert.equal(snapshot.headline, 'Задача #42 · Проверки');
+  assert.equal(snapshot.detail, 'Проверка рабочего дерева');
+  assert.equal(terminalSnapshot(null, null, 0, 3000, live).headline, 'Проверка рабочего дерева');
+  live.operation.active = false;
+  live.session = { startedMs: 2000, active: true, lastEventMs: null, turns: 0, toolResults: 0,
+    maxTurns: 30, timeoutMs: 90000, firstEventTimeoutMs: 10000, idleTimeoutMs: 10000 };
+  snapshot = terminalSnapshot(store, metrics, 0, 3000, live);
+  assert.equal(snapshot.headline, 'Задача #42 · Проверки');
+  assert.equal(snapshot.detail, 'Ждём первое событие агента');
+});
+
+test('headline names phase work, Lisa and terminal outcomes before stale operations', () => {
+  const store = { state: {}, issue: { number: 42, phase: 'review-failed' } };
+  for (const [kind, label, expected] of [
+    ['milestone-review', 'Ревью фазы: PR #57', 'Ревью фазы: PR #57'],
+    ['supervisor', 'Lisa: вызов 1/3. Issue #42', 'Lisa: восстановление работы'],
+    ['failed', 'Прогон остановлен с ошибкой', 'Прогон остановлен с ошибкой'],
+    ['finished', 'Прогон завершён', 'Прогон завершён'],
+  ]) {
+    const snapshot = terminalSnapshot(store, null, 0, 3000, {
+      activity: { kind, label, startedMs: 2000 },
+      operation: { label: 'git status', active: true, startedMs: 2000, timeoutMs: 10000 },
+    });
+    assert.equal(snapshot.headline, expected);
+    if (kind === 'failed' || kind === 'finished') assert.equal(snapshot.detail, null);
+  }
 });
 
 test('Lisa counts distinguish this run from the persisted phase budget after her session ends', () => {
