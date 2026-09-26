@@ -5,6 +5,9 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
+import { logDetailError } from './ralph-runtime.mjs';
+import { stripAnsi } from './ralph-failure-summary.mjs';
+
 import { fail } from './ralph-scope.mjs';
 import { credentialFreeEnvironment, run } from './ralph-process-runner.mjs';
 import { agentInstructionFiles, trustedFileHash } from './ralph-config.mjs';
@@ -260,6 +263,17 @@ function hostShellCommand(script, platform = process.platform) {
   return { command: 'sh', args: ['-eu', '-c', script] };
 }
 
+// stdout может содержать названия успешных тестов с ECONNRESET. message
+// реальной команды уже включает оба потока: используем его только у ошибок без них.
+function isConnectionInterruption(error) {
+  if (error.code !== 'RALPH_COMMAND_FAILED') return false;
+  const allOutput = stripAnsi([error.message, error.stdout, error.stderr].filter(Boolean).join('\n'));
+  if (/\b(?:AssertionError|SyntaxError|TypeError|ReferenceError)\b/u.test(allOutput)) return false;
+  const hasStreams = error.stdout !== undefined || error.stderr !== undefined;
+  const output = stripAnsi(String(hasStreams ? (error.stderr ?? '') : error.message));
+  return /^\s*(?:Error:\s*[^\r\n]*\b(?:ECONNRESET|ECONNABORTED)\b|(?:ConnectionAbortedError|ConnectionResetError):)/mu.test(output);
+}
+
 export function runConfiguredScripts(config, scripts, label, options = {}) {
   const execute = options.run ?? run;
   // Preflight готовит окружение и по своему контракту вправе менять дерево:
@@ -322,7 +336,29 @@ export function runConfiguredScripts(config, scripts, label, options = {}) {
   try {
     for (const script of preparation) runScript(script);
     baseline = hostWorkingTreeEntries({ run: execute });
-    for (const script of guarded) runScript(script);
+    options.onPrepared?.();
+    let connectionRetryUsed = false;
+    for (const script of guarded) {
+      try {
+        runScript(script);
+      } catch (error) {
+        if (!options.retryConnectionFailure || connectionRetryUsed || !isConnectionInterruption(error)) {
+          throw error;
+        }
+        // Never retry a test that changed files: the final guard reports the mutation.
+        if (changedTreePaths(baseline, hostWorkingTreeEntries({ run: execute })).length > 0) throw error;
+        assertTrustedControlFilesUnchanged(config);
+        connectionRetryUsed = true;
+        logDetailError([error.message, error.stdout, error.stderr].filter(Boolean).join('\n').slice(-100_000));
+        console.error(`${label}: разрыв соединения; один повтор команды проверки в оставшемся лимите времени.`);
+        try {
+          runScript(script);
+        } catch (retryError) {
+          retryError.cause ??= error;
+          throw retryError;
+        }
+      }
+    }
   } catch (error) {
     failure = error;
   }

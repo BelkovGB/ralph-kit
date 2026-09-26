@@ -1,3 +1,4 @@
+import { validateIssueWorkingTree } from './ralph-loop.mjs';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
@@ -615,4 +616,166 @@ test('уборка идёт до preflight, а не после него', () => 
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+
+test('prepared callback observes generated files before guarded validation', () => {
+  const events = [];
+  runConfiguredScripts(hostValidationConfig(), ['pnpm check'], 'Validation', {
+    run: (command, args, options) => {
+      if (command !== 'git') events.push(args.at(-1));
+      return unchangedHostTreeRun()(command, args, options);
+    },
+    onPrepared: () => events.push('prepared'),
+  });
+  assert.deepEqual(events, ['pnpm db:migrate', 'prepared', 'pnpm check']);
+});
+
+
+test('issue staging includes generated files and preserves foreign paths', () => {
+  let status = ' M source.js';
+  const entries = validateIssueWorkingTree({}, new Set(['operator.txt']), {
+    workingTreeStatus: () => status,
+    runConfiguredValidation: (_config, options) => {
+      status = ' M source.js\n M generated.html\n?? generated-new.html\n M operator.txt';
+      options.onPrepared();
+    },
+  });
+  assert.deepEqual(entries.map(entry => entry.path), ['source.js', 'generated.html', 'generated-new.html']);
+});
+
+test('issue staging rejects mutations after preparation', () => {
+  let status = ' M source.js';
+  assert.throws(() => validateIssueWorkingTree({}, new Set(), {
+    workingTreeStatus: () => status,
+    runConfiguredValidation: (_config, options) => {
+      options.onPrepared();
+      status += '\n?? test-created.txt';
+    },
+  }), /Validation changed/);
+});
+
+test('committed recovery retries a connection failure once before escalation', () => {
+  let attempts = 0;
+  const first = Object.assign(new Error('command failed'), {
+    code: 'RALPH_COMMAND_FAILED', stderr: 'ConnectionAbortedError: [WinError 10053] connection aborted',
+  });
+  runConfiguredValidation(hostValidationConfig({ preflightScripts: [] }), {
+    retryConnectionFailure: true,
+    run(command, args, options) {
+      if (command === 'git') return unchangedHostTreeRun()(command, args, options);
+      if (++attempts === 1) throw first;
+      return { status: 0, stdout: '', stderr: '' };
+    },
+  });
+  assert.equal(attempts, 2);
+});
+
+
+function connectionError(code = 'RALPH_COMMAND_FAILED', text = 'Error: read ECONNRESET') {
+  return Object.assign(new Error(text), { code });
+}
+
+for (const output of [
+  { stdout: 'PASS handles ECONNRESET correctly', stderr: 'FAIL total: expected 42, received 41' },
+  { stdout: '', stderr: 'PASS handles ECONNRESET correctly\nFAIL total: expected 42, received 41' },
+  { stdout: 'Error: read ECONNRESET', stderr: '' },
+  { stdout: 'AssertionError: expected 42', stderr: 'Error: read ECONNRESET' },
+]) {
+  test(`connection retry ignores non-diagnostic output ${JSON.stringify(output)}`, () => {
+    let attempts = 0;
+    const error = Object.assign(connectionError('RALPH_COMMAND_FAILED',
+      `Command failed\n${output.stdout}\n${output.stderr}`), output);
+    assert.throws(() => runConfiguredValidation(hostValidationConfig({ preflightScripts: [] }), {
+      retryConnectionFailure: true,
+      run(command, args, options) {
+        if (command === 'git') return unchangedHostTreeRun()(command, args, options);
+        attempts += 1;
+        throw error;
+      },
+    }), observed => observed === error);
+    assert.equal(attempts, 1);
+  });
+}
+
+for (const scenario of ['disabled', 'assertion', 'timeout', 'preflight']) {
+  test(`connection retry excludes ${scenario}`, () => {
+    let attempts = 0;
+    const error = connectionError(
+      scenario === 'timeout' ? 'RALPH_COMMAND_TIMEOUT' : 'RALPH_COMMAND_FAILED',
+      scenario === 'assertion' ? 'AssertionError: expected ECONNRESET' : 'Error: read ECONNRESET',
+    );
+    assert.throws(() => runConfiguredValidation(hostValidationConfig({
+      preflightScripts: scenario === 'preflight' ? ['prepare'] : [],
+    }), {
+      retryConnectionFailure: scenario !== 'disabled',
+      run(command, args, options) {
+        if (command === 'git') return unchangedHostTreeRun()(command, args, options);
+        attempts += 1;
+        throw error;
+      },
+    }), observed => observed === error);
+    assert.equal(attempts, 1);
+  });
+}
+
+test('second connection failure escalates with the original cause', () => {
+  let attempts = 0;
+  const first = connectionError();
+  const second = connectionError();
+  assert.throws(() => runConfiguredValidation(hostValidationConfig({ preflightScripts: [] }), {
+    retryConnectionFailure: true,
+    run(command, args, options) {
+      if (command === 'git') return unchangedHostTreeRun()(command, args, options);
+      throw ++attempts === 1 ? first : second;
+    },
+  }), error => error === second && error.cause === first && error.code === 'RALPH_VALIDATION_FAILED');
+  assert.equal(attempts, 2);
+});
+
+test('retry budget is shared across all validation commands', () => {
+  const calls = [];
+  assert.throws(() => runConfiguredValidation(hostValidationConfig({
+    preflightScripts: [], validationScripts: ['first', 'second'],
+  }), {
+    retryConnectionFailure: true,
+    run(command, args, options) {
+      if (command === 'git') return unchangedHostTreeRun()(command, args, options);
+      calls.push(args.at(-1));
+      if (calls.length !== 2) throw connectionError();
+      return { status: 0, stdout: '', stderr: '' };
+    },
+  }), /ECONNRESET/u);
+  assert.deepEqual(calls, ['first', 'first', 'second']);
+});
+
+test('a connection failure that changes the tree is never retried', () => {
+  let attempts = 0;
+  assert.throws(() => runConfiguredValidation(hostValidationConfig({ preflightScripts: [] }), {
+    retryConnectionFailure: true,
+    run(command) {
+      if (command === 'git') return {
+        status: 0, stdout: attempts ? 'README.md\0CHANGELOG.md\0' : 'README.md\0', stderr: '',
+      };
+      attempts += 1;
+      throw connectionError();
+    },
+  }), error => error.code === 'RALPH_VALIDATION_MUTATED');
+  assert.equal(attempts, 1);
+});
+
+test('connection retry cannot reset the total validation deadline', (t) => {
+  let now = 0;
+  t.mock.method(Date, 'now', () => now);
+  let attempts = 0;
+  assert.throws(() => runConfiguredValidation(hostValidationConfig({ preflightScripts: [] }), {
+    retryConnectionFailure: true,
+    run(command, args, options) {
+      if (command === 'git') return unchangedHostTreeRun()(command, args, options);
+      attempts += 1;
+      now = 9001;
+      throw connectionError();
+    },
+  }), error => error.code === 'RALPH_COMMAND_TIMEOUT' && error.cause?.message.includes('ECONNRESET'));
+  assert.equal(attempts, 1);
 });

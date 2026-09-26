@@ -1,6 +1,7 @@
 import { chmodSync, copyFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
+import { stripVTControlCharacters } from 'node:util';
 
 import { run, runtimeSettings } from './ralph-process-runner.mjs';
 import {
@@ -204,6 +205,16 @@ export function readCodexEvent(line) {
   if ((event.type === 'item.started' || event.type === 'item.completed') && item.id) {
     parsed.stepId = item.id;
     parsed.stepLabel = item.type;
+    if (item.type === 'command_execution') {
+      const command = typeof item.command === 'string'
+        ? stripVTControlCharacters(item.command).replace(/\s+/gu, ' ')
+          // eslint-disable-next-line no-control-regex -- kit-hygiene: allow — очищаем строку терминала.
+          .replace(/[\x00-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2060-\u206f]/gu, '').trim()
+        : '';
+      parsed.stepLabel = command
+        ? `Команда: ${command.length > 160 ? `${command.slice(0, 159)}…` : command}`
+        : 'Выполняет команду';
+    }
   }
   if (event.type === 'item.completed') {
     if (item.type === 'agent_message' && item.text) {

@@ -556,6 +556,17 @@ async function reviewAndCloseCommittedIssue(config, repository, issue, commit) {
   return { completed: true, commit, review };
 }
 
+// Preflight may generate tracked output. Stage the validated post-preflight
+// tree, excluding operator-owned paths; tests themselves remain read-only.
+export function validateIssueWorkingTree(config, foreignPaths, dependencies = {}) {
+  const status = dependencies.workingTreeStatus ?? workingTreeStatus;
+  const validate = dependencies.runConfiguredValidation ?? runConfiguredValidation;
+  let prepared = status();
+  validate(config, { onPrepared: () => { prepared = status(); } });
+  if (status() !== prepared) fail('Validation changed the prepared working tree.');
+  return workingTreeEntries(prepared).filter((entry) => !foreignPaths.has(entry.path));
+}
+
 async function commitAndCompleteIssue(config, repository, issue, startingCommit, lastAgentMessage) {
   assertTrustedControlFilesUnchanged(config);
   const currentBranch = run('git', ['branch', '--show-current']).stdout;
@@ -633,8 +644,9 @@ async function commitAndCompleteIssue(config, repository, issue, startingCommit,
   }
 
   activeStateStore()?.updateIssue({ phase: 'validating' });
+  let validatedEntries;
   try {
-    measuredValidation(() => runConfiguredValidation(config));
+    validatedEntries = measuredValidation(() => validateIssueWorkingTree(config, foreignPaths));
   } catch (error) {
     if (error.code === 'RALPH_VALIDATION_MUTATED') {
       activeStateStore()?.updateIssue({
@@ -657,11 +669,6 @@ async function commitAndCompleteIssue(config, repository, issue, startingCommit,
     );
     return { completed: false, validationFailed: true };
   }
-  assertValidationLeftTree(
-    changes,
-    `Issue #${issue.number}: проектные проверки изменили рабочее дерево. ` +
-      'Проверьте generated-файлы перед повторным запуском.',
-  );
   activeStateStore()?.updateIssue({ phase: 'staging' });
   // Именно пути агента, а не `--all`: остальное в дереве принадлежит оператору
   // и обязано остаться незакоммиченным.
@@ -670,7 +677,7 @@ async function commitAndCompleteIssue(config, repository, issue, startingCommit,
   // лежащий в индексе, `git add` не примет: после `git rm` файла нет ни в
   // дереве, ни в индексе, и pathspec не совпадает ни с чем — код 128 и обрыв
   // прогона. В коммит такой путь и так попадёт, он уже застадирован.
-  const pathsToStage = agentEntries
+  const pathsToStage = validatedEntries
     .filter((entry) => entry.worktree !== ' ')
     .map((entry) => entry.path);
   if (pathsToStage.length > 0) {
@@ -776,7 +783,7 @@ export async function runAgentOnIssue(config, repository, issue, rules) {
     );
     const resumePhase = storedIssue.phase;
     try {
-      measuredValidation(() => runConfiguredValidation(config));
+      measuredValidation(() => runConfiguredValidation(config, { retryConnectionFailure: true }));
     } catch (error) {
       activeStateStore().updateIssue({
         phase: resumePhase,
