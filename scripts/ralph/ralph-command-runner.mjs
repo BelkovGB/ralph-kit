@@ -2,6 +2,7 @@
 
 import { spawn, spawnSync } from 'node:child_process';
 import process from 'node:process';
+import { createWriteStream } from 'node:fs';
 
 let requestText = '';
 process.stdin.setEncoding('utf8');
@@ -28,14 +29,45 @@ let settled = false;
 let timedOut = false;
 let forceExitTimer;
 let idleTimer;
+let interruptedSignal;
+let timeoutMarker;
+const outputTails = { stdout: '', stderr: '' };
+let finishing = false;
+
+function finish(code, force = false) {
+  if (finishing) return;
+  finishing = true;
+  process.exitCode = code;
+  if (!request.reportStatus) {
+    if (force) process.exit(code);
+    return;
+  }
+  const status = createWriteStream(null, { fd: 3, autoClose: true });
+  const completed = () => { if (force) process.exit(code); };
+  status.once('error', completed);
+  status.once('finish', completed);
+  status.end(JSON.stringify({ ...outputTails, timeoutMarker, interruptedSignal }));
+}
+
+// In inherited mode stdout/stderr stream directly to the terminal. A separate
+// bounded status pipe preserves timeout identity and diagnostics for the parent.
+if (request.reportStatus) {
+  for (const name of ['stdout', 'stderr']) {
+    child[name].setEncoding('utf8');
+    child[name].on('data', chunk => {
+      outputTails[name] = (outputTails[name] + chunk).slice(-100_000);
+    });
+  }
+}
 
 function expire(marker) {
   if (settled || timedOut) return;
   timedOut = true;
+  timeoutMarker = marker;
   clearTimeout(idleTimer);
   process.stderr.write(`${marker}\n`);
   killTree();
-  forceExitTimer = setTimeout(() => process.exit(124), 10_000);
+  forceExitTimer = setTimeout(() => finish(124, true), 10_000);
 }
 
 function noteProgress() {
@@ -82,6 +114,17 @@ const timeout = setTimeout(() => {
   expire(`RALPH_COMMAND_TIMEOUT:${request.timeoutMs}`);
 }, request.timeoutMs);
 
+for (const signal of ['SIGINT', 'SIGTERM']) {
+  process.on(signal, () => {
+    if (settled || interruptedSignal) return;
+    interruptedSignal = signal;
+    clearTimeout(timeout);
+    clearTimeout(idleTimer);
+    killTree();
+    forceExitTimer = setTimeout(() => finish(signal === 'SIGINT' ? 130 : 143, true), 10_000);
+  });
+}
+
 child.once('error', (error) => {
   if (settled) return;
   settled = true;
@@ -91,7 +134,7 @@ child.once('error', (error) => {
   process.stderr.write(
     `RALPH_COMMAND_RUNNER_LAUNCH_ERROR:${error.code ?? 'UNKNOWN'}: ${error.message}\n`,
   );
-  process.exitCode = 125;
+  finish(125);
 });
 
 child.once('close', (code, signal) => {
@@ -100,14 +143,18 @@ child.once('close', (code, signal) => {
   clearTimeout(timeout);
   clearTimeout(idleTimer);
   clearTimeout(forceExitTimer);
+  if (interruptedSignal) {
+    finish(interruptedSignal === 'SIGINT' ? 130 : 143);
+    return;
+  }
   if (timedOut) {
-    process.exitCode = 124;
+    finish(124);
     return;
   }
   if (signal) {
     process.stderr.write(`RALPH_COMMAND_SIGNAL:${signal}\n`);
-    process.exitCode = 1;
+    finish(1);
     return;
   }
-  process.exitCode = code ?? 1;
+  finish(code ?? 1);
 });

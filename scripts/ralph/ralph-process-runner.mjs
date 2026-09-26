@@ -346,11 +346,9 @@ function runCommand(name, args, options = {}) {
 
 function runObservedCommand(name, args, options, timeoutMs, startedAt) {
   const commandTarget = commandSpec(name, args);
-  const useCommandRunner = true;
-  const command = useCommandRunner ? process.execPath : commandTarget.command;
-  const commandArgs = useCommandRunner ? [commandRunnerPath] : commandTarget.commandArgs;
   const captureTerminal = options.inherit && hasTerminalSink();
-  const stdio = 'pipe';
+  const inheritOutput = options.inherit && !captureTerminal;
+  const stdio = inheritOutput ? ['pipe', 'inherit', 'inherit', 'pipe'] : 'pipe';
   // Когда окружение не задано, дочерний процесс наследует окружение вызывающего.
   // Защита от подмены батника обязана попасть в оба случая, поэтому окружение
   // здесь всегда выписывается явно.
@@ -366,11 +364,10 @@ function runObservedCommand(name, args, options, timeoutMs, startedAt) {
       : commandEnvironment;
   const logCommand = hasTerminalSink() ? logDetail : console.log;
   logCommand(`Команда: ${name} ${args[0] ?? ''}`.trim());
-  const result = spawnSync(command, commandArgs, {
+  const result = spawnSync(process.execPath, [commandRunnerPath], {
     cwd: projectRoot,
     encoding: 'utf8',
-    input: useCommandRunner
-      ? JSON.stringify({
+    input: JSON.stringify({
           command: commandTarget.command,
           args: commandTarget.commandArgs,
           cwd: projectRoot,
@@ -378,22 +375,40 @@ function runObservedCommand(name, args, options, timeoutMs, startedAt) {
           timeoutMs,
           idleTimeoutMs: options.idleTimeoutMs ?? settings.commandIdleTimeoutMs,
           env: childEnvironment,
-        })
-      : options.input,
+          reportStatus: inheritOutput,
+        }),
     stdio,
-    timeout: useCommandRunner ? timeoutMs + 25_000 : timeoutMs,
+    timeout: timeoutMs + 25_000,
     killSignal: 'SIGTERM',
     maxBuffer: 50 * 1024 * 1024,
     windowsHide: true,
     ...(childEnvironment === undefined ? {} : { env: childEnvironment }),
   });
 
-  if (options.inherit && !captureTerminal) {
-    if (result.stdout) process.stdout.write(result.stdout);
-    if (result.stderr) process.stderr.write(result.stderr);
+  let timeoutMarker;
+  if (inheritOutput && !result.error && result.status !== null) {
+    try {
+      const status = JSON.parse(result.output?.[3] ?? '');
+      if (status === null || typeof status !== 'object' ||
+          typeof status.stdout !== 'string' || typeof status.stderr !== 'string' ||
+          status.stdout.length > 100_000 || status.stderr.length > 100_000 ||
+          (status.timeoutMarker !== undefined &&
+            (typeof status.timeoutMarker !== 'string' || !/^RALPH_COMMAND_(?:IDLE_)?TIMEOUT:\d+$/.test(status.timeoutMarker)))) {
+        throw new Error('Некорректные поля статуса команды.');
+      }
+      result.stdout = status.stdout;
+      result.stderr = status.stderr;
+      timeoutMarker = status.timeoutMarker;
+    } catch (cause) {
+      const error = new Error(`Команда ${name}: runner вернул неполный или повреждённый статус.`, { cause });
+      error.code = 'RALPH_COMMAND_RUNNER_PROTOCOL';
+      error.stdout = outputTail(result.stdout);
+      error.stderr = outputTail(result.stderr);
+      throw error;
+    }
   }
   const idleTimedOut = result.status === 124 &&
-    String(result.stderr ?? '').includes('RALPH_COMMAND_IDLE_TIMEOUT:');
+    String(timeoutMarker ?? result.stderr ?? '').includes('RALPH_COMMAND_IDLE_TIMEOUT:');
   if (idleTimedOut) {
     const idleTimeoutMs = options.idleTimeoutMs ?? settings.commandIdleTimeoutMs;
     const error = commandTimeoutError(name, args, idleTimeoutMs, result);
@@ -402,9 +417,8 @@ function runObservedCommand(name, args, options, timeoutMs, startedAt) {
     throw error;
   }
   const commandRunnerTimedOut =
-    useCommandRunner &&
     result.status === 124 &&
-    String(result.stderr ?? '').includes('RALPH_COMMAND_TIMEOUT:');
+    String(timeoutMarker ?? result.stderr ?? '').includes('RALPH_COMMAND_TIMEOUT:');
   if (result.error?.code === 'ETIMEDOUT' || commandRunnerTimedOut) {
     throw commandTimeoutError(name, args, timeoutMs, result);
   }
