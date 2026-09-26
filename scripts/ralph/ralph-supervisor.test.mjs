@@ -51,7 +51,7 @@ test('Lisa publishes and closes her own live progress stage', async () => {
     const activity = readLiveStatus().activity;
     assert.equal(activity.kind, 'supervisor');
     assert.equal(activity.active, true);
-    assert.match(activity.label, /Лиза: вызов 1\/3/);
+    assert.match(activity.label, /Lisa: вызов 1\/3/);
     return { verdict: 'resume', reason: 'fixed' };
   });
   assert.equal(readLiveStatus().activity.active, false);

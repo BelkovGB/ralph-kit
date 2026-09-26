@@ -92,11 +92,11 @@ test('пульт берёт ход прогона из последних стр
   assert.equal(progress.sessionFinished, false);
 });
 
-test('пульт показывает активный вызов Лизы и не переносит в него шаги Ralph', () => {
+test('пульт показывает активный вызов Lisa и не переносит в него шаги Ralph', () => {
   const root = tree({
     'run.log': [
       logLine('[claude step 49/50] работа Ralph'),
-      logLine('Лиза: вызов 2/3.'),
+      logLine('Lisa: вызов 2/3.'),
       '',
     ].join('\n'),
   });
@@ -105,9 +105,9 @@ test('пульт показывает активный вызов Лизы и н
   assert.equal(progress.turn, null);
 
   writeFileSync(path.join(root, 'run.log'), [
-    logLine('Лиза: вызов 2/3.'),
-    logLine('[Лиза step 4/30] чтение состояния'),
-    logLine('Лиза: сообщение Проверяю причину остановки'),
+    logLine('Lisa: вызов 2/3.'),
+    logLine('[Lisa step 4/30] чтение состояния'),
+    logLine('Lisa: сообщение Проверяю причину остановки'),
     '',
   ].join('\n'));
   progress = readRunProgress({ runtimeDir: root });
@@ -116,10 +116,10 @@ test('пульт показывает активный вызов Лизы и н
   assert.equal(progress.lisaMessage, 'Проверяю причину остановки');
 
   writeFileSync(path.join(root, 'run.log'), [
-    logLine('Лиза: вызов 2/3.'),
-    logLine('[Лиза step 4/30] чтение состояния'),
-    logLine('Лиза: сообщение Проверяю причину остановки'),
-    logLine('Лиза: вызов 2 завершён.'),
+    logLine('Lisa: вызов 2/3.'),
+    logLine('[Lisa step 4/30] чтение состояния'),
+    logLine('Lisa: сообщение Проверяю причину остановки'),
+    logLine('Lisa: вызов 2 завершён.'),
     '',
   ].join('\n'));
   progress = readRunProgress({ runtimeDir: root });
@@ -128,12 +128,12 @@ test('пульт показывает активный вызов Лизы и н
   assert.equal(progress.sessionFinished, true);
 });
 
-test('пульт видит Лизу по сохранённому состоянию, когда начало вызова вышло из хвоста журнала', () => {
+test('пульт видит Lisa по сохранённому состоянию, когда начало вызова вышло из хвоста журнала', () => {
   const root = tree({
     'run.lock': JSON.stringify({ pid: 42, mode: '--run' }),
     'state.json': JSON.stringify({ supervisorActive: true, supervisorCalls: 2 }),
     'ralph.config.json': JSON.stringify({ supervisor: { maxInterventions: 3 } }),
-    'run.log': `${logLine('[Лиза step 19/30] разбор сбоя')}\n`,
+    'run.log': `${logLine('[Lisa step 19/30] разбор сбоя')}\n`,
   });
   const state = readRunState({ runtimeDir: root, configPath: path.join(root, 'ralph.config.json'),
     isProcessAlive: () => true });
@@ -442,7 +442,7 @@ test('последняя попытка задачи решает, закрыт�
   assert.equal(spend.phases[0].attempts, 2);
 });
 
-test('записи Лизы видны отдельно и не увеличивают число попыток и ревью фазы', () => {
+test('записи Lisa видны отдельно и не увеличивают число попыток и ревью фазы', () => {
   const root = metricsTree([
     metricsEntry({ issue: 7, outcome: 'validation-failed', startedAt: '2026-09-01T10:00:00.000Z' }),
     metricsEntry({ issue: 7, outcome: 'supervisor-resume', startedAt: '2026-09-01T10:10:00.000Z',
@@ -665,4 +665,40 @@ test('пустой рантайм отдаёт странице массивы, 
   assert.deepEqual(stateResponse(dependencies).plannedPhases, []);
   assert.deepEqual(tasksResponse(dependencies).phases, []);
   assert.deepEqual(tasksResponse(dependencies).tasks, []);
+});
+
+test('пульт читает старые журналы с кириллическим именем супервизора', () => {
+  const root = tree({
+    'run.log': [
+      logLine('[claude step 49/50] работа Ralph'),
+      logLine('Лиза: вызов 2/3.'),
+      '',
+    ].join('\n'),
+  });
+  let progress = readRunProgress({ runtimeDir: root });
+  assert.deepEqual(progress.supervisor, { call: 2, limit: 3 });
+  assert.equal(progress.turn, null);
+
+  writeFileSync(path.join(root, 'run.log'), [
+    logLine('Лиза: вызов 2/3.'),
+    logLine('[Лиза step 4/30] чтение состояния'),
+    logLine('Лиза: сообщение Проверяю причину остановки'),
+    '',
+  ].join('\n'));
+  progress = readRunProgress({ runtimeDir: root });
+  assert.equal(progress.turn, 4);
+  assert.equal(progress.turnLimit, 30);
+  assert.equal(progress.lisaMessage, 'Проверяю причину остановки');
+
+  writeFileSync(path.join(root, 'run.log'), [
+    logLine('Лиза: вызов 2/3.'),
+    logLine('[Лиза step 4/30] чтение состояния'),
+    logLine('Лиза: сообщение Проверяю причину остановки'),
+    logLine('Лиза: вызов 2 завершён.'),
+    '',
+  ].join('\n'));
+  progress = readRunProgress({ runtimeDir: root });
+  assert.equal(progress.supervisor, null);
+  assert.equal(progress.lisaMessage, null);
+  assert.equal(progress.sessionFinished, true);
 });

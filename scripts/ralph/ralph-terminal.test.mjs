@@ -92,15 +92,15 @@ test('milestone review is named while waiting for an agent with only service eve
 test('split screen names Lisa and her steps during an intervention', () => {
   const store = { phaseIndex: 0, phaseCount: 1, state: { iterationsUsed: 5 },
     issue: { number: 12, title: 'Исправить сбой', phase: 'review-failed' } };
-  const live = { activity: { kind: 'supervisor', label: 'Лиза: вызов 2/3, issue #12',
+  const live = { activity: { kind: 'supervisor', label: 'Lisa: вызов 2/3, issue #12',
     startedMs: 1000, active: true }, session: { startedMs: 2000, lastEventMs: 3000,
     active: true, turns: 4, toolResults: 2, maxTurns: 30, timeoutMs: 90000,
     firstEventTimeoutMs: 10000, idleTimeoutMs: 10000 } };
   const snapshot = terminalSnapshot(store, { issue: 12, startedMs: 1000 }, 0, 4000, live);
-  assert.match(snapshot.issue, /Лиза: вызов 2\/3/);
-  assert.match(snapshot.stage, /Лиза/);
-  assert.ok(snapshot.counters.some(line => line === 'Шаги Лизы: 4/30'));
-  assert.match(renderTerminal(snapshot, [], 100, 24), /Лиза/);
+  assert.match(snapshot.issue, /Lisa: вызов 2\/3/);
+  assert.match(snapshot.stage, /Lisa/);
+  assert.ok(snapshot.counters.some(line => line === 'Шаги Lisa: 4/30'));
+  assert.match(renderTerminal(snapshot, [], 100, 24), /Lisa/);
 });
 
 test('between tasks shows live command purpose and elapsed time instead of missing issue', () => {

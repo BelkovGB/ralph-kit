@@ -1285,7 +1285,7 @@ test('milestone не закрывается, пока есть отложенн�
   assert.deepEqual(result.parkedIssues, [97]);
 });
 
-test('с Лизой отложенная issue сохраняет recovery и вызывает помощь до других задач', async () => {
+test('с Lisa отложенная issue сохраняет recovery и вызывает помощь до других задач', async () => {
   const stateStore = persistentState({ issue: {
     number: 97, title: 'Нужна помощь', phase: 'review-failed', startingCommit: 'a'.repeat(40),
   } });

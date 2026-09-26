@@ -258,7 +258,7 @@ function formatTokenVolume(record) {
  */
 function metricsSubject(record) {
   if (record.outcome?.startsWith('supervisor-')) {
-    return `Лиза${record.issue == null ? '' : ` для issue #${record.issue}`}`;
+    return `Lisa${record.issue == null ? '' : ` для issue #${record.issue}`}`;
   }
   if (record.issue == null) {
     return `ревью milestone${record.milestone ? ` «${record.milestone}»` : ''}`;
@@ -336,9 +336,9 @@ export const outcomeDescriptions = {
   'milestone-review': 'Ralph отревьюил milestone',
   'validation-failed': 'проверки не прошли',
   'agent-failed': 'сессия агента оборвалась, наработки сохранены',
-  'supervisor-resume': 'Лиза вернула задачу Ralph',
-  'supervisor-human': 'Лиза запросила человека',
-  'supervisor-failed': 'сессия Лизы остановилась с ошибкой',
+  'supervisor-resume': 'Lisa вернула задачу Ralph',
+  'supervisor-human': 'Lisa запросила человека',
+  'supervisor-failed': 'сессия Lisa остановилась с ошибкой',
   RALPH_VALIDATION_FAILED: 'проверки не прошли, попытки кончились',
   RALPH_MAX_TURNS: 'сессия упёрлась в лимит шагов',
   RALPH_AGENT_TIMEOUT: 'сессия не уложилась в срок',

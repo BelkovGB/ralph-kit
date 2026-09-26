@@ -185,7 +185,7 @@ var roleWords = {
   implementation: 'разработка',
   validation: 'проверка',
   review: 'ревью',
-  supervisor: 'Лиза',
+  supervisor: 'Lisa',
   'milestone-review': 'ревью milestone',
   summary: 'итог'
 };

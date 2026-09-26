@@ -133,9 +133,9 @@ const sessionKilledPattern = new RegExp(
   `${logLinePrefix}Circuit breaker: [^\\n]*лимит (\\d+) шагов\\.`,
   'g',
 );
-const supervisorStartPattern = new RegExp(`${logLinePrefix}Лиза: вызов (\\d+)/(\\d+)\\.`, 'g');
-const supervisorEndPattern = new RegExp(`${logLinePrefix}Лиза: вызов (\\d+) завершён\\.`, 'g');
-const lisaMessagePattern = new RegExp(`${logLinePrefix}Лиза: сообщение ([^\\n]+)`, 'g');
+const supervisorStartPattern = new RegExp(`${logLinePrefix}(?:Lisa|Лиза): вызов (\\d+)/(\\d+)\\.`, 'g');
+const supervisorEndPattern = new RegExp(`${logLinePrefix}(?:Lisa|Лиза): вызов (\\d+) завершён\\.`, 'g');
+const lisaMessagePattern = new RegExp(`${logLinePrefix}(?:Lisa|Лиза): сообщение ([^\\n]+)`, 'g');
 
 function emptyProgress() {
   return {

@@ -17,7 +17,7 @@ export function supervisorPrompt(config, state, error, call) {
   const issue = state?.issue;
   const failure = error?.message ?? 'Задача отложена после повторных отказов ревью.';
   return [
-    'Ты Лиза, супервизор Ralph Loop. Разбери остановку и помоги Ralph продолжить текущую задачу.',
+    'Ты Lisa, супервизор Ralph Loop. Разбери остановку и помоги Ralph продолжить текущую задачу.',
     `Вызов ${call}. Ветка: ${config.branch}. Milestone: ${config.milestone}.`,
     `Issue: ${issue ? `#${issue.number} «${issue.title ?? ''}», этап ${issue.phase}` : 'нет сохранённой issue'}.`,
     `Причина остановки: ${failure}`,
@@ -68,7 +68,7 @@ function workspaceIdentity() {
 
 export function assertLisaWorkspaceUnchanged(before, after) {
   if (before.branch !== after.branch || before.head !== after.head) {
-    throw new Error('Лиза изменила ветку или HEAD. Продолжение требует разбора человеком.');
+    throw new Error('Lisa изменила ветку или HEAD. Продолжение требует разбора человеком.');
   }
 }
 
@@ -77,11 +77,11 @@ function parseLisaAnswer(message) {
   try {
     answer = JSON.parse(message);
   } catch {
-    return { verdict: 'human', reason: 'Лиза не вернула решение в формате JSON.' };
+    return { verdict: 'human', reason: 'Lisa не вернула решение в формате JSON.' };
   }
   if (!['resume', 'human'].includes(answer?.verdict) ||
       typeof answer.reason !== 'string' || answer.reason.trim() === '') {
-    return { verdict: 'human', reason: 'Лиза вернула неполное решение.' };
+    return { verdict: 'human', reason: 'Lisa вернула неполное решение.' };
   }
   return answer;
 }
@@ -106,10 +106,10 @@ export async function requestLisa(config, store, error, call) {
     verifyAgentAuthentication(lisaConfig);
     const session = await runDevelopmentSession(lisaConfig, {
       input: supervisorPrompt(config, store.state, error, call),
-      progressLabel: 'Лиза',
+      progressLabel: 'Lisa',
       maxTurns: config.supervisor.maxTurns,
       timeoutMs: config.supervisor.timeoutMs,
-      label: `Лиза: помощь Ralph${store.issue ? ` с issue #${store.issue.number}` : ''}`,
+      label: `Lisa: помощь Ralph${store.issue ? ` с issue #${store.issue.number}` : ''}`,
     }, 'supervisor');
     assertTrustedControlFilesUnchanged(config);
     assertLisaWorkspaceUnchanged(before, workspaceIdentity());
@@ -149,21 +149,21 @@ export async function runWithSupervisor(config, store, runPlan, request = reques
     }
 
     const call = store.reserveSupervisorCall();
-    const label = `Лиза: вызов ${call}/${config.supervisor.maxInterventions}.` +
+    const label = `Lisa: вызов ${call}/${config.supervisor.maxInterventions}.` +
       (store.issue ? ` Issue #${store.issue.number}` : '');
     reportActivity('supervisor', label);
     let answer;
     try {
       answer = await request(supervisorPhaseConfig(config, store), store, failure, call);
     } catch (error) {
-      return { verdict: 'needs-human', reason: `Лиза остановилась: ${error.message}` };
+      return { verdict: 'needs-human', reason: `Lisa остановилась: ${error.message}` };
     } finally {
-      console.log(`Лиза: вызов ${call} завершён.`);
+      console.log(`Lisa: вызов ${call} завершён.`);
       store.finishSupervisorCall();
       publishLiveStatus({ type: 'activity', kind: 'supervisor', label, active: false });
     }
     if (answer?.verdict !== 'resume') {
-      return { verdict: 'needs-human', reason: answer?.reason ?? 'Лиза не разрешила продолжение.' };
+      return { verdict: 'needs-human', reason: answer?.reason ?? 'Lisa не разрешила продолжение.' };
     }
     if (result?.verdict === 'parked' && store.issue) {
       store.updateIssue({ phase: 'working-tree', reviewFixAttempts: 0 });
@@ -171,6 +171,6 @@ export async function runWithSupervisor(config, store, runPlan, request = reques
     if (store.supervisorExtraIterations < config.supervisor.maxAdditionalIterations) {
       store.grantSupervisorIteration();
     }
-    console.log(`Лиза: ${answer.reason}. Ralph продолжает работу.`);
+    console.log(`Lisa: ${answer.reason}. Ralph продолжает работу.`);
   }
 }

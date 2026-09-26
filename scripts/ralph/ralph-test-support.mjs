@@ -7,6 +7,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -313,6 +314,7 @@ if (invokedAsGh || invokedAsScript) {
     else process.env.PATH = savedPath;
     if (savedNodeOptions === undefined) delete process.env.NODE_OPTIONS;
     else process.env.NODE_OPTIONS = savedNodeOptions;
-    rmSync(directory, { recursive: true, force: true });
+    // Windows can briefly retain the executable handle after a fake gh call.
+    await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 }
