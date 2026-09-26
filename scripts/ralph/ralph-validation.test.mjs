@@ -1,3 +1,4 @@
+import { validateIssueWorkingTree } from './ralph-loop.mjs';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
@@ -615,4 +616,41 @@ test('уборка идёт до preflight, а не после него', () => 
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+
+test('prepared callback observes generated files before guarded validation', () => {
+  const events = [];
+  runConfiguredScripts(hostValidationConfig(), ['pnpm check'], 'Validation', {
+    run: (command, args, options) => {
+      if (command !== 'git') events.push(args.at(-1));
+      return unchangedHostTreeRun()(command, args, options);
+    },
+    onPrepared: () => events.push('prepared'),
+  });
+  assert.deepEqual(events, ['pnpm db:migrate', 'prepared', 'pnpm check']);
+});
+
+
+test('issue staging includes generated files and preserves foreign paths', () => {
+  let status = ' M source.js';
+  const entries = validateIssueWorkingTree({}, new Set(['operator.txt']), {
+    workingTreeStatus: () => status,
+    runConfiguredValidation: (_config, options) => {
+      status = ' M source.js\n M generated.html\n?? generated-new.html\n M operator.txt';
+      options.onPrepared();
+    },
+  });
+  assert.deepEqual(entries.map(entry => entry.path), ['source.js', 'generated.html', 'generated-new.html']);
+});
+
+test('issue staging rejects mutations after preparation', () => {
+  let status = ' M source.js';
+  assert.throws(() => validateIssueWorkingTree({}, new Set(), {
+    workingTreeStatus: () => status,
+    runConfiguredValidation: (_config, options) => {
+      options.onPrepared();
+      status += '\n?? test-created.txt';
+    },
+  }), /Validation changed/);
 });

@@ -322,6 +322,7 @@ export function runConfiguredScripts(config, scripts, label, options = {}) {
   try {
     for (const script of preparation) runScript(script);
     baseline = hostWorkingTreeEntries({ run: execute });
+    options.onPrepared?.();
     for (const script of guarded) runScript(script);
   } catch (error) {
     failure = error;
