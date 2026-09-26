@@ -1,5 +1,5 @@
 // Наблюдения текущего процесса. Они не управляют лимитами и не заменяют state.json.
-let state = { session: null, network: null, review: null, operation: null, activity: null, phaseConfig: null, queueProgress: null };
+let state = { session: null, network: null, review: null, operation: null, activity: null, phaseConfig: null, queueProgress: null, supervisorCalls: 0 };
 const listeners = new Set();
 
 export function readLiveStatus() {
@@ -7,7 +7,7 @@ export function readLiveStatus() {
 }
 
 export function resetLiveStatus() {
-  state = { session: null, network: null, review: null, operation: null, activity: null, phaseConfig: null, queueProgress: null };
+  state = { session: null, network: null, review: null, operation: null, activity: null, phaseConfig: null, queueProgress: null, supervisorCalls: 0 };
 }
 
 export function reportActivity(kind, label) {
@@ -23,6 +23,9 @@ export function subscribeLiveStatus(listener) {
 export function publishLiveStatus(event) {
   const { type, ...values } = event;
   switch (type) {
+    case 'supervisor-call':
+      state.supervisorCalls += 1;
+      break;
     case 'activity':
       state.activity = { ...values, active: values.active ?? true };
       break;

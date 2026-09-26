@@ -1494,7 +1494,9 @@ function publishPhaseConfig(config) {
   const { maxIterations, maxTestFixAttempts, maxReviewFixAttempts } = config;
   publishLiveStatus({
     type: 'phase-config',
-    phaseConfig: { maxIterations, maxTestFixAttempts, maxReviewFixAttempts },
+    phaseConfig: { maxIterations, maxTestFixAttempts, maxReviewFixAttempts,
+      supervisorEnabled: config.supervisor?.enabled ?? false,
+      maxSupervisorCalls: config.supervisor?.maxInterventions },
   });
   publishLiveStatus({ type: 'queue-progress', queueProgress: null });
 }
@@ -1527,7 +1529,8 @@ async function main() {
       // Экрану не нужны тела issues, одобрения, prompts и телеметрия сессий.
       return {
         store: store ? { phaseIndex: store.phaseIndex, phaseCount: store.phaseCount,
-          state: state ? { phaseIndex: state.phaseIndex, milestone: state.milestone, iterationsUsed: state.iterationsUsed } : null,
+          state: state ? { phaseIndex: state.phaseIndex, milestone: state.milestone, iterationsUsed: state.iterationsUsed,
+            supervisorCalls: store.supervisorCalls } : null,
           issue: issue ? { number: issue.number, title: issue.title, phase: issue.phase,
             validationFixAttempts: issue.validationFixAttempts, reviewFixAttempts: issue.reviewFixAttempts } : null } : null,
         metrics: metrics ? { issue: metrics.issue, issueTitle: metrics.issueTitle, startedMs: metrics.startedMs } : null,

@@ -67,11 +67,40 @@ test('summary uses persisted state and does not invent missing counters or durat
   assert.equal(preparing.issue, '#42 Экран');
 });
 
-test('UI option is explicit and restricted to run', () => {
-  assert.equal(parseUiOption('--run', []), 'plain');
+test('run defaults to split with an explicit plain override; other modes stay plain', () => {
+  assert.equal(parseUiOption('--run', []), 'split');
+  assert.equal(parseUiOption('--run', ['--ui=plain']), 'plain');
+  assert.equal(parseUiOption('--check', []), 'plain');
+  assert.equal(parseUiOption('--accept-manual-commit', []), 'plain');
   assert.equal(parseUiOption('--run', ['--ui=split']), 'split');
   assert.throws(() => parseUiOption('--check', ['--ui=split']));
   assert.throws(() => parseUiOption('--run', ['--ui=splt']));
+});
+
+test('left column groups run, checks and session without losing overall time at 24 rows', () => {
+  const store = { phaseIndex: 0, phaseCount: 2, state: { iterationsUsed: 3, supervisorCalls: 2 },
+    issue: { number: 42, title: 'Тест', phase: 'validating', validationFixAttempts: 1 } };
+  const snapshot = terminalSnapshot(store, { issue: 42, startedMs: 1000 }, 0, 61000, {
+    supervisorCalls: 1, phaseConfig: { supervisorEnabled: true, maxSupervisorCalls: 3 },
+    queueProgress: { completedInRun: 2, remaining: 7, parked: 1 },
+    session: { startedMs: 1000, lastEventMs: 51000, active: true, turns: 8, maxTurns: 17,
+      toolResults: 6, timeoutMs: 90000, firstEventTimeoutMs: 40000, idleTimeoutMs: 20000 },
+  });
+  const left = renderTerminal(snapshot, [], 140, 24).split('\n').map(line => line.split(' │ ')[0]).join('\n');
+  assert.match(left, /ПРОГОН[\s\S]*Фаза 1\/2[\s\S]*ЗАДАЧА И ПРОВЕРКИ[\s\S]*Исправления тестов[\s\S]*СЕССИЯ И ВРЕМЯ[\s\S]*Прогон: 0:01:01/);
+  assert.match(left, /До остановки: 0:00:10/);
+  assert.match(left, /Вызовы Lisa в фазе: 2\/3/);
+  assert.equal((left.match(/^── /gm) ?? []).length, 3);
+});
+
+test('Lisa counts distinguish this run from the persisted phase budget after her session ends', () => {
+  const store = { phaseIndex: 0, phaseCount: 2, state: { supervisorCalls: 2 }, issue: null };
+  const live = { supervisorCalls: 1, phaseConfig: { supervisorEnabled: true, maxSupervisorCalls: 3 } };
+  const snapshot = terminalSnapshot(store, null, 0, 1000, live);
+  assert.ok(snapshot.counters.includes('Вызовы Lisa за прогон: 1'));
+  assert.match(renderTerminal(snapshot, [], 120, 24), /Вызовы Lisa в фазе: 2\/3/);
+  live.phaseConfig.supervisorEnabled = false;
+  assert.ok(terminalSnapshot(store, null, 0, 1000, live).counters.includes('Lisa: выключена'));
 });
 
 test('milestone review is named while waiting for an agent with only service events', () => {

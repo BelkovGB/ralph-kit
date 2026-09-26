@@ -77,9 +77,11 @@ test('Lisa publishes and closes her own live progress stage', async () => {
     assert.equal(activity.kind, 'supervisor');
     assert.equal(activity.active, true);
     assert.match(activity.label, /Lisa: вызов 1\/3/);
+    assert.equal(readLiveStatus().supervisorCalls, 1);
     return { verdict: 'resume', reason: 'fixed' };
   });
   assert.equal(readLiveStatus().activity.active, false);
+  assert.equal(readLiveStatus().supervisorCalls, 1);
 });
 
 test('Lisa can stop for a human without resuming Ralph', async () => {

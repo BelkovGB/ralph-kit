@@ -149,6 +149,7 @@ export async function runWithSupervisor(config, store, runPlan, request = reques
     }
 
     const call = store.reserveSupervisorCall();
+    publishLiveStatus({ type: 'supervisor-call' });
     const label = `Lisa: вызов ${call}/${config.supervisor.maxInterventions}.` +
       (store.issue ? ` Issue #${store.issue.number}` : '');
     reportActivity('supervisor', label);
