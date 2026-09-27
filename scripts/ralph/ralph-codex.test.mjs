@@ -315,7 +315,7 @@ test('Codex command steps show a short action on start and completion', () => {
   const long = readCodexEvent(JSON.stringify({ type: 'item.started', item: {
     id: 'long', type: 'command_execution', command: 'x'.repeat(200),
   } }));
-  assert.equal(long.stepLabel, `Команда: ${'x'.repeat(54)}…`);
+  assert.equal(long.stepLabel, `Команда: …${'x'.repeat(54)}`);
 });
 
 test('Codex progress names familiar actions without another model call', () => {
@@ -344,6 +344,12 @@ test('Codex progress keeps unfamiliar tool and command labels short and clean', 
     id: 'command', type: 'command_execution', command: 'custom-tool ' + 'x'.repeat(200),
   } }));
   assert.ok(command.stepLabel.length <= 64);
+  const meaningfulEnd = readCodexEvent(JSON.stringify({ type: 'item.started', item: {
+    id: 'command-end', type: 'command_execution',
+    command: `custom-tool ${'x'.repeat(100)} --output results.json`,
+  } }));
+  assert.match(meaningfulEnd.stepLabel, /^Команда: …/u);
+  assert.match(meaningfulEnd.stepLabel, /--output results\.json$/u);
   const tool = readCodexEvent(JSON.stringify({ type: 'item.started', item: {
     id: 'tool', type: 'mcp_tool_call', server: 'other\nserver', tool: 'long'.repeat(100),
   } }));

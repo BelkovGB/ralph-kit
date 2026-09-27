@@ -208,7 +208,8 @@ function commandProgressLabel(value) {
     const action = actions.find(([pattern]) => pattern.test(command));
     if (action) return action[1];
   }
-  return shortProgressText(`Команда: ${command}`);
+  const label = `Команда: ${command}`;
+  return label.length > 64 ? `Команда: …${command.slice(-(64 - 'Команда: …'.length))}` : label;
 }
 
 function codexStepLabel(item) {
