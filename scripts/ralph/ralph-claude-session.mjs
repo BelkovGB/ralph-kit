@@ -125,6 +125,8 @@ export function developmentClaudeArguments(config) {
   return [
     ...streamArguments,
     ...cacheStableArguments,
+    '--settings',
+    JSON.stringify({ fastMode: config.developmentFast === true }),
     '--model',
     config.developmentModel,
     '--effort',
@@ -142,6 +144,8 @@ export function reviewClaudeArguments(role) {
   return [
     ...streamArguments,
     ...cacheStableArguments,
+    '--settings',
+    JSON.stringify({ fastMode: role.fast === true }),
     '--model',
     role.model,
     '--effort',

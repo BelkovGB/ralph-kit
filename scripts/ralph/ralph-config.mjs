@@ -335,6 +335,7 @@ const configFields = new Set([
   'autoApproveConfiguredIssues',
   'baseBranch',
   'developmentEffort',
+  'developmentFast',
   'developmentModel',
   'developmentSkills',
   'draftPullRequest',
@@ -425,7 +426,7 @@ function applyLoopDefaults(config) {
     fail('Поле "supervisor" должно быть объектом.');
   }
   const unknownSupervisorFields = Object.keys(config.supervisor).filter((field) =>
-    !['enabled', 'agentCli', 'model', 'effort', 'maxInterventions', 'maxAdditionalIterations', 'maxTurns', 'timeoutMs'].includes(field));
+    !['enabled', 'agentCli', 'model', 'effort', 'fast', 'maxInterventions', 'maxAdditionalIterations', 'maxTurns', 'timeoutMs'].includes(field));
   if (unknownSupervisorFields.length > 0) {
     fail(`Неизвестные поля в "supervisor": ${unknownSupervisorFields.join(', ')}.`);
   }
@@ -433,6 +434,7 @@ function applyLoopDefaults(config) {
   config.supervisor.agentCli ??= 'codex';
   config.supervisor.model ??= 'gpt-6-astra';
   config.supervisor.effort ??= 'low';
+  config.supervisor.fast ??= false;
   config.supervisor.maxInterventions ??= 3;
   config.supervisor.maxAdditionalIterations ??= 3;
   config.supervisor.maxTurns ??= 50;
@@ -473,6 +475,7 @@ function applyLoopDefaults(config) {
   }
   config.developmentModel ??= 'gpt-5.6-terra';
   config.developmentEffort ??= 'medium';
+  config.developmentFast ??= false;
   // Пусто по умолчанию: без списка prompt задачи не меняется ни на байт.
   config.developmentSkills ??= [];
   resolveDevelopmentSkills(config);
@@ -559,6 +562,7 @@ function applyValidationAndReviewDefaults(config) {
     outputFile: '.agents/last-review.json',
   };
   config.review.model ??= 'gpt-5.6-terra';
+  config.review.fast ??= false;
   config.milestoneReview ??= {
     enabled: true,
     model: 'gpt-5.6-sol',
@@ -567,6 +571,7 @@ function applyValidationAndReviewDefaults(config) {
     outputFile: '.agents/last-milestone-review.json',
   };
   config.milestoneReview.maxTurns ??= config.maxTurns;
+  config.milestoneReview.fast ??= false;
   config.milestoneReview.maxFindings ??= 10;
   // Инкрементальное milestone-ревью: со второго круга проверяются только
   // коммиты после уже отревьюенного head плюс закрытие прежних findings, а не
@@ -781,6 +786,14 @@ function validateRuntimeSettings(config) {
 }
 
 function validateAgentRoles(config) {
+  for (const [field, value] of [
+    ['developmentFast', config.developmentFast],
+    ['supervisor.fast', config.supervisor.fast],
+    ['review.fast', config.review?.fast],
+    ['milestoneReview.fast', config.milestoneReview?.fast],
+  ]) {
+    if (typeof value !== 'boolean') fail(`Поле "${field}" должно быть true или false.`);
+  }
   if (typeof config.supervisor.enabled !== 'boolean') {
     fail('Поле "supervisor.enabled" должно быть true или false.');
   }
@@ -856,6 +869,19 @@ function validateAgentRoles(config) {
     config.milestoneReview.maxFindings > 50
   ) {
     fail('Поле "milestoneReview.maxFindings" должно быть целым числом от 1 до 50.');
+  }
+  // Claude Code сам переключает неподдерживаемую модель на Opus при fast.
+  // Отказываем до запуска, чтобы выбранная для роли модель не менялась молча.
+  const claudeFastModels = /^claude-opus-(?:5-5|5|4-8)(?:-[0-9]{8})?$/u;
+  for (const [field, cli, model, fast] of [
+    ['developmentFast', config.agentCli, config.developmentModel, config.developmentFast],
+    ['supervisor.fast', config.supervisor.agentCli, config.supervisor.model, config.supervisor.fast],
+    ['review.fast', config.agentCli, config.review.model, config.review.fast],
+    ['milestoneReview.fast', config.agentCli, config.milestoneReview.model, config.milestoneReview.fast],
+  ]) {
+    if (fast && cli === 'claude' && !claudeFastModels.test(model)) {
+      fail(`Поле "${field}" требует модель Claude Opus 5.5, 5 или 4.8 в своей роли.`);
+    }
   }
 }
 

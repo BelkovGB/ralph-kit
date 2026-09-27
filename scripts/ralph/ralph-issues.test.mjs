@@ -867,6 +867,43 @@ test('reasoning effort falls back to medium/medium/high when the config omits it
   });
 });
 
+test('each role defaults fast mode to off when its key is absent', () => {
+  const sample = JSON.parse(readFileSync(ralphConfigPath, 'utf8'));
+  const { fast: _supervisorFast, ...supervisor } = sample.supervisor;
+  const { fast: _reviewFast, ...review } = sample.review;
+  const { fast: _milestoneFast, ...milestoneReview } = sample.milestoneReview;
+  withPatchedRalphConfig({ developmentFast: undefined, supervisor, review, milestoneReview }, (config) => {
+    assert.equal(config.developmentFast, false);
+    assert.equal(config.supervisor.fast, false);
+    assert.equal(config.review.fast, false);
+    assert.equal(config.milestoneReview.fast, false);
+  });
+});
+
+test('the control panel has a separate fast switch for every role', () => {
+  const fields = fieldGroups.flatMap((group) => group.fields);
+  for (const rolePath of ['developmentFast', 'supervisor.fast', 'review.fast', 'milestoneReview.fast']) {
+    const field = fields.find(({ path: name }) => name === rolePath);
+    assert.equal(field?.type, 'boolean');
+    assert.equal(field?.default, false);
+  }
+});
+
+test('fast mode accepts only booleans and does not replace a Claude role model', () => {
+  const sample = JSON.parse(readFileSync(ralphConfigPath, 'utf8'));
+  for (const [patch, field] of [
+    [{ developmentFast: 'yes' }, 'developmentFast'],
+    [{ supervisor: { ...sample.supervisor, fast: 1 } }, 'supervisor.fast'],
+    [{ review: { ...sample.review, fast: 'yes' } }, 'review.fast'],
+    [{ milestoneReview: { ...sample.milestoneReview, fast: 1 } }, 'milestoneReview.fast'],
+    [{ developmentModel: 'claude-fable-5-1', developmentFast: true }, 'developmentFast'],
+    [{ developmentModel: 'claude-opus-5-1', developmentFast: true }, 'developmentFast'],
+  ]) {
+    assert.throws(() => withPatchedRalphConfig(patch, () => {}),
+      (error) => error.message.includes(`"${field}"`));
+  }
+});
+
 test('preflight stops when the active GitHub account cannot write to the repository', () => {
   // `gh auth status` завершается нулём при любом залогиненном аккаунте, поэтому
   // без этой проверки отказ приходит на push — после работы агента и создания

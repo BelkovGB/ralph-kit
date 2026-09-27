@@ -284,6 +284,15 @@ export const fieldGroups = [
         default: 'low',
       },
       {
+        path: 'supervisor.fast',
+        section: 'Lisa',
+        label: 'Fast Lisa',
+        type: 'boolean',
+        hint: 'Ускоряет ответы Lisa за больший расход. Для Claude нужен поддерживаемый Opus и доступ к fast mode.',
+        unit: null,
+        default: false,
+      },
+      {
         path: 'supervisor.maxInterventions',
         section: 'Lisa',
         label: 'Вызовов на фазу',
@@ -450,6 +459,15 @@ export const fieldGroups = [
         default: 'medium',
       },
       {
+        path: 'developmentFast',
+        section: 'Разработка',
+        label: 'Fast разработки',
+        type: 'boolean',
+        hint: 'Ускоряет ответы за больший расход. Для Claude нужен поддерживаемый Opus и доступ к fast mode.',
+        unit: null,
+        default: false,
+      },
+      {
         path: 'developmentSkills',
         section: 'Разработка',
         label: 'Скиллы прогона',
@@ -508,6 +526,15 @@ export const fieldGroups = [
         hint: 'Глубина рассуждения ревьюера. Набор значений задаёт CLI, как и у разработки.',
         unit: null,
         default: 'medium',
+      },
+      {
+        path: 'review.fast',
+        section: 'Ревью каждой issue',
+        label: 'Fast ревью issue',
+        type: 'boolean',
+        hint: 'Ускоряет ответы ревьюера за больший расход. Для Claude нужен поддерживаемый Opus.',
+        unit: null,
+        default: false,
       },
       {
         path: 'reviewSeverityFloor',
@@ -581,6 +608,15 @@ export const fieldGroups = [
           'Глубина рассуждения на проверке milestone. Набор значений задаёт CLI. Смена значения, как и смена модели, возвращает следующий круг к полной проверке.',
         unit: null,
         default: 'high',
+      },
+      {
+        path: 'milestoneReview.fast',
+        section: 'Ревью milestone',
+        label: 'Fast ревью milestone',
+        type: 'boolean',
+        hint: 'Ускоряет ответы ревьюера за больший расход. Для Claude нужен поддерживаемый Opus.',
+        unit: null,
+        default: false,
       },
       {
         path: 'milestoneReview.maxTurns',
