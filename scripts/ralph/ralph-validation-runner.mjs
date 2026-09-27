@@ -129,9 +129,10 @@ function hostDirectory(name, value, fallback) {
 export function validatedLisaPathDirectories(directories) {
   if (!Array.isArray(directories) || directories.length > 10 ||
       directories.some((directory) => typeof directory !== 'string' ||
+        // eslint-disable-next-line no-control-regex -- kit-hygiene: allow: kit lint directive; intentionally reject control bytes in PATH.
         directory.length > 1024 || /[\x00-\x1f\x7f]/u.test(directory) ||
         !path.isAbsolute(directory) || directory.includes(path.delimiter))) {
-    fail('validationPathDirectories должны содержать не более пяти абсолютных каталогов без разделителя PATH.');
+    fail('validationPathDirectories должны содержать не более десяти абсолютных каталогов без разделителя PATH.');
   }
   const project = realpathSync(projectRoot);
   const unique = [...new Set(directories.map((directory) => {
