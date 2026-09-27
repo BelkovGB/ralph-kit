@@ -76,6 +76,21 @@ test('claude arguments always carry --verbose alongside stream-json', () => {
   }
 });
 
+test('Claude fast mode is selected independently for development and review', () => {
+  for (const fast of [false, true]) {
+    const development = developmentClaudeArguments({
+      developmentModel: 'claude-opus-5-5', developmentEffort: 'medium', developmentFast: fast,
+    });
+    const review = reviewClaudeArguments({
+      model: 'claude-opus-5-5', effort: 'medium', fast,
+      schemaPath, outputPath: 'unused',
+    });
+    for (const args of [development, review]) {
+      assert.equal(args[args.indexOf('--settings') + 1], JSON.stringify({ fastMode: fast }));
+    }
+  }
+});
+
 test('both roles keep the cached prefix free of per-machine sections', () => {
   // Каждая сессия получает свой mkdtemp-HOME, и его путь попадает в секцию
   // памяти системного промпта: без флага префикс двух соседних сессий

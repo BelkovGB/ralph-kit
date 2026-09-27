@@ -24,6 +24,7 @@ test('persistent state survives restart and enforces branch identity', () => {
     first.reserveIteration();
     first.reserveSupervisorCall();
     first.grantSupervisorIteration();
+    first.setValidationPathDirectories(['C:/installed-tools']);
     first.beginIssue(
       {
         number: 42,
@@ -38,6 +39,7 @@ test('persistent state survives restart and enforces branch identity', () => {
     assert.equal(resumed.iterationsUsed, 1);
     assert.equal(resumed.supervisorCalls, 1);
     assert.equal(resumed.supervisorExtraIterations, 1);
+    assert.deepEqual(resumed.validationPathDirectories, ['C:/installed-tools']);
     assert.equal(resumed.issue.number, 42);
     assert.equal(resumed.issue.phase, 'agent-running');
     assert.equal(resumed.issue.body, 'Requirements');
@@ -157,12 +159,14 @@ test('persistent state advances a phase atomically and resets its iteration budg
     first.reserveIteration();
     first.reserveSupervisorCall();
     first.grantSupervisorIteration();
+    first.setValidationPathDirectories(['C:/installed-tools']);
     assert.equal(first.iterationsUsed, 1);
     assert.equal(first.advancePhase(secondConfig), true);
     assert.equal(first.phaseIndex, 1);
     assert.equal(first.iterationsUsed, 0);
     assert.equal(first.supervisorCalls, 0);
     assert.equal(first.supervisorExtraIterations, 0);
+    assert.deepEqual(first.validationPathDirectories, []);
 
     const resumed = createStateStore(secondConfig, '--run', statePath);
     assert.equal(resumed.phaseIndex, 1);

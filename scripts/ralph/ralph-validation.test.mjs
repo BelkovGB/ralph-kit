@@ -1,6 +1,6 @@
 import { validateIssueWorkingTree } from './ralph-loop.mjs';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import {
   hostHomeDirectory,
   hostValidationEnvironment,
+  validatedLisaPathDirectories,
   hostWorkingTreeHash,
   removeValidationArtifacts,
   runConfiguredScripts,
@@ -21,6 +22,7 @@ import {
   trustedControlFileHashes,
   withPatchedRalphConfig,
 } from './ralph-test-support.mjs';
+import { createStateStore, setActiveStateStore } from './ralph-state-store.mjs';
 
 function hostValidationConfig(overrides = {}) {
   return {
@@ -70,6 +72,48 @@ test('проверки идут в проекте: preflight, затем наб�
   assert.equal(calls[0].options.env.DATABASE_URL, 'postgres://validation');
   assert.equal(calls[0].options.env.CI, 'true');
   assert.equal(calls[0].options.env.CODEX_HOME, undefined);
+});
+
+test('Lisa can append an installed tool directory to validation PATH without changing config', () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'ralph-lisa-path-'));
+  try {
+    const accepted = validatedLisaPathDirectories([directory]);
+    assert.deepEqual(accepted, [realpathSync(directory)]);
+    const environment = hostValidationEnvironment(
+      hostValidationConfig({ validationEnvironment: ['PATH=original'] }),
+      { PATH: 'operator-path' }, accepted,
+    );
+    assert.equal(environment.PATH, `original${path.delimiter}${realpathSync(directory)}`);
+    assert.throws(() => validatedLisaPathDirectories(['relative/path']), /абсолютных/);
+    assert.throws(() => validatedLisaPathDirectories([`${directory}\nother`]), /абсолютных/);
+    assert.throws(() => validatedLisaPathDirectories([`${directory}${path.delimiter}other`]), /абсолютных/);
+    assert.throws(() => validatedLisaPathDirectories([path.dirname(fileURLToPath(import.meta.url))]), /внутри проекта/);
+    assert.throws(() => validatedLisaPathDirectories([path.join(directory, 'missing')]), /каталог/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('saved Lisa PATH reaches validation after a process restart', () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'ralph-lisa-path-'));
+  const statePath = path.join(directory, 'state.json');
+  const toolsDirectory = path.join(directory, 'tools');
+  mkdirSync(toolsDirectory);
+  const stateConfig = { branch: 'test', baseBranch: 'main', milestone: 'One' };
+  try {
+    const first = createStateStore(stateConfig, '--run', statePath);
+    first.setValidationPathDirectories(validatedLisaPathDirectories([toolsDirectory]));
+    setActiveStateStore(createStateStore(stateConfig, '--run', statePath));
+    const calls = [];
+    runConfiguredScripts(hostValidationConfig(), ['pnpm check'], 'Validation', {
+      run: unchangedHostTreeRun(calls),
+      environmentSource: { PATH: 'original' },
+    });
+    assert.equal(calls[0].options.env.PATH, `original${path.delimiter}${realpathSync(toolsDirectory)}`);
+  } finally {
+    setActiveStateStore(null);
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test('host validation rejects a check that changes project files', () => {

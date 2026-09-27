@@ -155,6 +155,10 @@ test('prompt includes saved context and forbids changing task boundaries', () =>
   assert.match(prompt, /#12/);
   assert.match(prompt, /tests fail/);
   assert.match(prompt, /не меняй.*критерии/i);
+  assert.match(prompt, /validationPathDirectories/);
+  assert.match(prompt, /команды, которые устанавливают или заменяют зависимости/);
+  assert.match(prompt, /общую тестовую фикстуру проекта/);
+  assert.match(prompt, /lisa-tools/);
 });
 
 test('Lisa uses Codex Astra low even when Ralph uses Claude', () => {
@@ -163,6 +167,14 @@ test('Lisa uses Codex Astra low even when Ralph uses Claude', () => {
   assert.equal(config.agentCli, 'codex');
   assert.equal(config.developmentModel, 'gpt-6-astra');
   assert.equal(config.developmentEffort, 'low');
+});
+
+test('Lisa uses her fast setting instead of the development setting', () => {
+  const config = supervisorAgentConfig({
+    agentCli: 'codex', developmentFast: true,
+    supervisor: { agentCli: 'codex', model: 'gpt-6-astra', effort: 'low', fast: false },
+  });
+  assert.equal(config.developmentFast, false);
 });
 
 test('Lisa can use Claude independently of Ralph with its own model and effort', () => {

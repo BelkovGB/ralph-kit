@@ -74,6 +74,7 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
       supervisorCalls: 0,
       supervisorExtraIterations: 0,
       supervisorActive: false,
+      validationPathDirectories: [],
       approvedIssueSnapshots: {},
       issue: null,
       updatedAt: new Date().toISOString(),
@@ -167,6 +168,14 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
     get supervisorExtraIterations() {
       return state?.supervisorExtraIterations ?? 0;
     },
+    get validationPathDirectories() {
+      return state?.validationPathDirectories ?? [];
+    },
+    setValidationPathDirectories(directories) {
+      if (!state) return;
+      state.validationPathDirectories = [...directories];
+      persist();
+    },
     reserveSupervisorCall() {
       if (!state) return null;
       state.supervisorCalls = (state.supervisorCalls ?? 0) + 1;
@@ -224,6 +233,7 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
       state.supervisorCalls = 0;
       state.supervisorExtraIterations = 0;
       state.supervisorActive = false;
+      state.validationPathDirectories = [];
       persist();
       return true;
     },

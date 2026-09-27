@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, rmSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
@@ -11,6 +11,7 @@ import { stripAnsi } from './ralph-failure-summary.mjs';
 import { fail } from './ralph-scope.mjs';
 import { credentialFreeEnvironment, run } from './ralph-process-runner.mjs';
 import { agentInstructionFiles, trustedFileHash } from './ralph-config.mjs';
+import { activeStateStore } from './ralph-state-store.mjs';
 
 /**
  * Прогон команд проверки в рабочей папке проекта.
@@ -125,7 +126,33 @@ function hostDirectory(name, value, fallback) {
   return value;
 }
 
-export function hostValidationEnvironment(config, source = process.env) {
+export function validatedLisaPathDirectories(directories) {
+  if (!Array.isArray(directories) || directories.length > 10 ||
+      directories.some((directory) => typeof directory !== 'string' ||
+        directory.length > 1024 || /[\x00-\x1f\x7f]/u.test(directory) ||
+        !path.isAbsolute(directory) || directory.includes(path.delimiter))) {
+    fail('validationPathDirectories должны содержать не более пяти абсолютных каталогов без разделителя PATH.');
+  }
+  const project = realpathSync(projectRoot);
+  const unique = [...new Set(directories.map((directory) => {
+    let resolved;
+    try {
+      resolved = realpathSync(directory);
+      if (!statSync(resolved).isDirectory()) throw new Error('not a directory');
+    } catch {
+      fail(`validationPathDirectories: не найден каталог ${directory}.`);
+    }
+    const relative = path.relative(project, resolved);
+    if (relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))) {
+      fail(`validationPathDirectories: каталог внутри проекта ${directory} запрещён.`);
+    }
+    return resolved;
+  }))];
+  if (unique.length > 5) fail('validationPathDirectories допускает не более пяти каталогов.');
+  return unique;
+}
+
+export function hostValidationEnvironment(config, source = process.env, lisaPathDirectories = []) {
   const configured = configuredValidationEnvironment(config);
   const home = hostDirectory('HOME', configured.HOME, hostHomeDirectory);
   const userProfile = hostDirectory('USERPROFILE', configured.USERPROFILE, home);
@@ -156,13 +183,18 @@ export function hostValidationEnvironment(config, source = process.env) {
     ),
   };
 
-  return {
+  const environment = {
     ...credentialFreeEnvironment(source),
     ...directories,
     ...Object.fromEntries(
       Object.entries(configured).filter(([name]) => !(name in directories)),
     ),
   };
+  const directoriesToAdd = validatedLisaPathDirectories(lisaPathDirectories);
+  if (directoriesToAdd.length > 0) {
+    environment.PATH = [environment.PATH, ...directoriesToAdd].filter(Boolean).join(path.delimiter);
+  }
+  return environment;
 }
 
 /**
@@ -285,7 +317,8 @@ export function runConfiguredScripts(config, scripts, label, options = {}) {
   if (preparation.length + guarded.length === 0) return { ran: false, scripts: [] };
 
   assertTrustedControlFilesUnchanged(config);
-  const environment = hostValidationEnvironment(config, options.environmentSource ?? process.env);
+  const environment = hostValidationEnvironment(config, options.environmentSource ?? process.env,
+    options.validationPathDirectories ?? activeStateStore()?.validationPathDirectories ?? []);
   // Отказ на подготовке каталогов — беда окружения, а не проверок. Без своего
   // кода он уходит в цикл как провал проверок, и агент тратит все попытки на
   // ошибку, которую правка репозитория не устраняет.

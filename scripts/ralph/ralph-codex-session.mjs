@@ -90,6 +90,13 @@ export function reasoningEffortArguments(effort) {
   return ['-c', `model_reasoning_effort="${effort}"`];
 }
 
+function speedArguments(fast) {
+  return [
+    '-c', `features.fast_mode=${fast}`,
+    '-c', `service_tier="${fast ? 'fast' : 'default'}"`,
+  ];
+}
+
 export function developmentCodexArguments(config) {
   return [
     'exec',
@@ -109,6 +116,7 @@ export function developmentCodexArguments(config) {
     '--model',
     config.developmentModel,
     ...reasoningEffortArguments(config.developmentEffort),
+    ...speedArguments(config.developmentFast),
     '-C',
     agentProjectRoot,
     '-',
@@ -136,6 +144,7 @@ export function reviewCodexArguments(role) {
     '--model',
     role.model,
     ...reasoningEffortArguments(role.effort),
+    ...speedArguments(role.fast),
     '--output-schema',
     role.schemaPath,
     '--output-last-message',

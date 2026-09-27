@@ -1,6 +1,8 @@
+import path from 'node:path';
+
 import { runDevelopmentSession, verifyAgentAuthentication } from './ralph-agent-backends.mjs';
 import { publishLiveStatus, reportActivity } from './ralph-live-status.mjs';
-import { assertTrustedControlFilesUnchanged } from './ralph-validation-runner.mjs';
+import { assertTrustedControlFilesUnchanged, hostHomeDirectory, validatedLisaPathDirectories } from './ralph-validation-runner.mjs';
 import { run } from './ralph-process-runner.mjs';
 import { analyzeRecovery, committedRecoveryPhases } from './ralph-recovery.mjs';
 import { isAncestorCommit } from './ralph-git.mjs';
@@ -31,13 +33,15 @@ export function supervisorPrompt(config, state, error, call) {
     issue?.body ? `Сохранённый текст задачи:\n${issue.body}` : '',
     'Проверь git status, сохранённое состояние и журнал Ralph. Исправь причину остановки в пределах текущей задачи.',
     'Перед resume проверь итоговый diff, выполни релевантные проверки и убедись, что ветка и HEAD прежние, чужая работа сохранена, а изменения относятся к текущей задаче. Не объявляй готовность только по факту правки файла.',
-    'Разрешено найти уже установленные инструменты, использовать их абсолютные пути или добавить их каталог в PATH только своего проверочного процесса и повторить диагностику. Изменение PATH дочерней команды не переносится в будущие проверки Ralph: проверь их штатное окружение; если для него требуется изменение конфигурации, запроси оператора.',
-    'Установка ПО, постоянное изменение окружения и исправления вне текущей задачи требуют отдельного разрешения оператора. Не меняй системную защиту или доступы.',
+    `Разрешено найти уже установленные инструменты. Если нужной CLI-утилиты нет, установи её только из официального источника в ${path.join(hostHomeDirectory, 'lisa-tools')}; не меняй системные каталоги и файлы зависимостей проекта.`,
+    'Если утилита нужна штатным проверкам Ralph, верни её каталог в JSON-поле validationPathDirectories: Ralph проверит путь и добавит его в PATH проверок до конца фазы.',
+    'Можешь исправить общую тестовую фикстуру проекта, если она блокирует текущую задачу. Не очищай общие данные без оператора.',
+    'Не запускай даже для диагностики команды, которые устанавливают или заменяют зависимости проекта. Установка вне указанного кэша, постоянное изменение окружения и исправления вне проекта или текущей задачи требуют оператора. Не меняй системную защиту или доступы.',
     'Не редактируй state.json и локи. После resume оркестратор сам проверит восстановление и согласует этап с рабочим деревом, отменит устаревшие результаты проверок и ревью. При небезопасном состоянии он сохранит работу и запросит человека.',
     'Не меняй цель задачи и критерии приёмки, не отключай проверки и не меняй лимиты, настройки Ralph или доверенные инструкции.',
     'Не удаляй незавершённую работу, не создавай commit и не переключай ветку. Не запускай второй Ralph Loop: оболочка продолжит его после твоего ответа.',
     'Если нужен доступ, согласование, решение за пределами задачи или безопасное исправление невозможно, запроси человека.',
-    'Последним сообщением верни только JSON: {"verdict":"resume"|"human","reason":"краткая причина"}.',
+    'Последним сообщением верни только JSON: {"verdict":"resume"|"human","reason":"краткая причина","validationPathDirectories":["абсолютный путь"]}. Поле validationPathDirectories необязательно.',
   ].filter(Boolean).join('\n\n');
 }
 
@@ -47,6 +51,7 @@ export function supervisorAgentConfig(config) {
     agentCli: config.supervisor.agentCli ?? 'codex',
     developmentModel: config.supervisor.model,
     developmentEffort: config.supervisor.effort,
+    developmentFast: config.supervisor.fast,
   };
 }
 
@@ -154,7 +159,15 @@ export async function requestLisa(config, store, error, call) {
     const answer = parseLisaAnswer(session.lastAgentMessage);
     if (answer.verdict === 'resume') {
       try {
+        const pathDirectories = validatedLisaPathDirectories(answer.validationPathDirectories ?? []);
+        const accepted = validatedLisaPathDirectories([
+          ...store.validationPathDirectories, ...pathDirectories,
+        ]);
         prepareLisaResume(config, store, before);
+        if (pathDirectories.length > 0) {
+          store.setValidationPathDirectories(accepted);
+          console.log(`Lisa: PATH проверок дополнен: ${pathDirectories.join(', ')}`);
+        }
       } catch (cause) {
         answer.verdict = 'human';
         answer.reason = `Lisa: продолжение не подготовлено; работа сохранена. ${cause.message}`;

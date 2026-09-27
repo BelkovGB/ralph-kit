@@ -21,6 +21,7 @@
     "agentCli": "codex",
     "model": "gpt-6-astra",
     "effort": "low",
+    "fast": false,
     "maxInterventions": 3,
     "maxAdditionalIterations": 3,
     "maxTurns": 50
@@ -39,6 +40,7 @@
   },
   "developmentModel": "claude-opus-5-5",
   "developmentEffort": "medium",
+  "developmentFast": false,
   "developmentSkills": [],
   "reviewSeverityFloor": "P1",
   "autoApproveConfiguredIssues": true,
@@ -55,6 +57,7 @@
     "enabled": true,
     "model": "claude-opus-5-5",
     "effort": "high",
+    "fast": false,
     "schemaFile": ".agents/review.schema.json",
     "outputFile": ".agents/last-review.json"
   },
@@ -62,6 +65,7 @@
     "enabled": true,
     "model": "claude-opus-5-5",
     "effort": "max",
+    "fast": false,
     "maxTurns": 50,
     "maxFindings": 10,
     "incremental": true,

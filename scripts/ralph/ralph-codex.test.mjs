@@ -286,6 +286,23 @@ test('Codex review sessions stay within one agent', () => {
   assert.ok(!args.includes('--sandbox'));
 });
 
+test('Codex fast mode is selected independently for development and review', () => {
+  for (const fast of [false, true]) {
+    const development = developmentCodexArguments({
+      developmentModel: 'gpt-5.6-terra', developmentEffort: 'medium', developmentFast: fast,
+    });
+    const review = reviewCodexArguments({
+      model: 'gpt-5.6-terra', effort: 'medium', fast,
+      schemaPath: 'review.schema.json', outputPath: 'last-review.json',
+    });
+    const setting = `service_tier="${fast ? 'fast' : 'default'}"`;
+    assert.equal(development.includes(setting), true);
+    assert.equal(review.includes(setting), true);
+    assert.equal(development.includes(`features.fast_mode=${fast}`), true);
+    assert.equal(review.includes(`features.fast_mode=${fast}`), true);
+  }
+});
+
 test('Codex command steps show a short action on start and completion', () => {
   for (const type of ['item.started', 'item.completed']) {
     const event = readCodexEvent(JSON.stringify({ type, item: {
