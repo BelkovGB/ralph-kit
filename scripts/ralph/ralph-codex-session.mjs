@@ -172,6 +172,60 @@ function numberOrNull(value) {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
+function shortProgressText(value, limit = 64) {
+  const clean = stripVTControlCharacters(String(value ?? '')).replace(/\s+/gu, ' ')
+    // eslint-disable-next-line no-control-regex -- kit-hygiene: allow — очищаем подпись шага.
+    .replace(/[\x00-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2060-\u206f]/gu, '').trim();
+  return clean.length > limit ? `${clean.slice(0, limit - 1)}…` : clean;
+}
+
+function commandProgressLabel(value) {
+  const command = typeof value === 'string' ? shortProgressText(value, Number.MAX_SAFE_INTEGER) : '';
+  if (!command) return 'Выполняет команду';
+  // Составную строку нельзя честно назвать по первой команде.
+  if (!/[;&|]/u.test(command)) {
+    const actions = [
+      [/^git\s+status(?:\s|$)/iu, 'Проверяет состояние Git'],
+      [/^git\s+diff(?:\s|$)/iu, 'Смотрит изменения'],
+      [/^git\s+log(?:\s|$)/iu, 'Смотрит историю Git'],
+      [/^(?:rg|grep|Select-String)(?:\s|$)/iu, 'Ищет в файлах'],
+      [/^(?:ls|dir|Get-ChildItem)(?:\s|$)/iu, 'Смотрит список файлов'],
+      [/^(?:cat|Get-Content|head|tail)(?:\s|$)/iu, 'Читает файл'],
+      [/^git\s+add(?:\s|$)/iu, 'Готовит изменения'],
+      [/^git\s+commit(?:\s|$)/iu, 'Создаёт коммит'],
+      [/^git\s+push(?:\s|$)/iu, 'Отправляет коммит'],
+      [/^(?:node\s+--test|npm\s+(?:run\s+)?test|pytest|go\s+test|cargo\s+test)(?:\s|$)/iu, 'Запускает тесты'],
+    ];
+    const action = actions.find(([pattern]) => pattern.test(command));
+    if (action) return action[1];
+  }
+  return shortProgressText(`Команда: ${command}`);
+}
+
+function codexStepLabel(item) {
+  if (item.type === 'command_execution') return commandProgressLabel(item.command);
+  if (item.type === 'file_change') {
+    if (item.status === 'failed') return 'Не удалось изменить файлы';
+    const count = Array.isArray(item.changes) ? item.changes.length : 0;
+    return count ? `Изменил файлы: ${count}` : 'Изменил файлы';
+  }
+  if (item.type === 'mcp_tool_call') {
+    const server = shortProgressText(item.server, 32);
+    const tool = shortProgressText(item.tool, 32);
+    if (/view_image/i.test(tool)) return 'Просматривает изображение';
+    if (/playwright/i.test(server)) return 'Работает в браузере (Playwright)';
+    return shortProgressText(`Инструмент: ${server || 'MCP'}/${tool || 'без имени'}`);
+  }
+  const labels = {
+    web_search: 'Ищет в интернете',
+    agent_message: 'Сообщение агента',
+    reasoning: 'Обдумывает задачу',
+    todo_list: 'Обновляет план',
+    collab_tool_call: 'Работает с агентом',
+  };
+  return labels[item.type] ?? shortProgressText(item.type);
+}
+
 export function readCodexEvent(line) {
   let event;
   try {
@@ -204,17 +258,7 @@ export function readCodexEvent(line) {
   const parsed = {};
   if ((event.type === 'item.started' || event.type === 'item.completed') && item.id) {
     parsed.stepId = item.id;
-    parsed.stepLabel = item.type;
-    if (item.type === 'command_execution') {
-      const command = typeof item.command === 'string'
-        ? stripVTControlCharacters(item.command).replace(/\s+/gu, ' ')
-          // eslint-disable-next-line no-control-regex -- kit-hygiene: allow — очищаем строку терминала.
-          .replace(/[\x00-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2060-\u206f]/gu, '').trim()
-        : '';
-      parsed.stepLabel = command
-        ? `Команда: ${command.length > 160 ? `${command.slice(0, 159)}…` : command}`
-        : 'Выполняет команду';
-    }
+    parsed.stepLabel = codexStepLabel(item);
   }
   if (event.type === 'item.completed') {
     if (item.type === 'agent_message' && item.text) {

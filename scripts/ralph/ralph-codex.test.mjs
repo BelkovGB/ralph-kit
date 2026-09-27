@@ -42,7 +42,7 @@ test('Lisa step and message carry her name in CLI output', async () => {
   } finally {
     console.log = originalLog;
   }
-  assert.ok(printed.some((line) => line.includes('[Lisa step 1/3] agent_message')));
+  assert.ok(printed.some((line) => line.includes('[Lisa step 1/3] Сообщение агента')));
   assert.ok(printed.some((line) => line.includes('[Lisa] Исправила причину остановки')));
   assert.ok(printed.some((line) => line.includes('Lisa: сообщение Исправила причину остановки')));
 });
@@ -286,19 +286,52 @@ test('Codex review sessions stay within one agent', () => {
   assert.ok(!args.includes('--sandbox'));
 });
 
-test('Codex command steps show a bounded single-line command on start and completion', () => {
+test('Codex command steps show a short action on start and completion', () => {
   for (const type of ['item.started', 'item.completed']) {
     const event = readCodexEvent(JSON.stringify({ type, item: {
       id: 'command-1', type: 'command_execution',
       command: '\u001b[31mgit\t diff\r\n --stat\u001b[0m\u0007',
     } }));
     assert.equal(event.stepId, 'command-1');
-    assert.equal(event.stepLabel, 'Команда: git diff --stat');
+    assert.equal(event.stepLabel, 'Смотрит изменения');
   }
   const long = readCodexEvent(JSON.stringify({ type: 'item.started', item: {
     id: 'long', type: 'command_execution', command: 'x'.repeat(200),
   } }));
-  assert.equal(long.stepLabel, `Команда: ${'x'.repeat(159)}…`);
+  assert.equal(long.stepLabel, `Команда: ${'x'.repeat(54)}…`);
+});
+
+test('Codex progress names familiar actions without another model call', () => {
+  const cases = [
+    [{ type: 'command_execution', command: 'git diff --stat' }, 'Смотрит изменения'],
+    [{ type: 'command_execution', command: 'rg -n progress scripts/ralph' }, 'Ищет в файлах'],
+    [{ type: 'command_execution', command: 'node --test scripts/ralph/ralph-codex.test.mjs' }, 'Запускает тесты'],
+    [{ type: 'mcp_tool_call', server: 'playwright', tool: 'browser_click' }, 'Работает в браузере (Playwright)'],
+    [{ type: 'mcp_tool_call', server: 'tools', tool: 'view_image' }, 'Просматривает изображение'],
+    [{ type: 'web_search', query: 'release notes' }, 'Ищет в интернете'],
+  ];
+  for (const [item, label] of cases) {
+    const event = readCodexEvent(JSON.stringify({ type: 'item.started', item: { id: 'step', ...item } }));
+    assert.equal(event.stepLabel, label);
+  }
+  const change = readCodexEvent(JSON.stringify({ type: 'item.completed', item: {
+    id: 'files', type: 'file_change', status: 'completed', changes: [
+      { path: 'a.mjs', kind: 'update' }, { path: 'b.mjs', kind: 'add' },
+    ],
+  } }));
+  assert.equal(change.stepLabel, 'Изменил файлы: 2');
+});
+
+test('Codex progress keeps unfamiliar tool and command labels short and clean', () => {
+  const command = readCodexEvent(JSON.stringify({ type: 'item.started', item: {
+    id: 'command', type: 'command_execution', command: 'custom-tool ' + 'x'.repeat(200),
+  } }));
+  assert.ok(command.stepLabel.length <= 64);
+  const tool = readCodexEvent(JSON.stringify({ type: 'item.started', item: {
+    id: 'tool', type: 'mcp_tool_call', server: 'other\nserver', tool: 'long'.repeat(100),
+  } }));
+  assert.ok(tool.stepLabel.length <= 64);
+  assert.doesNotMatch(tool.stepLabel, /[\r\n]/);
 });
 
 test('Codex command steps tolerate missing and malformed command fields', () => {
@@ -310,7 +343,7 @@ test('Codex command steps tolerate missing and malformed command fields', () => 
   }
 });
 
-test('Codex command label reaches progress output once without changing step count', async () => {
+test('Codex action label reaches progress output once without changing step count', async () => {
   const printed = [];
   const originalLog = console.log;
   try {
@@ -330,7 +363,7 @@ test('Codex command label reaches progress output once without changing step cou
     console.log = originalLog;
   }
   assert.deepEqual(printed.filter(line => line.includes(' step ')), [
-    '[Codex step 1/1] Команда: git diff --stat',
+    '[Codex step 1/1] Смотрит изменения',
   ]);
 });
 
