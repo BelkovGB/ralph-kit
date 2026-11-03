@@ -80,14 +80,14 @@ function diagnosticOutput(overrides = {}) {
   return lines.join('\n');
 }
 
-test('diagnostics distinguish a full phase from a trial and report manual review approval', () => {
+test('diagnostics distinguish a full phase from one-issue mode and report manual review approval', () => {
   const full = diagnosticOutput();
   assert.match(full, /active=false/u);
   assert.match(full, /ВНИМАНИЕ: бюджета.*меньше.*issues/u);
   assert.match(full, /ВНИМАНИЕ:.*autoApproveConfiguredIssues=false/u);
   assert.match(full, /не запускались/u);
   const trial = diagnosticOutput({ stopAfterFirstIssue: true });
-  assert.match(trial, /Пробный режим/u);
+  assert.match(trial, /Режим одной задачи/u);
   assert.doesNotMatch(trial, /ВНИМАНИЕ: бюджета/u);
   const automatic = diagnosticOutput({ maxIterations: 20, autoApproveConfiguredIssues: true });
   assert.doesNotMatch(automatic, /ВНИМАНИЕ:/u);

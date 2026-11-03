@@ -67,11 +67,42 @@ test('проверки идут в проекте: preflight, затем наб�
   });
 
   assert.deepEqual(result.scripts, ['pnpm db:migrate', 'pnpm check']);
+  assert.deepEqual(result.timings.map(({ stage, passed }) => [stage, passed]), [
+    ['preflight', true], ['check', true],
+  ]);
   assert.equal(calls.length, 2);
   if (process.platform === 'win32') assert.equal(calls[0].command, 'cmd');
   assert.equal(calls[0].options.env.DATABASE_URL, 'postgres://validation');
   assert.equal(calls[0].options.env.CI, 'true');
   assert.equal(calls[0].options.env.CODEX_HOME, undefined);
+});
+
+test('issue and phase validation use separate project commands and a scoped base commit', () => {
+  const baseCommit = 'a'.repeat(40);
+  const config = hostValidationConfig({
+    preflightScripts: ['prepare-once'],
+    validationProfiles: {
+      issue: ['check-issue'],
+      phase: ['check-phase'],
+      baseSync: ['check-base-sync'],
+    },
+  });
+  for (const [scope, expected] of [
+    ['issue', 'check-issue'],
+    ['phase', 'check-phase'],
+    ['baseSync', 'check-base-sync'],
+  ]) {
+    const calls = [];
+    const result = runConfiguredValidation(config, {
+      scope,
+      baseCommit,
+      skipPreflight: true,
+      run: unchangedHostTreeRun(calls),
+    });
+    assert.deepEqual(result.scripts, [expected]);
+    assert.equal(calls[0].options.env.RALPH_VALIDATION_SCOPE, scope);
+    assert.equal(calls[0].options.env.RALPH_VALIDATION_BASE_COMMIT, baseCommit);
+  }
 });
 
 test('Lisa can append an installed tool directory to validation PATH without changing config', () => {
@@ -704,15 +735,33 @@ test('committed recovery retries a connection failure once before escalation', (
   const first = Object.assign(new Error('command failed'), {
     code: 'RALPH_COMMAND_FAILED', stderr: 'ConnectionAbortedError: [WinError 10053] connection aborted',
   });
-  runConfiguredValidation(hostValidationConfig({ preflightScripts: [] }), {
+  assert.throws(() => runConfiguredValidation(hostValidationConfig({ preflightScripts: [] }), {
     retryConnectionFailure: true,
     run(command, args, options) {
       if (command === 'git') return unchangedHostTreeRun()(command, args, options);
       if (++attempts === 1) throw first;
       return { status: 0, stdout: '', stderr: '' };
     },
-  });
+  }), error => error.code === 'RALPH_VALIDATION_UNSTABLE' && error.cause === first);
   assert.equal(attempts, 2);
+});
+
+test('project validation exit codes distinguish environment and existing failures', () => {
+  for (const [status, code] of [
+    [75, 'RALPH_VALIDATION_ENVIRONMENT'],
+    [76, 'RALPH_VALIDATION_UNSTABLE'],
+    [78, 'RALPH_VALIDATION_PREEXISTING'],
+    [79, 'RALPH_VALIDATION_SCOPE_UNKNOWN'],
+  ]) {
+    assert.throws(() => runConfiguredValidation(hostValidationConfig({ preflightScripts: [] }), {
+      run(command, args, options) {
+        if (command === 'git') return unchangedHostTreeRun()(command, args, options);
+        throw Object.assign(new Error(`check exited ${status}`), {
+          code: 'RALPH_COMMAND_FAILED', status,
+        });
+      },
+    }), error => error.code === code && error.status === status);
+  }
 });
 
 

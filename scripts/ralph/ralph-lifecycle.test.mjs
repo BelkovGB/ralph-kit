@@ -309,6 +309,34 @@ test('счастливый путь: найденный commit доходит д
   });
 });
 
+test('already-fixed issue validates the linked commit instead of an empty HEAD diff', async () => {
+  await withLifecycleStand('ralph/lifecycle-scoped', passVerdict, async (stand) => {
+    const store = recordingStateStore();
+    setActiveStateStore(store);
+    const config = lifecycleConfig(stand.repository, stand.reviewOutputPath);
+    const validationPath = path.join(stand.repository.root, 'validate.cjs');
+    const reportPath = path.join(stand.repository.root, 'validation-scope.json');
+    writeFileSync(validationPath,
+      `require('node:fs').writeFileSync(process.env.RALPH_LIFECYCLE_REPORT, ` +
+        `JSON.stringify({ scope: process.env.RALPH_VALIDATION_SCOPE, ` +
+        `base: process.env.RALPH_VALIDATION_BASE_COMMIT }));\n`, 'utf8');
+    config.validationEnvironment = [
+      `RALPH_LIFECYCLE_VALIDATION=${validationPath}`,
+      `RALPH_LIFECYCLE_REPORT=${reportPath}`,
+    ];
+    const command = process.platform === 'win32'
+      ? 'node -e require(process.env.RALPH_LIFECYCLE_VALIDATION)'
+      : "node -e 'require(process.env.RALPH_LIFECYCLE_VALIDATION)'";
+    config.validationProfiles = { issue: [command], phase: [command], baseSync: [command] };
+
+    const result = await runAgentOnIssue(config, 'owner/repository', lifecycleIssue(), 'rules');
+    assert.equal(result.completed, true);
+    assert.deepEqual(JSON.parse(readFileSync(reportPath, 'utf8')), {
+      scope: 'issue', base: git(stand.repository.workTree, ['rev-parse', 'HEAD^']),
+    });
+  });
+});
+
 test('отказ ревью возвращает issue агенту, повторный отказ паркует её', async () => {
   await withLifecycleStand('ralph/lifecycle-fail', failVerdict, async (stand) => {
     const store = recordingStateStore();

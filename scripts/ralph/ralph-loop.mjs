@@ -202,21 +202,31 @@ function measuredValidation(runValidation) {
   }
 }
 
+const diagnosticValidationCodes = new Set([
+  'RALPH_VALIDATION_ENVIRONMENT',
+  'RALPH_VALIDATION_PREEXISTING',
+  'RALPH_VALIDATION_SCOPE_UNKNOWN',
+  'RALPH_VALIDATION_UNSTABLE',
+  'RALPH_COMMAND_TIMEOUT',
+  'RALPH_COMMAND_IDLE_TIMEOUT',
+]);
+
 /**
- * Полная проверка ветки сразу после того, как в неё влита база.
+ * Проверка ветки сразу после того, как в неё влита база.
  *
  * Слияние без конфликта не значит рабочее дерево: база могла изменить контракт,
  * который работа фазы использует, и Git об этом ничего не знает. Без этой
  * проверки поломка всплыла бы на первой же issue, и чинил бы её агент, который
  * её не вносил: он получил бы чужую ошибку под видом своей.
  *
- * Набор полный, а не сокращённый по области: изменения базы могут быть любыми.
+ * В выборочном режиме область задаёт проект. Неизвестное влияние он сообщает
+ * отдельным кодом ошибки и требует внешнего регресса.
  */
-function verifyMergedBase(config) {
+function verifyMergedBase(config, previousHead) {
   console.log('\n=== Проверка ветки после слияния базы ===\n');
   const endStage = startStage('validation');
   try {
-    runConfiguredValidation(config);
+    runConfiguredValidation(config, { scope: 'baseSync', baseCommit: previousHead });
     endStage();
   } catch (error) {
     endStage({ failed: true });
@@ -562,7 +572,12 @@ export function validateIssueWorkingTree(config, foreignPaths, dependencies = {}
   const status = dependencies.workingTreeStatus ?? workingTreeStatus;
   const validate = dependencies.runConfiguredValidation ?? runConfiguredValidation;
   let prepared = status();
-  validate(config, { onPrepared: () => { prepared = status(); } });
+  validate(config, {
+    scope: 'issue',
+    baseCommit: dependencies.baseCommit,
+    skipPreflight: Boolean(config.validationProfiles),
+    onPrepared: () => { prepared = status(); },
+  });
   if (status() !== prepared) fail('Validation changed the prepared working tree.');
   return workingTreeEntries(prepared).filter((entry) => !foreignPaths.has(entry.path));
 }
@@ -611,15 +626,28 @@ async function commitAndCompleteIssue(config, repository, issue, startingCommit,
       fail(`Issue #${issue.number}: агент не оставил изменений и не указал ALREADY_FIXED commit.`);
     }
     const commit = verifiedIssueCommit(alreadyFixedCommit, issue);
+    const parent = run('git', ['rev-parse', '--verify', `${commit}^`], { allowFailure: true });
+    if (parent.status !== 0 || !/^[0-9a-f]{40}$/.test(parent.stdout)) {
+      fail(`Issue #${issue.number}: у ALREADY_FIXED commit ${commit} нет базового родителя для проверки.`);
+    }
     activeStateStore()?.updateIssue({ phase: 'validating' });
     try {
-      measuredValidation(() => runConfiguredValidation(config));
+      measuredValidation(() => runConfiguredValidation(config, {
+        scope: 'issue', baseCommit: parent.stdout,
+        skipPreflight: Boolean(config.validationProfiles),
+      }));
     } catch (error) {
       if (error.code === 'RALPH_VALIDATION_MUTATED') {
         activeStateStore()?.updateIssue({
           phase: 'validation-mutated',
           validationExpectedTreeHash: error.expectedTreeHash,
           ...recordedFailure(error),
+        });
+        throw error;
+      }
+      if (diagnosticValidationCodes.has(error.code)) {
+        activeStateStore()?.updateIssue({
+          phase: 'validation-diagnostic', lastAgentMessage, ...recordedFailure(error),
         });
         throw error;
       }
@@ -646,13 +674,21 @@ async function commitAndCompleteIssue(config, repository, issue, startingCommit,
   activeStateStore()?.updateIssue({ phase: 'validating' });
   let validatedEntries;
   try {
-    validatedEntries = measuredValidation(() => validateIssueWorkingTree(config, foreignPaths));
+    validatedEntries = measuredValidation(() => validateIssueWorkingTree(config, foreignPaths, {
+      baseCommit: startingCommit,
+    }));
   } catch (error) {
     if (error.code === 'RALPH_VALIDATION_MUTATED') {
       activeStateStore()?.updateIssue({
         phase: 'validation-mutated',
         validationExpectedTreeHash: error.expectedTreeHash,
         ...recordedFailure(error),
+      });
+      throw error;
+    }
+    if (diagnosticValidationCodes.has(error.code)) {
+      activeStateStore()?.updateIssue({
+        phase: 'validation-diagnostic', lastAgentMessage, ...recordedFailure(error),
       });
       throw error;
     }
@@ -783,7 +819,10 @@ export async function runAgentOnIssue(config, repository, issue, rules) {
     );
     const resumePhase = storedIssue.phase;
     try {
-      measuredValidation(() => runConfiguredValidation(config, { retryConnectionFailure: true }));
+      measuredValidation(() => runConfiguredValidation(config, {
+        scope: 'issue', baseCommit: storedIssue.startingCommit,
+        skipPreflight: Boolean(config.validationProfiles), retryConnectionFailure: true,
+      }));
     } catch (error) {
       activeStateStore().updateIssue({
         phase: resumePhase,
@@ -793,6 +832,13 @@ export async function runAgentOnIssue(config, repository, issue, rules) {
       throw error;
     }
     return reviewAndCloseCommittedIssue(config, repository, issue, commit);
+  }
+
+  if (storedIssue?.phase === 'validation-diagnostic') {
+    console.log(`Issue #${issue.number}: повторяем проверку после диагностики без запуска агента разработки.`);
+    return commitAndCompleteIssue(
+      config, repository, issue, storedIssue.startingCommit, storedIssue.lastAgentMessage,
+    );
   }
 
   const currentHead = run('git', ['rev-parse', 'HEAD']).stdout;
@@ -906,12 +952,15 @@ function verifyReviewedPullRequestHead(config, repository, pullRequest) {
 function createPullRequest(config, repository) {
   assertCleanTree('Нельзя создать PR: в рабочем дереве есть незакоммиченные изменения.');
 
-  runConfiguredValidation(config);
+  const phaseBase = verifyBaseHistory(config);
+  runConfiguredValidation(config, {
+    scope: 'phase', baseCommit: phaseBase,
+    skipPreflight: Boolean(config.validationProfiles),
+  });
   assertValidationLeftTree(
     '',
     'Нельзя обновить PR: проектные проверки изменили чистое рабочее дерево.',
   );
-  verifyBaseHistory(config);
   const commitCount = Number(
     run('git', ['rev-list', '--count', `origin/${config.baseBranch}..HEAD`]).stdout,
   );
@@ -984,7 +1033,13 @@ export function printCheck(
   // останавливается на первой упавшей команде, и агент получает сводку только по
   // ней. Подготовка необязательна, её пустой список нормален и молчит.
   printScriptList('Команды подготовки', config.preflightScripts);
-  printScriptList('Команды проверок', config.validationScripts);
+  if (config.validationProfiles) {
+    printScriptList('Проверки задачи', config.validationProfiles.issue);
+    printScriptList('Проверки фазы', config.validationProfiles.phase);
+    printScriptList('Проверки после слияния базы', config.validationProfiles.baseSync);
+  } else {
+    printScriptList('Команды проверок', config.validationScripts);
+  }
   console.log(
     `Review issue: ${
       config.review.enabled ? `${config.review.model} (effort=${config.review.effort})` : 'выключен'
@@ -1017,7 +1072,7 @@ export function printCheck(
   }
   // Пустой список проверок — самая дорогая незаполненная настройка: цикл дойдёт
   // до коммита и ревью, ни разу не запустив тесты, и промолчит об этом.
-  if ((config.validationScripts ?? []).length === 0) {
+  if (!config.validationProfiles && (config.validationScripts ?? []).length === 0) {
     console.log(
       'ВНИМАНИЕ: команды проверок не заданы. Прогон дойдёт до коммита и ревью, ни разу ' +
         `не запустив тесты и линтер: заполните "validationScripts" в ${path.relative(
@@ -1039,7 +1094,7 @@ export function printCheck(
     );
   }
   if (config.stopAfterFirstIssue) {
-    console.log('Пробный режим: остановка после первой завершённой issue, без PR и ревью всей фазы.');
+    console.log('Режим одной задачи: повторы продолжают её до успеха или лимита; следующая issue не берётся.');
   } else if (budget.remaining > 0 && budget.remaining < issues.length) {
     console.log(
       'ВНИМАНИЕ: бюджета итераций меньше, чем открытых issues; полная фаза может остановиться до завершения. ' +
@@ -1081,6 +1136,7 @@ export async function runContinuousLoop(context, actions) {
   const pendingIssues = new Map();
   const completedIssueNumbers = new Set();
   const completedInRun = new Set();
+  let singleIssueNumber = config.stopAfterFirstIssue ? (stateStore?.issue?.number ?? null) : null;
   // Issues, которые ревью отклоняло подряд до предела. Из очереди этого прогона
   // они убраны, но остаются открытыми: их разбирает оператор или следующий
   // прогон, а бюджет достаётся остальным.
@@ -1304,7 +1360,15 @@ export async function runContinuousLoop(context, actions) {
       continue;
     }
 
-    let currentIssue = issues[0];
+    if (config.stopAfterFirstIssue && singleIssueNumber !== null &&
+        !issues.some((issue) => issue.number === singleIssueNumber)) {
+      console.log(`Issue #${singleIssueNumber} покинула очередь. Следующую задачу не берём.`);
+      return { mode: 'run', completed: 0, issueNoLongerOpen: true };
+    }
+    let currentIssue = config.stopAfterFirstIssue && singleIssueNumber !== null
+      ? issues.find((issue) => issue.number === singleIssueNumber)
+      : issues[0];
+    if (config.stopAfterFirstIssue) singleIssueNumber ??= currentIssue.number;
     reportActivity('issue-preparation', `Подготовка задачи #${currentIssue.number}`);
     const refreshedIssue = actions.refreshIssue(repository, currentIssue.number, currentIssue);
     if (refreshedIssue.state !== 'OPEN') {
@@ -1329,7 +1393,8 @@ export async function runContinuousLoop(context, actions) {
     const linkedCommit = storedPhase ? null : actions.linkedCommitForIssue?.(currentIssue);
     if (linkedCommit) currentIssue.linkedCommit = linkedCommit;
     const needsDevelopmentIteration =
-      !committedRecoveryPhases.includes(storedPhase) && !linkedCommit;
+      !committedRecoveryPhases.includes(storedPhase) &&
+      storedPhase !== 'validation-diagnostic' && !linkedCommit;
 
     if (needsDevelopmentIteration && iteration >= config.maxIterations) {
       // Запись до остановки: иначе прогон обрывается молча, и в журнале
@@ -1400,14 +1465,15 @@ export async function runContinuousLoop(context, actions) {
     if (config.stopAfterFirstIssue) {
       if (result?.completed === false) {
         const { reason, runOutcome } = incompleteIssueOutcome(result);
-        console.log(
-          `Issue #${currentIssue.number} осталась открытой: ${reason}. ` +
-            'Цикл остановлен после одной итерации.',
-        );
-        return { mode: 'run', completed: 0, ...runOutcome };
+        if (result.parked) {
+          console.log(`Issue #${currentIssue.number} отложена: ${reason}. Другую задачу не берём.`);
+          return { mode: 'run', completed: 0, ...runOutcome };
+        }
+        console.log(`Issue #${currentIssue.number} осталась открытой: ${reason}. Продолжаем ту же задачу.`);
+        continue;
       }
       stateStore?.finish();
-      console.log(`Issue #${currentIssue.number} завершена. Цикл остановлен после одной итерации.`);
+      console.log(`Issue #${currentIssue.number} завершена. Следующую задачу не берём.`);
       return { mode: 'run', completed: 1 };
     }
   }
@@ -1423,7 +1489,7 @@ export async function executeMode(context, actions) {
     return { mode: 'check', issues: issues.length, iterationBudget: budget };
   }
 
-  actions.runPreflight(config);
+  if (!context.preflightCompleted) actions.runPreflight(config);
 
   return runContinuousLoop(context, actions);
 }
@@ -1597,6 +1663,7 @@ async function main() {
       // Слияние базы идёт до слепка control plane и после переключения ветки:
       // база может принести правки `.agents/**` или `scripts/ralph/**`, и
       // слепок, снятый до неё, объявил бы их подделкой доверенных файлов.
+      const previousHead = run('git', ['rev-parse', 'HEAD']).stdout;
       const mergedBase =
         mode === '--run' && !activeStateStore()?.issue &&
         phaseConfig.syncBaseBranch && syncPhaseBranchWithBase(phaseConfig);
@@ -1615,7 +1682,7 @@ async function main() {
         // обязана переехать вместе с ним, иначе продолжение потребует HEAD,
         // который остался позади.
         applyRecoveryPlan(analyzeRecovery(phaseConfig, activeStateStore()?.issue, { hostWorkingTreeHash }), activeStateStore());
-        verifyMergedBase(phaseConfig);
+        verifyMergedBase(phaseConfig, previousHead);
       }
       if (mode === '--run') {
         reconcileStateAfterCrash(phaseConfig, activeStateStore());
@@ -1628,6 +1695,7 @@ async function main() {
           config: phaseConfig,
           repository,
           milestone,
+          preflightCompleted: Boolean(mergedBase),
           repositoryState,
           rules,
           stateStore: activeStateStore(),

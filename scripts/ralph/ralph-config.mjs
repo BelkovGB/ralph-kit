@@ -359,6 +359,7 @@ const configFields = new Set([
   'trustedIssueAuthors',
   'validationArtifactPaths',
   'validationEnvironment',
+  'validationProfiles',
   'validationScripts',
 ]);
 
@@ -661,6 +662,22 @@ const maxValidationCommandLength = 500;
 const commandControlOperators = /[;&|`]/u;
 
 function validateValidationCommands(config) {
+  const profiles = config.validationProfiles;
+  if (profiles !== undefined && (
+    typeof profiles !== 'object' || profiles === null || Array.isArray(profiles) ||
+    Object.keys(profiles).some((scope) => !['issue', 'phase', 'baseSync'].includes(scope)) ||
+    ['issue', 'phase', 'baseSync'].some((scope) =>
+      !Array.isArray(profiles[scope]) || profiles[scope].length === 0)
+  )) {
+    fail('Поле "validationProfiles" должно содержать непустые массивы issue, phase и baseSync.');
+  }
+  if (!Array.isArray(config.preflightScripts) || !Array.isArray(config.validationScripts)) {
+    fail('Поля "preflightScripts" и "validationScripts" должны быть массивами команд.');
+  }
+  const profileCommands = profiles
+    ? [...profiles.issue, ...profiles.phase, ...profiles.baseSync]
+    : [];
+  const allCommands = [...config.preflightScripts, ...config.validationScripts, ...profileCommands];
   // Команда выполняется оболочкой как есть. От подстановки произвольной команды
   // защищает control plane: автономный агент не может изменить конфиг. Цепочки
   // запрещены отдельно, потому что Windows PowerShell и cmd возвращают код
@@ -669,9 +686,7 @@ function validateValidationCommands(config) {
   // Перевод строки запрещён по тому же доводу: оболочка выполнила бы такую
   // строку как несколько команд, и отчёт назвал бы не тот шаг.
   if (
-    !Array.isArray(config.preflightScripts) ||
-    !Array.isArray(config.validationScripts) ||
-    [...config.preflightScripts, ...config.validationScripts].some(
+    allCommands.some(
       (command) =>
         typeof command !== 'string' ||
         command.trim() === '' ||
@@ -680,12 +695,12 @@ function validateValidationCommands(config) {
     )
   ) {
     fail(
-      'Поля "preflightScripts" и "validationScripts" должны быть массивами непустых однострочных ' +
+      'Команды preflightScripts, validationScripts и validationProfiles должны быть непустыми однострочными ' +
         `команд оболочки не длиннее ${maxValidationCommandLength} символов.`,
     );
   }
   if (
-    [...config.preflightScripts, ...config.validationScripts].some((command) =>
+    allCommands.some((command) =>
       commandControlOperators.test(command),
     )
   ) {
