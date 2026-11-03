@@ -95,8 +95,8 @@ test('issue review prompt carries the change set the reviewer cannot obtain itse
   assert.match(prompt, /```diff/);
   assert.match(prompt, /complete set of changes made for this issue/);
   assert.match(prompt, /Do not rebuild it with Git commands/);
-  assert.match(prompt, /already ran npm run lint, npm run build, npm test/);
-  assert.match(prompt, /Do not rerun them/);
+  assert.match(prompt, /already ran these issue checks against this tree: npm run lint, npm run build, npm test/);
+  assert.match(prompt, /Judge whether their project-defined scope covers/);
   // Замечания прошлого ревью обязаны быть подписаны: внутри тела issue они
   // неотличимы от критериев готовности, и требовать их проверки бессмысленно.
   assert.match(prompt, /previous review of this issue reported the findings below/);
@@ -124,6 +124,17 @@ test('a truncated change set says so instead of looking complete', () => {
   // Набор validationScripts не задан: утверждать, что проверки прошли, нечем.
   assert.doesNotMatch(prompt, /already ran/);
   assert.doesNotMatch(prompt, /previous review/);
+});
+
+test('issue review evidence names the scoped checks instead of legacy full checks', () => {
+  const prompt = buildIndependentReviewPrompt(
+    { validationScripts: ['full-check'], validationProfiles: { issue: ['contracts-check'] } },
+    { number: 1, title: 'Contract', body: 'Add contract' },
+    'a'.repeat(40),
+    { changes: { commit: 'a'.repeat(40), stat: '', nameStatus: '', diff: '', truncated: false } },
+  );
+  assert.match(prompt, /issue checks against this tree: contracts-check/);
+  assert.doesNotMatch(prompt, /full-check/);
 });
 
 test('a repeat review is told what the previous one already cleared', () => {

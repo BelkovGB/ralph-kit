@@ -313,13 +313,17 @@ export function runConfiguredScripts(config, scripts, label, options = {}) {
   // миграции и генерация кода для того и существуют. Снимок берётся после него,
   // иначе подготовка останавливала бы прогон собственным результатом, а
   // следующий запуск повторял бы её с тем же исходом.
-  const preparation = [...config.preflightScripts];
+  const preparation = options.skipPreflight ? [] : [...config.preflightScripts];
   const guarded = [...scripts];
   if (preparation.length + guarded.length === 0) return { ran: false, scripts: [] };
 
   assertTrustedControlFilesUnchanged(config);
   const environment = hostValidationEnvironment(config, options.environmentSource ?? process.env,
     options.validationPathDirectories ?? activeStateStore()?.validationPathDirectories ?? []);
+  if (options.scope) {
+    environment.RALPH_VALIDATION_SCOPE = options.scope;
+    environment.RALPH_VALIDATION_BASE_COMMIT = options.baseCommit ?? '';
+  }
   // Отказ на подготовке каталогов — беда окружения, а не проверок. Без своего
   // кода он уходит в цикл как провал проверок, и агент тратит все попытки на
   // ошибку, которую правка репозитория не устраняет.
@@ -349,7 +353,9 @@ export function runConfiguredScripts(config, scripts, label, options = {}) {
   let activeScript = preparation[0] ?? guarded[0];
   let baseline = null;
   let failure = null;
-  const runScript = (script) => {
+  let connectionFailure = null;
+  const timings = [];
+  const runScript = (script, stage) => {
     activeScript = script;
     const remainingMs = config.runtime.validationRunTimeoutMs - (Date.now() - startedAt);
     if (remainingMs < 1) {
@@ -360,21 +366,30 @@ export function runConfiguredScripts(config, scripts, label, options = {}) {
       throw error;
     }
     const command = hostShellCommand(script, options.platform);
-    execute(command.command, command.args, {
-      echoOutput: true,
-      timeoutMs: remainingMs,
-      env: environment,
-    });
+    const commandStartedAt = Date.now();
+    let passed = false;
+    try {
+      execute(command.command, command.args, {
+        echoOutput: true,
+        timeoutMs: remainingMs,
+        env: environment,
+      });
+      passed = true;
+    } finally {
+      const elapsedMs = Date.now() - commandStartedAt;
+      timings.push({ stage, script, ms: elapsedMs, passed });
+      console.log(`${label}: ${stage} ${script} — ${elapsedMs} ms, ${passed ? 'pass' : 'fail'}.`);
+    }
   };
 
   try {
-    for (const script of preparation) runScript(script);
+    for (const script of preparation) runScript(script, 'preflight');
     baseline = hostWorkingTreeEntries({ run: execute });
     options.onPrepared?.();
     let connectionRetryUsed = false;
     for (const script of guarded) {
       try {
-        runScript(script);
+        runScript(script, 'check');
       } catch (error) {
         if (!options.retryConnectionFailure || connectionRetryUsed || !isConnectionInterruption(error)) {
           throw error;
@@ -383,18 +398,31 @@ export function runConfiguredScripts(config, scripts, label, options = {}) {
         if (changedTreePaths(baseline, hostWorkingTreeEntries({ run: execute })).length > 0) throw error;
         assertTrustedControlFilesUnchanged(config);
         connectionRetryUsed = true;
+        connectionFailure = error;
         logDetailError([error.message, error.stdout, error.stderr].filter(Boolean).join('\n').slice(-100_000));
         console.error(`${label}: разрыв соединения; один повтор команды проверки в оставшемся лимите времени.`);
         try {
-          runScript(script);
+          runScript(script, 'diagnostic-retry');
         } catch (retryError) {
           retryError.cause ??= error;
           throw retryError;
         }
       }
     }
+    if (connectionFailure) {
+      const unstable = new Error(
+        `${label}: проверка прошла только при диагностическом повторе после разрыва соединения. ` +
+          'Первый сбой сохранён; требуется разбор нестабильного теста.',
+        { cause: connectionFailure },
+      );
+      unstable.code = 'RALPH_VALIDATION_UNSTABLE';
+      throw unstable;
+    }
   } catch (error) {
     failure = error;
+  }
+  if (failure && connectionFailure && failure !== connectionFailure) {
+    failure.cause ??= connectionFailure;
   }
 
   if (baseline !== null) {
@@ -423,13 +451,25 @@ export function runConfiguredScripts(config, scripts, label, options = {}) {
   }
 
   if (failure) {
-    if (!['RALPH_COMMAND_TIMEOUT', 'RALPH_COMMAND_IDLE_TIMEOUT', 'RALPH_VALIDATION_MUTATED'].includes(failure.code)) {
+    if (failure.code === 'RALPH_COMMAND_FAILED' && failure.status === 75) {
+      failure.code = 'RALPH_VALIDATION_ENVIRONMENT';
+    } else if (failure.code === 'RALPH_COMMAND_FAILED' && failure.status === 76) {
+      failure.code = 'RALPH_VALIDATION_UNSTABLE';
+    } else if (failure.code === 'RALPH_COMMAND_FAILED' && failure.status === 78) {
+      failure.code = 'RALPH_VALIDATION_PREEXISTING';
+    } else if (failure.code === 'RALPH_COMMAND_FAILED' && failure.status === 79) {
+      failure.code = 'RALPH_VALIDATION_SCOPE_UNKNOWN';
+    } else if (![
+      'RALPH_COMMAND_TIMEOUT', 'RALPH_COMMAND_IDLE_TIMEOUT', 'RALPH_VALIDATION_MUTATED',
+      'RALPH_VALIDATION_ENVIRONMENT', 'RALPH_VALIDATION_PREEXISTING',
+      'RALPH_VALIDATION_SCOPE_UNKNOWN', 'RALPH_VALIDATION_UNSTABLE',
+    ].includes(failure.code)) {
       failure.code = 'RALPH_VALIDATION_FAILED';
     }
     failure.script = activeScript;
     throw failure;
   }
-  return { ran: true, scripts: [...preparation, ...guarded] };
+  return { ran: true, scripts: [...preparation, ...guarded], timings };
 }
 
 /**
@@ -495,18 +535,19 @@ export function runPreflight(config, options = {}) {
   return runConfiguredScripts(config, [], 'Preflight', options);
 }
 
-/**
- * Полный набор `validationScripts`.
- *
- * Набор не сокращается по области изменения: какая команда какой файл
- * покрывает, знает только сам проект, а неверная догадка молча пропускает
- * проверку.
- */
+/** Проект выбирает охват проверки по переданному scope и базовому коммиту. */
 export function runConfiguredValidation(config, options = {}) {
+  if (config.validationProfiles && (
+    !['issue', 'phase', 'baseSync'].includes(options.scope) ||
+    !/^[0-9a-f]{40}$/u.test(options.baseCommit ?? '')
+  )) {
+    fail('Выборочная проверка требует scope и полный SHA базового коммита.');
+  }
   // Уборка идёт до preflight: он готовит то, что нужно проверкам, и уборка
   // после него снесла бы собственную подготовку прогона.
   removeValidationArtifacts(config, options);
   // Preflight выполняется первым в том же окружении, что и остальные команды
   // текущей проверки.
-  return runConfiguredScripts(config, config.validationScripts, 'Validation', options);
+  const scripts = config.validationProfiles?.[options.scope] ?? config.validationScripts;
+  return runConfiguredScripts(config, scripts, 'Validation', options);
 }

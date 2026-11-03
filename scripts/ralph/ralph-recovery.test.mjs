@@ -54,6 +54,20 @@ test('failed committed validation accepts a fix at the same HEAD without reusing
   assert.equal(f.git('rev-parse', 'HEAD'), f.manual);
 });
 
+test('diagnostic validation preserves the unfinished diff for a check-only resume', (t) => {
+  const f = fixture(t);
+  f.git('reset', '--hard', f.base);
+  f.store.updateIssue({
+    phase: 'validation-diagnostic', startingCommit: f.base,
+    lastAgentMessage: 'COMMIT_MESSAGE: fix: repair',
+    validationFixAttempts: 0,
+  });
+  writeFileSync(path.join(f.root, 'app.txt'), 'unfinished repair');
+  assert.equal(f.analyze().kind, 'ready');
+  assert.equal(f.store.allowsDirtyRecovery('feature', f.base), true);
+  assert.equal(f.store.issue.validationFixAttempts, 0);
+});
+
 test('auth, trust and validation mutation failures retain strict committed recovery', () => {
   for (const code of ['RALPH_AGENT_AUTH', 'RALPH_CONTROL_PLANE_CHANGED', 'RALPH_VALIDATION_MUTATED',
     'RALPH_PREFLIGHT_FAILED', 'RALPH_RECOVERY_BLOCKED']) {

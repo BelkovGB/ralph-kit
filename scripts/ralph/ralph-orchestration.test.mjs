@@ -567,6 +567,15 @@ test('--run runs preflight once before starting the continuous loop', async () =
   ]);
 });
 
+test('a completed base-sync check is not followed by duplicate preflight', async () => {
+  let preflightRuns = 0;
+  await executeMode(
+    context({ preflightCompleted: true, config: { stopAfterFirstIssue: true } }),
+    actions({ runPreflight: () => { preflightRuns += 1; } }),
+  );
+  assert.equal(preflightRuns, 0);
+});
+
 test('a failed preflight prevents --run from reading or changing GitHub state', async () => {
   const calls = [];
 
@@ -617,16 +626,59 @@ test('stopAfterFirstIssue exits cleanly when no issue is open', async () => {
   assert.equal(codexRuns, 0);
 });
 
-test('stopAfterFirstIssue reports an issue-level review failure without claiming completion', async () => {
+test('stopAfterFirstIssue retries the same issue and never takes the next one', async () => {
+  const attempted = [];
   const result = await executeMode(
     context({ config: { stopAfterFirstIssue: true } }),
     actions({
-      openIssues: () => [{ number: 11 }],
-      runAgentOnIssue: async () => ({ completed: false }),
+      openIssues: () => [{ number: 11 }, { number: 12 }],
+      runAgentOnIssue: async (_config, _repository, issue) => {
+        attempted.push(issue.number);
+        return { completed: attempted.length > 1, validationFailed: attempted.length === 1 };
+      },
     }),
   );
 
-  assert.deepEqual(result, { mode: 'run', completed: 0, reviewFailed: true });
+  assert.deepEqual(result, { mode: 'run', completed: 1 });
+  assert.deepEqual(attempted, [11, 11]);
+});
+
+test('stopAfterFirstIssue stops on a parked issue without taking another one', async () => {
+  const attempted = [];
+  const result = await executeMode(
+    context({ config: { stopAfterFirstIssue: true } }),
+    actions({
+      openIssues: () => [{ number: 11 }, { number: 12 }],
+      runAgentOnIssue: async (_config, _repository, issue) => {
+        attempted.push(issue.number);
+        return { completed: false, parked: true };
+      },
+    }),
+  );
+  assert.equal(result.completed, 0);
+  assert.deepEqual(attempted, [11]);
+});
+
+test('stopAfterFirstIssue does not switch tasks when the selected issue leaves the queue', async () => {
+  const attempted = [];
+  let listings = 0;
+  const result = await executeMode(
+    context({ config: { stopAfterFirstIssue: true } }),
+    actions({
+      openIssues: () => ++listings === 1
+        ? [{ number: 11 }, { number: 12 }]
+        : [{ number: 12 }],
+      refreshIssue: (_repository, number, issue) => ({
+        ...issue, state: number === 11 && listings > 1 ? 'CLOSED' : 'OPEN', milestone: 7,
+      }),
+      runAgentOnIssue: async (_config, _repository, issue) => {
+        attempted.push(issue.number);
+        return { completed: false, validationFailed: true };
+      },
+    }),
+  );
+  assert.equal(result.issueNoLongerOpen, true);
+  assert.deepEqual(attempted, [11]);
 });
 
 test('continuous loop does not spend a development iteration for a linked commit', async () => {
@@ -660,6 +712,29 @@ test('continuous loop does not spend a development iteration for a linked commit
   assert.equal(receivedIssue.linkedCommit, commit);
   assert.equal(result.iterations, 0);
   assert.equal(stateStore.iterationsUsed, 0);
+});
+
+test('diagnostic validation resume does not spend a development iteration', async () => {
+  let open = true;
+  let attempts = 0;
+  const stateStore = persistentState({
+    iterationsUsed: 5,
+    issue: { number: 64, title: 'Repair', phase: 'validation-diagnostic' },
+  });
+  const result = await runContinuousLoop(
+    context({ config: { maxIterations: 5 }, stateStore }),
+    actions({
+      openIssues: () => open ? [{ number: 64, title: 'Repair' }] : [],
+      runAgentOnIssue: async () => {
+        attempts += 1;
+        open = false;
+        return { completed: true };
+      },
+    }),
+  );
+  assert.equal(result.iterations, 5);
+  assert.equal(attempts, 1);
+  assert.equal(stateStore.iterationsUsed, 5);
 });
 
 test('continuous loop fixes new review issues even while GitHub list remains stale', async () => {

@@ -211,7 +211,7 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
         state?.issue &&
         currentBranch === state.branch &&
         currentHead === state.issue.startingCommit &&
-        ['agent-running', 'working-tree', 'validating', 'validation-mutated', 'staging'].includes(
+        ['agent-running', 'working-tree', 'validating', 'validation-mutated', 'validation-diagnostic', 'staging'].includes(
           state.issue.phase,
         ),
       );

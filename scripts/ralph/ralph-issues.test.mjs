@@ -1164,6 +1164,24 @@ test('проверки отвергают цепочки команд оболо
   }
 });
 
+test('scoped validation requires all profiles and rejects command chains', () => {
+  const valid = { issue: ['check-issue'], phase: ['check-phase'], baseSync: ['check-base'] };
+  withPatchedRalphConfig({ validationProfiles: valid }, (config) => {
+    assert.deepEqual(config.validationProfiles, valid);
+  });
+  for (const validationProfiles of [
+    { issue: ['check-issue'] },
+    { ...valid, phase: [] },
+    { ...valid, extra: ['check-extra'] },
+  ]) {
+    assert.throws(() => withPatchedRalphConfig({ validationProfiles }, () => {}),
+      /validationProfiles/u);
+  }
+  assert.throws(() => withPatchedRalphConfig({
+    validationProfiles: { ...valid, issue: ['check-issue && check-phase'] },
+  }, () => {}), /одну команду на элемент/u);
+});
+
 test('the instruction boundary takes .agents/skills and skips dependency directories', () => {
   // Скиллы из `.agents/skills` загружает Codex, и они меняют поведение будущей
   // сессии наравне с AGENTS.md. Остальной `.agents` в границу не входит: отчёты
@@ -1419,6 +1437,18 @@ test('the recovery prompt carries the summary and tells the agent to rerun only 
   const withoutFailure = recoveryPrompt({});
   assert.match(withoutFailure, /процесс завершился до фиксации результата/);
   assert.equal(/Сначала повтори только упавшие проверки/.test(withoutFailure), false);
+});
+
+test('an unstable diagnostic keeps the first connection failure in the saved summary', () => {
+  const cause = Object.assign(new Error('connection reset'), {
+    code: 'RALPH_COMMAND_FAILED', stderr: 'Error: read ECONNRESET',
+  });
+  const error = Object.assign(new Error('passed only on retry', { cause }), {
+    code: 'RALPH_VALIDATION_UNSTABLE', script: 'check-issue',
+  });
+  const summary = summarizeCommandFailure(error);
+  assert.match(summary.firstFailure.error, /ECONNRESET/u);
+  assert.match(formatFailureSummary(summary), /Первый сбой: Error: read ECONNRESET/u);
 });
 
 /**

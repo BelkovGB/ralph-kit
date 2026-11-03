@@ -4,7 +4,9 @@ import { clearedFailure } from './ralph-failure-summary.mjs';
 import { filesChangedBetween, isAncestorCommit, validateRecoveredCommit, verifyRepository, workingTreePaths } from './ralph-git.mjs';
 
 export const committedRecoveryPhases = ['committed', 'pushed', 'reviewing', 'closing'];
-const workingPhases = new Set(['agent-running', 'working-tree', 'validating', 'validation-mutated']);
+const workingPhases = new Set([
+  'agent-running', 'working-tree', 'validating', 'validation-mutated', 'validation-diagnostic',
+]);
 
 /** A failed revalidation needs a new fix on top of the preserved commit. */
 export function committedValidationFailurePatch(issue, error) {

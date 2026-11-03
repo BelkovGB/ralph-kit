@@ -145,12 +145,12 @@ function issueChangeHeading(changes) {
 // повторение или выдаёт «нужно прогнать тесты» за замечание. Ни то, ни другое
 // не является дефектом реализации.
 function reviewValidationEvidence(config) {
-  const scripts = config?.validationScripts ?? [];
+  const scripts = config?.validationProfiles?.issue ?? config?.validationScripts ?? [];
   if (scripts.length === 0) return '';
 
   return `
 
-The Ralph orchestrator already ran ${scripts.join(', ')} against this exact tree, and all of them passed. Do not rerun them, and do not report a finding whose only content is that a check should be run.`;
+The Ralph orchestrator already ran these issue checks against this tree: ${scripts.join(', ')}. They passed. Judge whether their project-defined scope covers the changed contract and its consumers. Do not rerun the same checks without a reason.`;
 }
 
 function reviewPreviousFindings(previousFindings) {

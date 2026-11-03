@@ -110,11 +110,17 @@ export function summarizeCommandFailure(error, options = {}) {
   const lines = significantOutputLines(output);
   const { tests, omitted } = uniqueFailedTests(output);
   const primary = primaryErrorLine(lines) ?? String(error?.message ?? '').split(/\r?\n/)[0] ?? '';
+  const firstFailure = error?.code === 'RALPH_VALIDATION_UNSTABLE' && error.cause
+    ? summarizeCommandFailure(error.cause, { maxLines: 3 })
+    : null;
   return {
     command: error?.script ?? options.command ?? null,
     exitCode: Number.isInteger(error?.status) ? error.status : null,
     code: error?.code ?? null,
     error: primary.length > 300 ? `${primary.slice(0, 300)}…` : primary,
+    firstFailure: firstFailure
+      ? { code: firstFailure.code, error: firstFailure.error, excerpt: firstFailure.excerpt }
+      : null,
     failedTests: tests,
     omittedFailedTests: omitted,
     excerpt: lines.slice(-maxLines),
@@ -128,6 +134,10 @@ export function formatFailureSummary(summary, maxChars = 2_000) {
   if (summary.exitCode !== null) parts.push(`Exit code: ${summary.exitCode}`);
   else if (summary.code) parts.push(`Код ошибки: ${summary.code}`);
   if (summary.error) parts.push(`Ошибка: ${summary.error}`);
+  if (summary.firstFailure) {
+    parts.push(`Первый сбой: ${summary.firstFailure.error}`);
+    parts.push(...summary.firstFailure.excerpt.map((line) => `  ${line}`));
+  }
   if (summary.failedTests.length > 0) {
     const total = summary.failedTests.length + summary.omittedFailedTests;
     parts.push(
@@ -176,8 +186,8 @@ function reviewRecoveryPrompt(storedIssue) {
 
   return (
     '\n\n## AFK recovery: независимое ревью вернуло замечания\n\nHEAD уже содержит ' +
-    `commit ${storedIssue.commit} — твою реализацию этой issue, и весь набор ` +
-    `validationScripts на этом дереве прошёл.${findings}\n\nИсправь замечания поверх ` +
+    `commit ${storedIssue.commit} — твою реализацию этой issue. Настроенные проверки ` +
+    `задачи на этом дереве прошли.${findings}\n\nИсправь замечания поверх ` +
     'HEAD: не переделывай реализацию заново и не откатывай существующие изменения.'
   );
 }
@@ -191,8 +201,8 @@ export function recoveryPrompt(storedIssue) {
   const failedTests = storedIssue?.lastFailureSummary?.failedTests ?? [];
   const focus =
     failedTests.length > 0
-      ? '\n\nСначала повтори только упавшие проверки из списка выше. Полный набор ' +
-        'validationScripts запускает оркестратор; не дублируй его.'
+       ? '\n\nСначала повтори только упавшие проверки из списка выше. ' +
+         'Настроенный набор проверок задачи запускает оркестратор; не дублируй его.'
       : '';
   // Замечания переживают смену фазы: сессия исправления могла свалить проверки,
   // и тогда issue продолжается из `working-tree`, а ветка ревью выше уже не
