@@ -140,7 +140,9 @@ export function prepareRecovery(config, stateStore, mode, dependencies = {}) {
   let repositoryState;
   // A saved issue belongs to its phase branch. A clean --run may return there
   // before recovery reads HEAD; check and manual acceptance stay read-only.
-  if (mode === '--run' && stateStore?.issue &&
+  if (mode === '--run' && !stateStore?.issue) {
+    repositoryState = verify(config, true);
+  } else if (mode === '--run' && stateStore?.issue &&
       execute('git', ['branch', '--show-current']).stdout !== config.branch) {
     repositoryState = verify(config, true);
   }

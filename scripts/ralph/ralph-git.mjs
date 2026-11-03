@@ -353,6 +353,20 @@ export function reconcileStateAfterCrash(config, stateStore = activeStateStore()
   console.log(`Issue #${storedIssue.number}: staging завершён commit ${commit} после crash.`);
 }
 
+export function commitStartingChanges(execute = run) {
+  if (execute('git', ['status', '--porcelain', '--untracked-files=all']).stdout === '') return false;
+  if (execute('git', ['diff', '--name-only', '--diff-filter=U']).stdout !== '') {
+    fail('В рабочем дереве есть неразрешённые конфликты Git. Разрешите их перед запуском Ralph Loop.');
+  }
+  execute('git', ['add', '-A']);
+  execute('git', ['commit', '-m', 'chore: save changes before Ralph run'], { echoOutput: true });
+  if (execute('git', ['status', '--porcelain', '--untracked-files=all']).stdout !== '') {
+    fail('После стартового коммита в рабочем дереве остались изменения. Проверьте Git hooks.');
+  }
+  console.log('Незакоммиченные изменения сохранены в стартовом коммите.');
+  return true;
+}
+
 export function verifyRepository(config, requireClean) {
   const repositoryRoot = path.resolve(run('git', ['rev-parse', '--show-toplevel']).stdout);
   if (repositoryRoot.toLowerCase() !== path.resolve(projectRoot).toLowerCase()) {
@@ -362,13 +376,16 @@ export function verifyRepository(config, requireClean) {
 
   run('git', ['check-ref-format', '--branch', config.branch]);
   let currentBranch = run('git', ['branch', '--show-current']).stdout;
-  const changes = run('git', ['status', '--porcelain']).stdout;
+  let changes = run('git', ['status', '--porcelain', '--untracked-files=all']).stdout;
   const currentHead = run('git', ['rev-parse', 'HEAD']).stdout;
   const recoveryAllowed = activeStateStore()?.allowsDirtyRecovery(currentBranch, currentHead);
   if (requireClean && changes !== '' && !recoveryAllowed) {
-    fail(
-      'Рабочее дерево не чистое. Закоммитьте или уберите текущие изменения перед запуском Ralph Loop.',
-    );
+    if (activeStateStore()?.issue) {
+      fail('Рабочее дерево не соответствует сохранённой задаче. Разберите изменения перед запуском Ralph Loop.');
+    }
+    if (!currentBranch) fail('Стартовый коммит требует текущую ветку Git.');
+    commitStartingChanges();
+    changes = '';
   }
   if (changes !== '' && recoveryAllowed) {
     console.log(
