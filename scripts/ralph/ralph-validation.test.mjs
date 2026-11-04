@@ -119,6 +119,17 @@ test('Lisa can append an installed tool directory to validation PATH without cha
     assert.throws(() => validatedLisaPathDirectories([`${directory}\nother`]), /абсолютных/);
     assert.throws(() => validatedLisaPathDirectories([`${directory}${path.delimiter}other`]), /абсолютных/);
     assert.throws(() => validatedLisaPathDirectories([path.dirname(fileURLToPath(import.meta.url))]), /внутри проекта/);
+    assert.deepEqual(
+      validatedLisaPathDirectories(
+        [path.dirname(fileURLToPath(import.meta.url)), directory],
+        { ignoreProjectDirectories: true },
+      ),
+      [realpathSync(directory)],
+    );
+    assert.throws(() => validatedLisaPathDirectories(['relative/path'],
+      { ignoreProjectDirectories: true }), /абсолютных/);
+    assert.throws(() => validatedLisaPathDirectories([path.join(directory, 'missing')],
+      { ignoreProjectDirectories: true }), /каталог/);
     assert.throws(() => validatedLisaPathDirectories([path.join(directory, 'missing')]), /каталог/);
   } finally {
     rmSync(directory, { recursive: true, force: true });

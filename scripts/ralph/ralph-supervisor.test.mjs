@@ -1,13 +1,15 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { committedValidationFailurePatch } from './ralph-recovery.mjs';
 import { configPath, prepareConfig } from './ralph-config.mjs';
 import { runPhasePlan } from './ralph-loop.mjs';
 import { fieldGroups } from './ralph-gui-fields.mjs';
 import { readLiveStatus, resetLiveStatus } from './ralph-live-status.mjs';
 import { assertLisaWorkspaceUnchanged, effectiveLisaIterationReserve, runWithSupervisor,
-  supervisorAgentConfig, supervisorPhaseConfig, supervisorPrompt } from './ralph-supervisor.mjs';
+  lisaValidationPathDirectories, supervisorAgentConfig, supervisorPhaseConfig,
+  supervisorPrompt } from './ralph-supervisor.mjs';
 
 function fixture(overrides = {}) {
   const state = { calls: 0, extraIterations: 0, issue: { number: 12, phase: 'working-tree' } };
@@ -156,9 +158,15 @@ test('prompt includes saved context and forbids changing task boundaries', () =>
   assert.match(prompt, /tests fail/);
   assert.match(prompt, /не меняй.*критерии/i);
   assert.match(prompt, /validationPathDirectories/);
+  assert.match(prompt, /Каталоги внутри проекта/);
   assert.match(prompt, /команды, которые устанавливают или заменяют зависимости/);
   assert.match(prompt, /общую тестовую фикстуру проекта/);
   assert.match(prompt, /lisa-tools/);
+});
+
+test('Lisa project-local PATH hint is ignored without weakening validation PATH', () => {
+  const projectDirectory = fileURLToPath(new URL('.', import.meta.url));
+  assert.deepEqual(lisaValidationPathDirectories({ validationPathDirectories: [projectDirectory] }), []);
 });
 
 test('Lisa uses Codex Astra low even when Ralph uses Claude', () => {
