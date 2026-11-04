@@ -126,7 +126,7 @@ function hostDirectory(name, value, fallback) {
   return value;
 }
 
-export function validatedLisaPathDirectories(directories) {
+export function validatedLisaPathDirectories(directories, { ignoreProjectDirectories = false } = {}) {
   if (!Array.isArray(directories) || directories.length > 10 ||
       directories.some((directory) => typeof directory !== 'string' ||
         // eslint-disable-next-line no-control-regex -- kit-hygiene: allow: kit lint directive; intentionally reject control bytes in PATH.
@@ -135,7 +135,7 @@ export function validatedLisaPathDirectories(directories) {
     fail('validationPathDirectories должны содержать не более десяти абсолютных каталогов без разделителя PATH.');
   }
   const project = realpathSync(projectRoot);
-  const unique = [...new Set(directories.map((directory) => {
+  const unique = [...new Set(directories.flatMap((directory) => {
     let resolved;
     try {
       resolved = realpathSync(directory);
@@ -145,9 +145,10 @@ export function validatedLisaPathDirectories(directories) {
     }
     const relative = path.relative(project, resolved);
     if (relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))) {
+      if (ignoreProjectDirectories) return [];
       fail(`validationPathDirectories: каталог внутри проекта ${directory} запрещён.`);
     }
-    return resolved;
+    return [resolved];
   }))];
   if (unique.length > 5) fail('validationPathDirectories допускает не более пяти каталогов.');
   return unique;

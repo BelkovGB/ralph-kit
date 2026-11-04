@@ -34,7 +34,7 @@ export function supervisorPrompt(config, state, error, call) {
     'Проверь git status, сохранённое состояние и журнал Ralph. Исправь причину остановки в пределах текущей задачи.',
     'Перед resume проверь итоговый diff, выполни релевантные проверки и убедись, что ветка и HEAD прежние, чужая работа сохранена, а изменения относятся к текущей задаче. Не объявляй готовность только по факту правки файла.',
     `Разрешено найти уже установленные инструменты. Если нужной CLI-утилиты нет, установи её только из официального источника в ${path.join(hostHomeDirectory, 'lisa-tools')}; не меняй системные каталоги и файлы зависимостей проекта.`,
-    'Если утилита нужна штатным проверкам Ralph, верни её каталог в JSON-поле validationPathDirectories: Ralph проверит путь и добавит его в PATH проверок до конца фазы.',
+    'Если утилита нужна штатным проверкам Ralph и её ещё нет в их PATH, верни каталог установленной вне проекта утилиты в JSON-поле validationPathDirectories. Каталоги внутри проекта, в том числе зависимости и локальные кэши, не указывай: проверки проекта настраивают свой PATH сами.',
     'Можешь исправить общую тестовую фикстуру проекта, если она блокирует текущую задачу. Не очищай общие данные без оператора.',
     'Не запускай даже для диагностики команды, которые устанавливают или заменяют зависимости проекта. Установка вне указанного кэша, постоянное изменение окружения и исправления вне проекта или текущей задачи требуют оператора. Не меняй системную защиту или доступы.',
     'Не редактируй state.json и локи. После resume оркестратор сам проверит восстановление и согласует этап с рабочим деревом, отменит устаревшие результаты проверок и ревью. При небезопасном состоянии он сохранит работу и запросит человека.',
@@ -115,6 +115,14 @@ export function assertLisaWorkspaceUnchanged(before, after) {
   }
 }
 
+export function lisaValidationPathDirectories(answer) {
+  // A project-local directory must never enter validation PATH. Ignore this
+  // optional hint and let the configured validation report any missing tool.
+  return validatedLisaPathDirectories(answer.validationPathDirectories ?? [], {
+    ignoreProjectDirectories: true,
+  });
+}
+
 function parseLisaAnswer(message) {
   let answer;
   try {
@@ -159,7 +167,7 @@ export async function requestLisa(config, store, error, call) {
     const answer = parseLisaAnswer(session.lastAgentMessage);
     if (answer.verdict === 'resume') {
       try {
-        const pathDirectories = validatedLisaPathDirectories(answer.validationPathDirectories ?? []);
+        const pathDirectories = lisaValidationPathDirectories(answer);
         const accepted = validatedLisaPathDirectories([
           ...store.validationPathDirectories, ...pathDirectories,
         ]);
