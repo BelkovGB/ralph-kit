@@ -50,6 +50,17 @@ for (const phase of ['review-failed', 'committed', 'pushed', 'reviewing', 'closi
   });
 }
 
+for (const phase of ['validation-diagnostic', 'validation-mutated']) {
+  test(`accepted repair can reconcile ${phase} without weakening legacy recovery`, (t) => {
+    const f = fixture(t, phase);
+    f.edit();
+    assert.throws(() => supervisor.prepareLisaResume(f.config, f.store, f.before, { run: f.run }), /ручного/);
+    supervisor.prepareLisaResume(f.config, f.store, f.before, { run: f.run, acceptedRepair: true });
+    assert.equal(f.issue.phase, 'working-tree');
+    assert.equal(analyzeRecovery(f.config, f.issue, { run: f.run }).kind, 'ready');
+  });
+}
+
 test('clean committed recovery keeps validated commit evidence', (t) => {
   const f = fixture(t, 'committed');
   const before = structuredClone(f.issue);

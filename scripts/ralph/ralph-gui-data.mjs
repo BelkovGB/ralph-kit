@@ -261,9 +261,9 @@ export function readRunState(dependencies = {}) {
   // прошлой ночи, когда состояния на диске уже нет.
   const plannedPhases = plannedPhaseMilestones(config);
   const lock = readJsonSafely(path.join(directory, 'run.lock'), null);
-  if (!lock) return { running: false, run: null, staleLock: false, plannedPhases };
-
   const state = readJsonSafely(path.join(directory, 'state.json'), null);
+  if (!lock) return { running: false, run: null, staleLock: false, plannedPhases,
+    ...(state?.lisaRepair ? { lisaRepair: state.lisaRepair } : {}) };
   const running = alive(lock.pid);
   // Хвост журнала читается только у живого прогона: у брошенного лока последние
   // строки принадлежат мёртвой сессии, и «шаг 12 из 50» читался бы как текущий.
@@ -303,6 +303,7 @@ export function readRunState(dependencies = {}) {
         limit: config?.supervisor?.maxInterventions ?? null,
       } : progress.supervisor,
       lisaMessage: progress.lisaMessage,
+      lisaRepair: state?.lisaRepair ?? null,
       issuesRemaining: progress.issuesRemaining,
       stateUpdatedAt: state?.updatedAt ?? null,
       logUpdatedAt: fileModifiedAt(path.join(directory, 'run.log')),

@@ -141,7 +141,7 @@ function acquireRunLock(lockPath, metadata = {}, dependencies = {}) {
           `Lock Ralph повреждён или ещё создаётся: ${lockPath}. Проверьте активные процессы и удалите файл вручную только если Ralph не запущен.`,
         );
       }
-      if (alive(existing.pid)) {
+      if (alive(existing.pid) || (Number.isInteger(existing.workerPid) && alive(existing.workerPid))) {
         throw new Error(
           `Ralph Loop уже запущен (PID ${existing.pid}, с ${existing.startedAt ?? 'неизвестно'}).`,
           { cause: error },
@@ -380,6 +380,28 @@ function terminateProcessTreeByPid(pid, force = false) {
       windowsHide: true,
     });
     return;
+  }
+  // Agents start their own process groups. Enumerate only descendants of this
+  // owned PID before killing any group; killing the host's group is forbidden.
+  const listing = spawnSync('ps', ['-eo', 'pid=,ppid='], { encoding: 'utf8', timeout: 10_000 });
+  if (listing.status === 0) {
+    const rows = listing.stdout.trim().split('\n').map((line) => line.trim().split(/\s+/u).map(Number));
+    const descendants = [];
+    const parents = new Set([Number(pid)]);
+    for (let index = 0; index < rows.length; index += 1) {
+      let added = false;
+      for (const [childPid, parentPid] of rows) {
+        if (Number.isInteger(childPid) && childPid > 1 && childPid !== process.pid &&
+            parents.has(parentPid) && !parents.has(childPid)) {
+          parents.add(childPid); descendants.push(childPid); added = true;
+        }
+      }
+      if (!added) break;
+    }
+    for (const childPid of descendants.reverse()) {
+      try { process.kill(-childPid, force ? 'SIGKILL' : 'SIGTERM'); } catch { /* not a group leader */ }
+      try { process.kill(childPid, force ? 'SIGKILL' : 'SIGTERM'); } catch { /* already exited */ }
+    }
   }
   try {
     process.kill(-pid, force ? 'SIGKILL' : 'SIGTERM');

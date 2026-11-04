@@ -9,6 +9,27 @@ import { configForPhase, normalizePhases } from './ralph-config.mjs';
 import { githubPagedArray } from './ralph-github-client.mjs';
 import { createStateStore, setActiveStateStore } from './ralph-state-store.mjs';
 
+test('Lisa repair state survives restart without resetting budget or accepting mismatched context', () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'ralph-repair-state-'));
+  const statePath = path.join(directory, 'state.json');
+  const config = { branch: 'phase', baseBranch: 'main', milestone: 'Repair' };
+  try {
+    const first = createStateStore(config, '--run', statePath);
+    first.reserveSupervisorCall();
+    first.beginLisaRepair({ repairId: 'repair', runId: first.state.runId, phaseIndex: 0,
+      failureStep: 'validating', failureFingerprint: 'fingerprint' });
+    const resumed = createStateStore(config, '--run', statePath);
+    assert.equal(resumed.state.lisaRepair.status, 'repairing');
+    assert.equal(resumed.supervisorCalls, 1);
+    assert.throws(() => resumed.updateLisaRepair('other', { status: 'accepted' }), /контекст/);
+    resumed.updateLisaRepair('repair', { status: 'checking' });
+    resumed.updateLisaRepair('repair', { status: 'accepted', acceptedTreeHash: 'tree' });
+    assert.equal(resumed.state.lisaRepair.acceptedTreeHash, 'tree');
+    resumed.finishLisaRepair('repair');
+    assert.equal(resumed.state.lisaRepair, null);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
 test('persistent state survives restart and enforces branch identity', () => {
   const directory = mkdtempSync(path.join(tmpdir(), 'ralph-state-'));
   const statePath = path.join(directory, 'state.json');
