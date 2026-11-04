@@ -139,7 +139,16 @@ export function parseRun(text, file) {
     }
     seen.add(result.id);
   }
+  if (lines.some((line) => /^Вердикт:\s*принято\.?\s*$/u.test(line)) && results.some(({ status }) => status !== 'PASS')) {
+    throw acceptanceError(`${file}: вердикт «принято» требует PASS у всех кейсов таблицы результатов.`);
+  }
   return results;
+}
+
+function runVerdict(results) {
+  if (results.some(({ status }) => status === 'FAIL')) return 'не принято';
+  if (results.some(({ status }) => status === 'BLOCKED' || status === 'SKIPPED')) return 'не завершено';
+  return 'принято';
 }
 
 export const historyLimit = 5;
@@ -263,7 +272,8 @@ export function buildStatus(acceptance) {
         };
       }),
   }));
-  return { counts, modules, warnings };
+  const runs = acceptance.runs.map(({ name, results }) => ({ name, verdict: runVerdict(results) }));
+  return { counts, modules, warnings, runs };
 }
 
 // Диалект глоба набора: `**/` — ноль и более каталогов, `**` — любая глубина
@@ -340,6 +350,10 @@ export function renderStatus(status) {
     '',
     `Кейсов ${counts.total} · PASS ${counts.PASS} · FAIL ${counts.FAIL} · BLOCKED ${counts.BLOCKED} · SKIPPED ${counts.SKIPPED} · не гонялся ${counts.never}`,
   ];
+  if (status.runs.length > 0) {
+    lines.push('', '## Вердикты по таблицам прогонов', '', '| Прогон | Вердикт |', '| ------ | ------- |');
+    for (const runFile of status.runs) lines.push(`| runs/${runFile.name} | ${runFile.verdict} |`);
+  }
   for (const module of status.modules) {
     lines.push('', `## ${module.name} — ${module.casesFile}`, '');
     if (module.rows.length === 0) {
@@ -437,6 +451,8 @@ export async function main(argv = process.argv.slice(2), dependencies = {}) {
     writeFile(path.join(root, target), renderStatus(status));
     const { counts } = status;
     log(`Кейсов ${counts.total} · PASS ${counts.PASS} · FAIL ${counts.FAIL} · BLOCKED ${counts.BLOCKED} · SKIPPED ${counts.SKIPPED} · не гонялся ${counts.never}`);
+    const lastRun = status.runs.at(-1);
+    if (lastRun) log(`Последний прогон: runs/${lastRun.name} — ${lastRun.verdict} (по таблице результатов).`);
     log(`Сводка записана: ${target}`);
     return;
   }
