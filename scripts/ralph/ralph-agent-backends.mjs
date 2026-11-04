@@ -63,7 +63,7 @@ export async function runReviewSession(config, role, options) {
   // отличается от цены ревью одной issue.
   const metricsRole = role === config?.milestoneReview ? 'milestone-review' : 'review';
   const session = await withRecordedTelemetry(metricsRole, () =>
-    runAgentSession(backend, backend.reviewArguments(role), options),
+    runAgentSession(backend, backend.reviewArguments({ ...role, workingDirectory: options.workingDirectory }), options),
   );
   backend.writeReviewOutput?.(role, session);
   return session;

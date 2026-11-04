@@ -149,10 +149,11 @@ export function reviewCodexArguments(role) {
     role.schemaPath,
     '--output-last-message',
     role.outputPath,
+    ...(role.workingDirectory ? ['--skip-git-repo-check'] : []),
     // `cwd` процесса недостаточно для разрешения project-local профилей на
     // Windows: Codex должен получить рабочий корень явно.
     '-C',
-    agentProjectRoot,
+    role.workingDirectory ?? agentProjectRoot,
     '-',
   ];
 }
