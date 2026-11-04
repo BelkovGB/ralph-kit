@@ -86,10 +86,10 @@ import {
 
 import {
   closeMilestone,
+  closeIssueOnce,
   ensurePullRequestForBranch,
   issueState,
   openIssues,
-  patchIssue,
   postIssueCommentOnce,
   pullRequestDetails,
   refreshIssue,
@@ -116,7 +116,7 @@ import {
 
 import { buildIndependentReviewPrompt, renderPrompt } from './ralph-prompts.mjs';
 
-import { analyzeRecovery, applyRecoveryPlan, committedRecoveryPhases, committedValidationFailurePatch, prepareRecovery } from './ralph-recovery.mjs';
+import { analyzeRecovery, applyRecoveryPlan, hasAcceptedLisaIssueRepair, committedRecoveryPhases, committedValidationFailurePatch, prepareRecovery } from './ralph-recovery.mjs';
 
 import { KIT_VERSION } from './ralph-version.mjs';
 import { effectiveLisaIterationReserve, runWithSupervisor } from './ralph-supervisor.mjs';
@@ -126,7 +126,7 @@ import { publishLiveStatus, readLiveStatus, reportActivity, resetLiveStatus, sub
 import { currentIssueMetrics } from './ralph-run-metrics.mjs';
 import { runRalphLifecycleCli } from './ralph-lifecycle-host.mjs';
 import { receiveRalphWorkerStart, sendRalphWorkerMessage, ralphRunOutcome } from './ralph-lifecycle.mjs';
-import { lisaRepairTreeHash } from './ralph-lisa-repair.mjs';
+import { lisaRepairTreeHash, lisaRepairIndexHash } from './ralph-lisa-repair.mjs';
 
 import {
   createOrReopenReviewIssues,
@@ -193,10 +193,9 @@ function reportIssueMetrics(outcome) {
 
 // Валидация вызывается из трёх мест lifecycle, и замер, поставленный только в
 // одном, занизил бы стоимость issue молча. Обёртка одна на все три.
-function repairStepSucceeded(step) {
-  const state = activeStateStore()?.state;
-  if (state?.issue) publishLiveStatus({ type: 'repair-step-passed',
-    runId: state.runId, phaseIndex: state.phaseIndex, issueNumber: state.issue.number, step });
+function repairStepSucceeded(step, state = activeStateStore()?.state) {
+  if (state) publishLiveStatus({ type: 'repair-step-passed',
+    runId: state.runId, phaseIndex: state.phaseIndex, issueNumber: state.issue?.number ?? null, step });
 }
 
 async function observedRepairStep(step, operation) {
@@ -401,13 +400,7 @@ function closeIssue(config, repository, issue, commit, review = null) {
     );
   }
 
-  const closedIssue = patchIssue(repository, issue.number, {
-    state: 'closed',
-    state_reason: 'completed',
-  });
-  if (closedIssue.state?.toUpperCase() !== 'CLOSED') {
-    fail(`Issue #${issue.number} не закрылась после успешной реализации.`);
-  }
+  closeIssueOnce(repository, issue.number);
 }
 
 /**
@@ -443,7 +436,7 @@ export function reviewAlreadyPassed(issue, commit) {
 
 async function reviewAndCloseCommittedIssue(config, repository, issue, commit) {
   const passedOnPreviousRun = reviewAlreadyPassed(issue, commit);
-  const pushedHead = pushBranchAndVerify(config);
+  const pushedHead = await observedRepairStep('push', () => pushBranchAndVerify(config));
   activeStateStore()?.updateIssue({
     phase: 'pushed',
     commit,
@@ -454,7 +447,7 @@ async function reviewAndCloseCommittedIssue(config, repository, issue, commit) {
 
   if (!config.review.enabled) {
     verifyPushedHead(config, pushedHead);
-    closeIssue(config, repository, issue, commit);
+    await observedRepairStep('close', () => closeIssue(config, repository, issue, commit));
     activeStateStore()?.clearIssue();
     return {
       completed: true,
@@ -473,7 +466,7 @@ async function reviewAndCloseCommittedIssue(config, repository, issue, commit) {
         'повтор пропущен, осталось закрыть issue.',
     );
     verifyPushedHead(config, pushedHead);
-    closeIssue(config, repository, issue, commit);
+    await observedRepairStep('close', () => closeIssue(config, repository, issue, commit));
     activeStateStore()?.clearIssue();
     return {
       completed: true,
@@ -583,7 +576,7 @@ async function reviewAndCloseCommittedIssue(config, repository, issue, commit) {
   // ревью того же самого дерева на следующем прогоне.
   activeStateStore()?.updateIssue({ phase: reviewPassedPhase, reviewedCommit: commit });
   verifyPushedHead(config, pushedHead);
-  closeIssue(config, repository, issue, commit, review);
+  await observedRepairStep('close', () => closeIssue(config, repository, issue, commit, review));
   activeStateStore()?.clearIssue();
   return { completed: true, commit, review };
 }
@@ -617,7 +610,9 @@ async function commitAndCompleteIssue(config, repository, issue, startingCommit,
   if (currentCommit !== startingCommit) {
     violations.push('Агент самостоятельно создал commit');
   }
-  if (issueState(repository, issue.number) !== 'OPEN') {
+  const currentIssueState = issueState(repository, issue.number);
+  if (currentIssueState !== 'OPEN' && !(currentIssueState === 'CLOSED' &&
+      hasAcceptedLisaIssueRepair(activeStateStore()?.state, issue))) {
     violations.push('Агент самостоятельно изменил состояние issue');
   }
   if (violations.length > 0) {
@@ -631,6 +626,9 @@ async function commitAndCompleteIssue(config, repository, issue, startingCommit,
   // агента удаляет вместе с рабочей копией. Ревьюер, увидев в диффе задачи
   // чужой файл, отклоняет работу заход за заходом.
   const foreignPaths = new Set(activeStateStore()?.issue?.foreignPaths ?? []);
+  if (workingTreeEntries(changes).some((entry) => foreignPaths.has(entry.path) && ![' ', '?'].includes(entry.index))) {
+    fail('В индексе есть чужие изменения; ремонт сохранён без commit. Нужен оператор.');
+  }
   const agentEntries = workingTreeEntries(changes).filter((entry) => !foreignPaths.has(entry.path));
   const agentPaths = agentEntries.map((entry) => entry.path);
   const untouchedForeign = workingTreePaths(changes).filter((file) => foreignPaths.has(file));
@@ -832,6 +830,10 @@ export async function runAgentOnIssue(config, repository, issue, rules) {
     applyRecoveryPlan(analyzeRecovery(config, storedIssue, { hostWorkingTreeHash }), activeStateStore());
   }
   recoverHostValidationMutation(storedIssue);
+  if (hasAcceptedLisaIssueRepair(activeStateStore()?.state) && !storedIssue.commit) {
+    return commitAndCompleteIssue(config, repository, issue, storedIssue.startingCommit,
+      `fix: repair Ralph for issue #${issue.number}`);
+  }
   if (storedIssue?.commit && committedRecoveryPhases.includes(storedIssue.phase)) {
     assertCleanTree(`Issue #${issue.number}: committed recovery требует чистое рабочее дерево.`);
     const commit = verifiedIssueCommit(storedIssue.commit, issue);
@@ -1252,7 +1254,7 @@ export async function runContinuousLoop(context, actions) {
       continue;
     }
     if (recoveryIssue && !issuesByNumber.has(recoveryIssue.number)) {
-      if (actions.issueState(repository, recoveryIssue.number) === 'OPEN') {
+      if (actions.issueState(repository, recoveryIssue.number) === 'OPEN' || hasAcceptedLisaIssueRepair(stateStore?.state)) {
         issuesByNumber.set(recoveryIssue.number, {
           number: recoveryIssue.number,
           title: recoveryIssue.title,
@@ -1268,6 +1270,7 @@ export async function runContinuousLoop(context, actions) {
               'содержит изменения. Ralph не будет переносить их в следующую issue.',
           );
         }
+        repairStepSucceeded('close', stateStore.state);
         actions.clearIssueCompletionState(repository, recoveryIssue);
         console.log(
           `Сохранённая issue #${recoveryIssue.number} уже закрыта; локальная recovery-фаза очищена.`,
@@ -1290,7 +1293,7 @@ export async function runContinuousLoop(context, actions) {
         return { mode: 'run', completed: 0 };
       }
       reportActivity('pull-request', 'Подготовка pull request фазы');
-      const pullRequest = actions.createPullRequest(config, repository);
+      const pullRequest = await observedRepairStep('pull-request', () => actions.createPullRequest(config, repository));
       // Телеметрия роли `milestone-review` снимается только внутри активной
       // записи, а между задачами её нет: без отдельной записи самая дорогая
       // сессия прогона не попадает в журнал вовсе. Запись без номера issue —
@@ -1393,7 +1396,7 @@ export async function runContinuousLoop(context, actions) {
     if (config.stopAfterFirstIssue) singleIssueNumber ??= currentIssue.number;
     reportActivity('issue-preparation', `Подготовка задачи #${currentIssue.number}`);
     const refreshedIssue = actions.refreshIssue(repository, currentIssue.number, currentIssue);
-    if (refreshedIssue.state !== 'OPEN') {
+    if (refreshedIssue.state !== 'OPEN' && !hasAcceptedLisaIssueRepair(stateStore?.state, currentIssue)) {
       if (stateStore?.issue?.number === currentIssue.number) {
         if (actions.workingTreeStatus() !== '') {
           fail(
@@ -1401,6 +1404,7 @@ export async function runContinuousLoop(context, actions) {
               'Ralph остановлен, чтобы не смешать изменения со следующей задачей.',
           );
         }
+        repairStepSucceeded('close', stateStore.state);
         actions.clearIssueCompletionState(repository, currentIssue);
         stateStore.clearIssue();
       }
@@ -1415,6 +1419,7 @@ export async function runContinuousLoop(context, actions) {
     const linkedCommit = storedPhase ? null : actions.linkedCommitForIssue?.(currentIssue);
     if (linkedCommit) currentIssue.linkedCommit = linkedCommit;
     const needsDevelopmentIteration =
+      !(hasAcceptedLisaIssueRepair(stateStore?.state, currentIssue) && !stateStore.issue.commit) &&
       !committedRecoveryPhases.includes(storedPhase) &&
       storedPhase !== 'validation-diagnostic' && !linkedCommit;
 
@@ -1605,7 +1610,8 @@ async function main(lifecycle = null) {
 
   const config = loadConfig();
   if (lifecycle?.accepted) {
-    if (lisaRepairTreeHash({ controlFiles: lifecycle.accepted.controlPlane.trustedControlFileHashes.keys() }) !== lifecycle.accepted.acceptedTreeHash) {
+    if (lisaRepairTreeHash({ controlFiles: lifecycle.accepted.controlPlane.trustedControlFileHashes.keys() }) !== lifecycle.accepted.acceptedTreeHash ||
+        lisaRepairIndexHash() !== lifecycle.accepted.acceptedIndexHash) {
       fail('Lisa: дерево изменилось перед запуском исправленного Ralph.');
     }
     Object.assign(config, lifecycle.accepted.controlPlane);

@@ -24,6 +24,16 @@ export function committedValidationFailurePatch(issue, error) {
   };
 }
 
+/** Only a receipt for this issue may complete an already closed task's repair. */
+export function hasAcceptedLisaIssueRepair(state, issue = state?.issue) {
+  const repair = state?.lisaRepair;
+  return Boolean(state?.issue?.lisaRepairId && issue?.number === state.issue.number &&
+    repair?.repairId === state.issue.lisaRepairId &&
+    repair.issueNumber === issue.number && repair.runId === state.runId &&
+    repair.phaseIndex === state.phaseIndex && repair.acceptedTreeHash &&
+    ['accepted', 'resuming'].includes(repair.status));
+}
+
 function blocked(message) {
   throw Object.assign(new Error(message), { code: 'RALPH_RECOVERY_BLOCKED' });
 }

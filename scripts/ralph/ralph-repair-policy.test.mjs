@@ -6,7 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { captureLisaRepairContext, assessLisaRepair, acceptLisaRepair, createTrustedRepairRuntime } from './ralph-lisa-repair.mjs';
 import { prepareConfig, trustedFileHash } from './ralph-config.mjs';
-import { runtimeSettings } from './ralph-process-runner.mjs';
+import { run, runtimeSettings } from './ralph-process-runner.mjs';
 
 function fixture() {
   const root = mkdtempSync(path.join(tmpdir(), 'ralph-repair-policy-'));
@@ -86,22 +86,54 @@ test('ignored instruction changes are reviewed in full and included in accepted 
   } finally { f.cleanup(); }
 });
 
-test('instruction repair still requires independent approval and a before-commit state', async () => {
+test('committed instruction repair requires independent approval before acceptance', async () => {
   const f = fixture();
   try {
-    writeFileSync(f.instruction, 'Disable required checks');
-    await assert.rejects(assessLisaRepair(f.context, { ...f.options,
-      review: async () => ({ verdict: 'human', reason: 'weakening instruction' }), validate: async () => {},
-    }), /weakening/);
     f.state.issue.commit = 'head';
     f.state.issue.phase = 'committed';
-    writeFileSync(f.instruction, 'Run node broken.mjs; preserve requirements.');
-    const context = captureLisaRepairContext(f.config, { state: f.state }, new Error('failed'), f.options);
+    const options = { ...f.options, run: (command, args, settings) => args[0] === 'merge-base'
+      ? { status: 0, stdout: '' } : run(command, args, settings) };
+    const context = captureLisaRepairContext(f.config, { state: f.state }, new Error('failed'), options);
     writeFileSync(f.instruction, 'Run node fixed.mjs; preserve requirements.');
-    await assert.rejects(assessLisaRepair(context, { ...f.options,
-      review: async () => ({ verdict: 'pass' }), validate: async () => {},
-    }), /после коммита/);
+    await assert.rejects(assessLisaRepair(context, { ...options, validate: async () => {} }), /ревью/);
+    await assert.rejects(assessLisaRepair(context, { ...options,
+      review: async () => ({ verdict: 'human', reason: 'weakening instruction' }), validate: async () => {},
+    }), /weakening/);
+    let reviewed = false;
+    let validated = false;
+    const assessment = await assessLisaRepair(context, { ...options,
+      review: async ({ changes }) => {
+        assert.match(changes.find((item) => item.path === 'AGENTS.md').after, /fixed/);
+        reviewed = true;
+        return { verdict: 'pass', reason: 'same mandatory check' };
+      },
+      validate: async () => { validated = true; },
+    });
+    assert.deepEqual(acceptLisaRepair(context, assessment, options).changedPaths, ['AGENTS.md']);
+    assert.equal(reviewed, true);
+    assert.equal(validated, true);
   } finally { f.cleanup(); }
+});
+
+test('committed instruction repair rejects absent commit, wrong HEAD, or unrelated ancestry', async () => {
+  for (const evidence of [
+    { commit: null, recoveryHead: 'head', ancestor: true },
+    { commit: 'head', recoveryHead: 'other', ancestor: true },
+    { commit: 'head', recoveryHead: 'head', ancestor: false },
+  ]) {
+    const f = fixture();
+    try {
+      Object.assign(f.state.issue, { phase: 'committed', commit: evidence.commit, recoveryHead: evidence.recoveryHead });
+      const options = { ...f.options, run: (command, args, settings) => args[0] === 'merge-base'
+        ? { status: evidence.ancestor ? 0 : 1, stdout: '' } : run(command, args, settings) };
+      const context = captureLisaRepairContext(f.config, { state: f.state }, new Error('failed'), options);
+      writeFileSync(f.instruction, 'Run node fixed.mjs; preserve requirements.');
+      await assert.rejects(assessLisaRepair(context, { ...options,
+        review: async () => assert.fail('invalid evidence reached independent review'),
+        validate: async () => assert.fail('invalid evidence reached validation'),
+      }), /HEAD/);
+    } finally { f.cleanup(); }
+  }
 });
 
 test('ignored config participates in every integrity check without consuming its path list', async () => {
