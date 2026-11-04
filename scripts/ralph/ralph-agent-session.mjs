@@ -170,7 +170,7 @@ async function runObservedAgentSession(backend, args, options, sessionStartedMs)
   let child;
   try {
     child = spawn(command, commandArgs, {
-      cwd: agentProjectRoot,
+      cwd: options.workingDirectory ?? agentProjectRoot,
       env: childEnvironment.env,
       stdio: ['pipe', 'pipe', 'pipe'],
       detached: process.platform !== 'win32',

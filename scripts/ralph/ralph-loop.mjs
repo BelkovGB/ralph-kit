@@ -1605,7 +1605,7 @@ async function main(lifecycle = null) {
 
   const config = loadConfig();
   if (lifecycle?.accepted) {
-    if (lisaRepairTreeHash() !== lifecycle.accepted.acceptedTreeHash) {
+    if (lisaRepairTreeHash({ controlFiles: lifecycle.accepted.controlPlane.trustedControlFileHashes.keys() }) !== lifecycle.accepted.acceptedTreeHash) {
       fail('Lisa: дерево изменилось перед запуском исправленного Ralph.');
     }
     Object.assign(config, lifecycle.accepted.controlPlane);

@@ -1,16 +1,17 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { lstatSync, readFileSync, readlinkSync, realpathSync, readdirSync,
+import { existsSync, lstatSync, readFileSync, readlinkSync, realpathSync, readdirSync, mkdirSync,
   mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { run, removeTemporaryDirectory } from './ralph-process-runner.mjs';
 import { agentInstructionFiles } from './ralph-config.mjs';
+import { prepareLisaRepairConfig } from './ralph-repair-policy.mjs';
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const contexts = new WeakMap();
 const assessments = new WeakMap();
-const protectedModules = new Set(['ralph-lifecycle.mjs', 'ralph-lifecycle-host.mjs', 'ralph-lisa-repair.mjs']);
+const protectedModules = new Set(['ralph-lifecycle.mjs', 'ralph-lifecycle-host.mjs', 'ralph-lisa-repair.mjs', 'ralph-repair-policy.mjs']);
 const beforeCommit = new Set(['agent-running', 'working-tree', 'validating', 'validation-mutated', 'validation-diagnostic', 'review-failed']);
 const digest = (value) => createHash('sha256').update(value).digest('hex');
 
@@ -26,7 +27,8 @@ function tree(root, options) {
     'git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard'],
   ).stdout.split('\0').filter(Boolean);
   const result = new Map();
-  for (const name of [...new Set(files)].sort()) {
+  const controls = [...(options.controlFiles ?? []), ...agentInstructionFiles(root)];
+  for (const name of [...new Set([...files, ...controls.map((file) => path.relative(root, file))])].sort()) {
     const relative = name.replaceAll('\\', '/');
     const target = path.resolve(root, name);
     if (path.isAbsolute(name) || relative.split('/').includes('..') || !target.startsWith(`${root}${path.sep}`)) {
@@ -63,8 +65,9 @@ export function lisaFailureFingerprint(error, step) {
 export function captureLisaRepairContext(config, store, error, options = {}) {
   const root = path.resolve(options.projectRoot ?? projectRoot);
   const workspace = identity(options);
-  const baseline = tree(root, options);
   const controls = new Map(config.trustedControlFileHashes ?? []);
+  const baseline = tree(root, { ...options, controlFiles: controls.keys() });
+  const configPath = path.join(root, '.agents/ralph.config.json');
   const currentInstructions = agentInstructionFiles(root);
   if (config.agentInstructionFiles && (currentInstructions.length !== config.agentInstructionFiles.length ||
       currentInstructions.some((file) => !config.agentInstructionFiles.includes(file)))) {
@@ -83,7 +86,10 @@ export function captureLisaRepairContext(config, store, error, options = {}) {
     policy: structuredClone(config),
   });
   contexts.set(context, { root, baseline, state, config: structuredClone(config),
-    instructions: new Map(agentInstructionFiles(root).map((file) => [file, digest(readFileSync(file))])),
+    configPath, rawConfig: existsSync(configPath) ? JSON.parse(readFileSync(configPath, 'utf8')) : null,
+    instructions: new Map([...new Set([...agentInstructionFiles(root), config.rulesPath,
+      path.join(root, '.agents/RALPH.md')].filter((file) => file && existsSync(file)))]
+      .map((file) => [file, digest(readFileSync(file))])),
     controls: new Map(controls), statePath: options.statePath,
     stateBytes: options.statePath ? readFileSync(options.statePath) : null });
   return context;
@@ -92,11 +98,6 @@ export function captureLisaRepairContext(config, store, error, options = {}) {
 function checkedContext(context, options) {
   const saved = contexts.get(context);
   if (!saved) throw new Error('Lisa: неизвестный контекст ремонта.');
-  const instructions = agentInstructionFiles(saved.root);
-  if (instructions.length !== saved.instructions.size || instructions.some((file) =>
-    saved.instructions.get(file) !== digest(readFileSync(file)))) {
-    throw new Error('Lisa: ремонт инструкций пока требует оператора.');
-  }
   const current = identity(options);
   if (current.branch !== context.branch || current.head !== context.head) {
     throw new Error('Lisa изменила ветку или HEAD. Нужен оператор.');
@@ -109,20 +110,23 @@ function checkedContext(context, options) {
 
 export async function assessLisaRepair(context, options = {}) {
   const saved = checkedContext(context, options);
-  const after = tree(saved.root, options);
+  const treeOptions = { ...options, controlFiles: [...saved.controls.keys()] };
+  const after = tree(saved.root, treeOptions);
   const paths = changedPaths(saved.baseline, after);
   for (const name of saved.state?.issue?.foreignPaths ?? []) {
     if (paths.includes(name.replaceAll('\\', '/'))) throw new Error(`Lisa изменила чужую работу: ${name}.`);
   }
   const ralphPaths = paths.filter((name) => name.startsWith('scripts/ralph/'));
-  if (ralphPaths.length && (!beforeCommit.has(saved.state?.issue?.phase) || saved.state?.issue?.commit)) {
+  const instructionFiles = new Set([...saved.instructions.keys(), ...agentInstructionFiles(saved.root),
+    saved.config.rulesPath, path.join(saved.root, '.agents/RALPH.md')].filter(Boolean));
+  const immutableFiles = new Set([saved.config.approvedIssueSnapshotsPath,
+    saved.config.review?.schemaPath, saved.config.milestoneReview?.schemaPath].filter(Boolean));
+  const controlChanged = paths.some((name) => saved.controls.has(path.join(saved.root, name)) ||
+    instructionFiles.has(path.join(saved.root, name)) || name.startsWith('scripts/ralph/'));
+  if (controlChanged && (!beforeCommit.has(saved.state?.issue?.phase) || saved.state?.issue?.commit)) {
     throw new Error('Lisa: ремонт Ralph после коммита требует оператора.');
   }
   for (const name of paths) {
-    if (['AGENTS.md', 'CLAUDE.md'].includes(path.basename(name)) ||
-        name.startsWith('.claude/') || name.startsWith('.agents/skills/')) {
-      throw new Error(`Lisa: ремонт инструкций пока требует оператора: ${name}.`);
-    }
     if (after.get(name)?.hash.startsWith('link:')) throw new Error(`Lisa: новая или изменённая ссылка ${name}.`);
     if (name.startsWith('scripts/ralph/') && protectedModules.has(path.basename(name))) {
       throw new Error(`Lisa: механизм восстановления нельзя ремонтировать: ${name}.`);
@@ -133,24 +137,42 @@ export async function assessLisaRepair(context, options = {}) {
     const stats = lstatSync(file, { throwIfNoEntry: false });
     const current = stats?.isFile() ? digest(readFileSync(file)) : null;
     if (hash === current) continue;
-    if (!relative.startsWith('scripts/ralph/') || !relative.endsWith('.mjs')) {
-      throw new Error(`Lisa: ремонт конфига или инструкций пока требует оператора: ${relative}.`);
+    if (immutableFiles.has(file)) throw new Error(`Lisa: ремонт не может менять защищённый файл: ${relative}.`);
+    if (!stats?.isFile()) throw new Error(`Lisa удалила управляющий файл: ${relative}.`);
+    if (file !== saved.configPath && !instructionFiles.has(file) &&
+        !(relative.startsWith('scripts/ralph/') && relative.endsWith('.mjs'))) {
+      throw new Error(`Lisa: ремонт не может менять защищённый файл: ${relative}.`);
     }
-    if (!stats?.isFile()) throw new Error(`Lisa удалила управляющий модуль: ${relative}.`);
+  }
+  let candidate = structuredClone(saved.config);
+  if (saved.rawConfig && paths.includes(path.relative(saved.root, saved.configPath).replaceAll('\\', '/'))) {
+    candidate = prepareLisaRepairConfig(saved.rawConfig, JSON.parse(readFileSync(saved.configPath, 'utf8')),
+      saved.config, saved.state?.phaseIndex ?? 0, options);
   }
   if (!options.review) throw new Error('Lisa: независимое ревью ремонта обязательно.');
   const changes = paths.map((name) => ({ path: name,
     before: saved.baseline.get(name)?.content?.toString('utf8') ?? null,
     after: after.get(name)?.content?.toString('utf8') ?? null,
   }));
-  const review = await options.review({ context, policy: structuredClone(saved.config), state: structuredClone(saved.state), changes });
+  const originalInstructions = [...saved.instructions.keys()].map((file) => ({
+    path: path.relative(saved.root, file).replaceAll('\\', '/'),
+    content: saved.baseline.get(path.relative(saved.root, file).replaceAll('\\', '/'))?.content?.toString('utf8'),
+  }));
+  const review = await options.review({ context, policy: structuredClone(saved.config), state: structuredClone(saved.state), changes, originalInstructions });
   if (review?.verdict !== 'pass') throw new Error(`Lisa: ремонт не принят: ${review?.reason ?? 'нет вердикта ревью'}.`);
-  if (!options.validate) throw new Error('Lisa: проверки ремонта обязательны.');
-  await options.validate({ context, changedPaths: paths, config: structuredClone(saved.config) });
   checkedContext(context, options);
-  if (treeHash(tree(saved.root, options)) !== treeHash(after)) throw new Error('Lisa: проверки изменили дерево ремонта.');
+  if (treeHash(tree(saved.root, treeOptions)) !== treeHash(after)) throw new Error('Lisa: ревью изменило дерево ремонта.');
+  if (!options.validate) throw new Error('Lisa: проверки ремонта обязательны.');
+  await options.validate({ context, changedPaths: paths, config: structuredClone(candidate) });
+  checkedContext(context, options);
+  if (treeHash(tree(saved.root, treeOptions)) !== treeHash(after)) throw new Error('Lisa: проверки изменили дерево ремонта.');
+  const controlPlane = {
+    agentInstructionFiles: agentInstructionFiles(saved.root),
+    trustedControlFileHashes: new Map([...new Set([...saved.controls.keys(), ...instructionFiles])]
+      .filter((file) => existsSync(file)).map((file) => [file, digest(readFileSync(file))])),
+  };
   const assessment = { changedPaths: paths, ralphChanged: ralphPaths.length > 0, treeHash: treeHash(after), review };
-  assessments.set(assessment, { context, result: structuredClone(assessment) });
+  assessments.set(assessment, { context, result: structuredClone(assessment), candidate, controlPlane });
   return assessment;
 }
 
@@ -158,9 +180,10 @@ export function acceptLisaRepair(context, assessment, options = {}) {
   const saved = checkedContext(context, options);
   const checked = assessments.get(assessment);
   if (checked?.context !== context) throw new Error('Lisa: нет принятого ревью ремонта.');
-  if (treeHash(tree(saved.root, options)) !== checked.result.treeHash) throw new Error('Lisa: дерево изменилось после приёмки.');
+  if (treeHash(tree(saved.root, { ...options, controlFiles: saved.controls.keys() })) !== checked.result.treeHash) throw new Error('Lisa: дерево изменилось после приёмки.');
   return { repairId: context.repairId, acceptedTreeHash: checked.result.treeHash,
-    changedPaths: [...checked.result.changedPaths], ralphChanged: checked.result.ralphChanged };
+    changedPaths: [...checked.result.changedPaths], ralphChanged: checked.result.ralphChanged,
+    config: structuredClone(checked.candidate), controlPlane: structuredClone(checked.controlPlane) };
 }
 
 export function updateLisaRepairContextState(context, update, options = {}) {
@@ -171,6 +194,8 @@ export function updateLisaRepairContextState(context, update, options = {}) {
 
 export function createTrustedRepairRuntime(directory = path.dirname(fileURLToPath(import.meta.url))) {
   const root = mkdtempSync(path.join(tmpdir(), 'ralph-repair-runtime-'));
+  // Stop ancestor project discovery; repair review receives instructions as data.
+  mkdirSync(path.join(root, '.git'));
   const hashes = new Map();
   for (const name of readdirSync(directory)) {
     if (!name.endsWith('.mjs') || name.endsWith('.test.mjs')) continue;
@@ -188,6 +213,11 @@ export function createTrustedRepairRuntime(directory = path.dirname(fileURLToPat
   return {
     root, schemaPath, commandRunnerPath: path.join(root, 'ralph-command-runner.mjs'),
     assertUnchanged() {
+      if (readdirSync(root).some((name) => name !== '.git' && !hashes.has(name)) ||
+          !lstatSync(path.join(root, '.git'), { throwIfNoEntry: false })?.isDirectory() ||
+          readdirSync(path.join(root, '.git')).length !== 0) {
+        throw new Error('Lisa: доверенная копия содержит посторонние настройки или инструкции.');
+      }
       for (const [name, expected] of hashes) {
         const target = path.join(root, name);
         if (!lstatSync(target, { throwIfNoEntry: false })?.isFile() || digest(readFileSync(target)) !== expected) {

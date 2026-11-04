@@ -1042,6 +1042,7 @@ function collectTrustedControlFileHashes(config) {
     path.join(scriptDirectory, 'ralph-lifecycle.mjs'),
     path.join(scriptDirectory, 'ralph-lifecycle-host.mjs'),
     path.join(scriptDirectory, 'ralph-lisa-repair.mjs'),
+    path.join(scriptDirectory, 'ralph-repair-policy.mjs'),
     path.join(scriptDirectory, 'ralph-validation-runner.mjs'),
     path.join(scriptDirectory, 'ralph-version.mjs'),
     path.join(projectRoot, '.agents', 'RALPH.md'),
@@ -1074,7 +1075,7 @@ function collectTrustedControlFileHashes(config) {
  * таймауты процесса, и проверка черновика переписала бы таймауты идущего
  * прогона.
  */
-export function prepareConfig(config) {
+export function prepareConfig(config, { captureControlPlane = true } = {}) {
   // Проверка идёт до умолчаний: они дописывают в объект свои ключи, и после них
   // отличить ключ из файла от ключа из кода уже нельзя.
   rejectRemovedContainerFields(config);
@@ -1089,7 +1090,7 @@ export function prepareConfig(config) {
   validateRuntimeSettings(config);
   validateAgentRoles(config);
   resolveControlPlanePaths(config);
-  Object.assign(config, controlPlaneSnapshot(config));
+  if (captureControlPlane) Object.assign(config, controlPlaneSnapshot(config));
 
   return config;
 }
