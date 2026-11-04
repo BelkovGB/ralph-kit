@@ -194,6 +194,7 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
         fail('Lisa: контекст ремонта не соответствует прогону.');
       }
       state.lisaRepair = { repairId: context.repairId, runId: state.runId, phaseIndex: state.phaseIndex,
+        issueNumber: state.issue?.number ?? null,
         status: 'repairing', failureStep: context.failureStep, failureFingerprint: context.failureFingerprint,
         acceptedTreeHash: null };
       persist();

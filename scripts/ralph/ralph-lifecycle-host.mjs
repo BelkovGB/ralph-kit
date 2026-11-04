@@ -10,7 +10,7 @@ import { runReviewSession } from './ralph-agent-backends.mjs';
 import { requestLisa, supervisorAgentConfig, supervisorPhaseConfig, prepareLisaResume, lisaValidationPathDirectories } from './ralph-supervisor.mjs';
 import { validatedLisaPathDirectories, runConfiguredValidation, assertTrustedControlFilesUnchanged } from './ralph-validation-runner.mjs';
 import { captureLisaRepairContext, assessLisaRepair, acceptLisaRepair,
-  createTrustedRepairRuntime, updateLisaRepairContextState, lisaFailureFingerprint, lisaRepairTreeHash } from './ralph-lisa-repair.mjs';
+  createTrustedRepairRuntime, updateLisaRepairContextState, lisaFailureFingerprint, lisaRepairTreeHash, lisaRepairIndexHash } from './ralph-lisa-repair.mjs';
 import { runRalphLifecycle, startRalphWorker, repairStepPassed } from './ralph-lifecycle.mjs';
 import { publishLiveStatus, readLiveStatus, reportActivity, resetLiveStatus, subscribeLiveStatus } from './ralph-live-status.mjs';
 import { createTerminalHost } from './ralph-terminal-host.mjs';
@@ -72,7 +72,8 @@ export async function runRalphLifecycleCli() {
         snapshot.assertUnchanged();
         if (accepted) {
           assertTrustedControlFilesUnchanged(accepted.controlPlane);
-          if (lisaRepairTreeHash({ controlFiles: accepted.controlPlane.trustedControlFileHashes.keys() }) !== accepted.acceptedTreeHash) {
+          if (lisaRepairTreeHash({ controlFiles: accepted.controlPlane.trustedControlFileHashes.keys() }) !== accepted.acceptedTreeHash ||
+              lisaRepairIndexHash() !== accepted.acceptedIndexHash) {
             throw new Error('Lisa: дерево изменилось до запуска исправленного процесса; нужен оператор.');
           }
         }
@@ -103,8 +104,9 @@ export async function runRalphLifecycleCli() {
         }
         if (pendingFailure && current?.lisaRepair && result.kind === 'needs-human') {
           updateRepair(pendingFailure.repairId, { status: 'needs-human', reason: result.reason ?? result.failure?.message ?? 'Ralph не возобновлён.' });
-        } else if (pendingFailure?.proved && current?.lisaRepair) {
-          store.finishLisaRepair(pendingFailure.repairId);
+        } else if (pendingFailure?.proved) {
+          if (current?.lisaRepair?.repairId === pendingFailure.repairId) store.finishLisaRepair(pendingFailure.repairId);
+          console.log(`Lisa: восстановлен шаг ${pendingFailure.failureStep}; ремонт завершён.`);
           pendingFailure = null;
         }
         return result;

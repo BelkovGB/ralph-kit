@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { run, removeTemporaryDirectory } from './ralph-process-runner.mjs';
+import { isAncestorCommit } from './ralph-git.mjs';
+import { committedRecoveryPhases } from './ralph-recovery.mjs';
 import { agentInstructionFiles } from './ralph-config.mjs';
 import { prepareLisaRepairConfig } from './ralph-repair-policy.mjs';
 
@@ -52,6 +54,10 @@ const treeHash = (entries) => digest(JSON.stringify([...entries].map(([name, ent
 const changedPaths = (before, after) => [...new Set([...before.keys(), ...after.keys()])]
   .filter((name) => before.get(name)?.hash !== after.get(name)?.hash).sort();
 
+export function lisaRepairIndexHash(options = {}) {
+  return digest((options.run ?? run)('git', ['diff', '--cached', '--binary', '--no-ext-diff', '--no-textconv']).stdout);
+}
+
 export function lisaRepairTreeHash(options = {}) {
   return treeHash(tree(path.resolve(options.projectRoot ?? projectRoot), options));
 }
@@ -85,7 +91,7 @@ export function captureLisaRepairContext(config, store, error, options = {}) {
     baselineTreeHash: treeHash(baseline), baselineControlHashes: controls,
     policy: structuredClone(config),
   });
-  contexts.set(context, { root, baseline, state, config: structuredClone(config),
+  contexts.set(context, { root, baseline, state, indexHash: lisaRepairIndexHash(options), config: structuredClone(config),
     configPath, rawConfig: existsSync(configPath) ? JSON.parse(readFileSync(configPath, 'utf8')) : null,
     instructions: new Map([...new Set([...agentInstructionFiles(root), config.rulesPath,
       path.join(root, '.agents/RALPH.md')].filter((file) => file && existsSync(file)))]
@@ -102,6 +108,7 @@ function checkedContext(context, options) {
   if (current.branch !== context.branch || current.head !== context.head) {
     throw new Error('Lisa изменила ветку или HEAD. Нужен оператор.');
   }
+  if (lisaRepairIndexHash(options) !== saved.indexHash) throw new Error('Lisa изменила индекс Git; нужен оператор.');
   if (saved.statePath && !readFileSync(saved.statePath).equals(saved.stateBytes)) {
     throw new Error('Lisa изменила сохранённое состояние. Нужен оператор.');
   }
@@ -123,8 +130,18 @@ export async function assessLisaRepair(context, options = {}) {
     saved.config.review?.schemaPath, saved.config.milestoneReview?.schemaPath].filter(Boolean));
   const controlChanged = paths.some((name) => saved.controls.has(path.join(saved.root, name)) ||
     instructionFiles.has(path.join(saved.root, name)) || name.startsWith('scripts/ralph/'));
-  if (controlChanged && (!beforeCommit.has(saved.state?.issue?.phase) || saved.state?.issue?.commit)) {
-    throw new Error('Lisa: ремонт Ralph после коммита требует оператора.');
+  if (controlChanged) {
+    const issue = saved.state?.issue;
+    if (!beforeCommit.has(issue?.phase) && !committedRecoveryPhases.includes(issue?.phase)) {
+      throw new Error('Lisa: ремонт требует сохранённой issue с проверяемым этапом.');
+    }
+    if (committedRecoveryPhases.includes(issue.phase) || issue.commit) {
+      const expectedHead = issue.recoveryHead ?? issue.pushedHead ?? issue.commit;
+      if (!issue.commit || context.head !== expectedHead ||
+          !isAncestorCommit(issue.commit, context.head, options.run ?? run)) {
+        throw new Error('Lisa: HEAD не соответствует сохранённому коммиту; нужен оператор.');
+      }
+    }
   }
   for (const name of paths) {
     if (after.get(name)?.hash.startsWith('link:')) throw new Error(`Lisa: новая или изменённая ссылка ${name}.`);
@@ -181,7 +198,7 @@ export function acceptLisaRepair(context, assessment, options = {}) {
   const checked = assessments.get(assessment);
   if (checked?.context !== context) throw new Error('Lisa: нет принятого ревью ремонта.');
   if (treeHash(tree(saved.root, { ...options, controlFiles: saved.controls.keys() })) !== checked.result.treeHash) throw new Error('Lisa: дерево изменилось после приёмки.');
-  return { repairId: context.repairId, acceptedTreeHash: checked.result.treeHash,
+  return { repairId: context.repairId, acceptedTreeHash: checked.result.treeHash, acceptedIndexHash: saved.indexHash,
     changedPaths: [...checked.result.changedPaths], ralphChanged: checked.result.ralphChanged,
     config: structuredClone(checked.candidate), controlPlane: structuredClone(checked.controlPlane) };
 }

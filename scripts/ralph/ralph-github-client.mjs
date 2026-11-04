@@ -180,15 +180,34 @@ export function refreshIssue(repository, issueNumber) {
   };
 }
 
-export function patchIssue(repository, issueNumber, values) {
+export function patchIssue(repository, issueNumber, values, { retry = true } = {}) {
   return parseJson(
-    runNetwork(
+    (retry ? runNetwork : run)(
       'gh',
       ['api', '--method', 'PATCH', `repos/${repository}/issues/${issueNumber}`, '--input', '-'],
       { input: JSON.stringify(values) },
     ).stdout,
     `GitHub update issue ${issueNumber}`,
   );
+}
+
+/** Reconcile a lost mutation response before another close is attempted. */
+export function closeIssueOnce(repository, issueNumber, dependencies = {}) {
+  const readState = dependencies.issueState ?? issueState;
+  const patch = dependencies.patchIssue ?? patchIssue;
+  return retryTransientOperation(() => {
+    const state = readState(repository, issueNumber);
+    if (state === 'CLOSED') return;
+    if (state !== 'OPEN') fail(`Issue #${issueNumber}: GitHub не подтвердил состояние.`);
+    try {
+      const result = patch(repository, issueNumber, { state: 'closed', state_reason: 'completed' }, { retry: false });
+      if (result.state?.toUpperCase() === 'CLOSED') return;
+    } catch (error) {
+      if (readState(repository, issueNumber) === 'CLOSED') return;
+      throw error;
+    }
+    if (readState(repository, issueNumber) !== 'CLOSED') fail(`Issue #${issueNumber} не закрылась после успешной реализации.`);
+  }, { attempts: runtimeSettings().networkRetryAttempts, baseDelayMs: runtimeSettings().networkRetryBaseDelayMs });
 }
 
 /**
@@ -410,12 +429,19 @@ export function ensurePullRequestForBranch(config, repository) {
     args.push('--draft');
   }
 
-  // Через runNetwork: создание PR — сетевой вызов, и 503 от GitHub не повод
-  // терять прогон. Повторная попытка при уже созданном PR падает своей ошибкой
-  // «pull request already exists», а не молча создаёт второй.
-  const url = runNetwork('gh', args).stdout;
-  console.log(`Создан PR: ${url}`);
-  return verifyPullRequestTarget(config, pullRequestDetails(repository, url));
+  return retryTransientOperation(() => {
+    const found = existingPullRequest(config, repository);
+    if (found) return verifyPullRequestTarget(config, pullRequestDetails(repository, found.number));
+    let url;
+    try { url = run('gh', args).stdout; }
+    catch (error) {
+      const created = existingPullRequest(config, repository);
+      if (!created) throw error;
+      return verifyPullRequestTarget(config, pullRequestDetails(repository, created.number));
+    }
+    console.log(`Создан PR: ${url}`);
+    return verifyPullRequestTarget(config, pullRequestDetails(repository, url));
+  }, { attempts: runtimeSettings().networkRetryAttempts, baseDelayMs: runtimeSettings().networkRetryBaseDelayMs });
 }
 
 export function closeMilestone(repository, milestone) {

@@ -5,13 +5,13 @@ import path from 'node:path';
 import test from 'node:test';
 import { captureLisaRepairContext, assessLisaRepair, acceptLisaRepair } from './ralph-lisa-repair.mjs';
 
-function fixture() {
+function fixture(issueOverrides = {}) {
   const root = mkdtempSync(path.join(tmpdir(), 'ralph-repair-'));
   mkdirSync(path.join(root, 'scripts/ralph'), { recursive: true });
   writeFileSync(path.join(root, 'scripts/ralph/ralph-loop.mjs'), 'broken();\n');
   writeFileSync(path.join(root, 'user.txt'), 'user work\n');
   const state = { runId: 'run', phaseIndex: 0, branch: 'phase', issue: {
-    number: 1, phase: 'validating', body: 'Keep requirements', foreignPaths: ['user.txt'],
+    number: 1, phase: 'validating', body: 'Keep requirements', foreignPaths: ['user.txt'], ...issueOverrides,
   } };
   const config = { supervisor: { maxInterventions: 2 }, trustedControlFileHashes: new Map(), agentInstructionFiles: [] };
   const options = { projectRoot: root, identity: () => ({ branch: 'phase', head: 'head' }),
@@ -100,4 +100,34 @@ test('accepted validation cannot keep mutations produced by a formerly mutating 
       validate: async () => writeFileSync(path.join(f.root, 'scripts/ralph/ralph-loop.mjs'), 'mutated();\n'),
     }), /проверки изменили дерево/);
   } finally { f.cleanup(); }
+});
+
+for (const phase of ['committed', 'pushed', 'reviewing', 'closing']) {
+  test(`accepted Ralph repair preserves the saved ${phase} commit evidence`, async () => {
+    const f = fixture({ phase, commit: 'head', recoveryHead: 'head', reviewedCommit: 'head' });
+    try {
+      writeFileSync(path.join(f.root, 'scripts/ralph/ralph-loop.mjs'), 'fixed();\n');
+      const assessment = await assessLisaRepair(f.context, { ...f.options,
+        run: (_name, args) => { assert.ok(['merge-base', 'diff'].includes(args[0])); return { status: 0, stdout: '' }; },
+        review: async () => ({ verdict: 'pass' }), validate: async () => {},
+      });
+      assert.equal(acceptLisaRepair(f.context, assessment, f.options).ralphChanged, true);
+      assert.equal(f.state.issue.commit, 'head');
+      assert.equal(readFileSync(path.join(f.root, 'user.txt'), 'utf8'), 'user work\n');
+    } finally { f.cleanup(); }
+  });
+}
+
+test('committed repair cannot bless inconsistent HEAD or commit ancestry', async () => {
+  for (const issue of [{ phase: 'closing', commit: 'old', recoveryHead: 'other' },
+    { phase: 'pushed', commit: 'old', recoveryHead: 'head' }]) {
+    const f = fixture(issue);
+    try {
+      writeFileSync(path.join(f.root, 'scripts/ralph/ralph-loop.mjs'), 'fixed();\n');
+      await assert.rejects(assessLisaRepair(f.context, { ...f.options,
+        run: () => ({ status: 1, stdout: '' }), review: async () => ({ verdict: 'pass' }),
+        validate: async () => {},
+      }), /HEAD/);
+    } finally { f.cleanup(); }
+  }
 });

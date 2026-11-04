@@ -41,9 +41,9 @@ export function supervisorPrompt(config, state, error, call, options = {}) {
     'Не редактируй state.json и локи. После resume оркестратор сам проверит восстановление и согласует этап с рабочим деревом, отменит устаревшие результаты проверок и ревью. При небезопасном состоянии он сохранит работу и запросит человека.',
     'Не меняй цель задачи и критерии приёмки, не отключай проверки, ревью или доверие к источникам, не меняй лимиты и идентичность плана.',
     options.proposalOnly
-      ? 'До коммита текущей issue разрешён ремонт скриптов Ralph, команд preflightScripts, validationScripts и существующих validationProfiles в конфиге, ошибочных команд или противоречий в инструкциях. Сохраняй исходные требования; остальные настройки неизменны. Не меняй ralph-lifecycle.mjs, ralph-lifecycle-host.mjs, ralph-lisa-repair.mjs и ralph-repair-policy.mjs. После твоего ответа независимое ревью исходной политики и полного diff проверит ремонт, а управляющий процесс перезапустит Ralph. Не редактируй runtime-каталоги и временную доверенную копию.'
+      ? 'Для текущей сохранённой issue разрешён ремонт скриптов Ralph, команд preflightScripts, validationScripts и существующих validationProfiles в конфиге, ошибочных команд или противоречий в инструкциях. Сохраняй исходные требования; остальные настройки неизменны. Не меняй ralph-lifecycle.mjs, ralph-lifecycle-host.mjs, ralph-lisa-repair.mjs и ralph-repair-policy.mjs. После твоего ответа независимое ревью исходной политики и полного diff проверит ремонт, а управляющий процесс перезапустит Ralph. Не редактируй runtime-каталоги и временную доверенную копию.'
       : 'Настройки Ralph и доверенные инструкции оставь неизменными.',
-    'Не удаляй незавершённую работу, не создавай commit и не переключай ветку. Не запускай второй Ralph Loop: оболочка продолжит его после твоего ответа.',
+    'Не удаляй незавершённую работу, не меняй индекс Git, не создавай commit и не переключай ветку. Не запускай второй Ralph Loop: оболочка продолжит его после твоего ответа.',
     'Если нужен доступ, согласование, решение за пределами задачи или безопасное исправление невозможно, запроси человека.',
     'Последним сообщением верни только JSON: {"verdict":"resume"|"human","reason":"краткая причина","validationPathDirectories":["абсолютный путь"]}. Поле validationPathDirectories необязательно.',
   ].filter(Boolean).join('\n\n');
@@ -107,6 +107,7 @@ export function prepareLisaResume(config, store, before, dependencies = {}) {
   }
   const patch = {
     phase: 'working-tree', startingCommit: after.head,
+    ...(dependencies.acceptedRepair ? { lisaRepairId: before.repairId } : {}),
     commit: null, recoveryHead: null, pushedHead: null, reviewedCommit: null,
     expectedTree: null, commitMessage: null,
     validationExpectedTreeHash: null, validationFailureFingerprint: null,
