@@ -33,7 +33,7 @@ export function activeStateStore() {
   return currentStateStore;
 }
 
-export function createStateStore(config, selectedMode, statePath = runtimeStatePath) {
+export function createStateStore(config, selectedMode, statePath = runtimeStatePath, options = {}) {
   let state = readJsonFile(statePath, null);
   const configuredPhaseIndex = config.phaseIndex ?? 0;
   const configuredPhaseCount = config.phaseCount ?? 1;
@@ -62,7 +62,7 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
   if (!state && selectedMode !== '--check') {
     state = {
       version: 2,
-      runId: randomUUID(),
+      runId: options.runId ?? randomUUID(),
       status: 'active',
       phaseIndex: configuredPhaseIndex,
       phaseCount: configuredPhaseCount,
@@ -188,6 +188,37 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
       state.supervisorActive = false;
       persist();
     },
+    beginLisaRepair(context) {
+      if (!state || context.runId !== state.runId || context.phaseIndex !== state.phaseIndex ||
+          typeof context.repairId !== 'string' || !context.repairId) {
+        fail('Lisa: контекст ремонта не соответствует прогону.');
+      }
+      state.lisaRepair = { repairId: context.repairId, runId: state.runId, phaseIndex: state.phaseIndex,
+        status: 'repairing', failureStep: context.failureStep, failureFingerprint: context.failureFingerprint,
+        acceptedTreeHash: null };
+      persist();
+    },
+    updateLisaRepair(repairId, patch) {
+      if (!state?.lisaRepair || state.lisaRepair.repairId !== repairId) {
+        fail('Lisa: неизвестный контекст ремонта.');
+      }
+      if (!['repairing', 'checking', 'accepted', 'resuming', 'needs-human'].includes(patch.status)) {
+        fail('Lisa: неизвестный этап ремонта.');
+      }
+      const fields = ['status', 'acceptedTreeHash', 'changedPaths', 'reason'];
+      for (const key of Object.keys(patch)) {
+        if (!fields.includes(key)) fail(`Lisa: поле состояния ремонта ${key} запрещено.`);
+      }
+      Object.assign(state.lisaRepair, patch);
+      persist();
+    },
+    finishLisaRepair(repairId) {
+      if (!state?.lisaRepair || state.lisaRepair.repairId !== repairId) {
+        fail('Lisa: неизвестный контекст ремонта.');
+      }
+      state.lisaRepair = null;
+      persist();
+    },
     grantSupervisorIteration() {
       if (!state) return null;
       state.supervisorExtraIterations = (state.supervisorExtraIterations ?? 0) + 1;
@@ -234,6 +265,7 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
       state.supervisorExtraIterations = 0;
       state.supervisorActive = false;
       state.validationPathDirectories = [];
+      state.lisaRepair = null;
       persist();
       return true;
     },

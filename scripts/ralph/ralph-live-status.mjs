@@ -23,6 +23,15 @@ export function subscribeLiveStatus(listener) {
 export function publishLiveStatus(event) {
   const { type, ...values } = event;
   switch (type) {
+    case 'worker-snapshot':
+      state = structuredClone(values.snapshot);
+      break;
+    case 'lisa-repair':
+      state.lisaRepair = structuredClone(values.repair);
+      break;
+    case 'repair-step-passed':
+      state.lastPassedStep = structuredClone(values);
+      break;
     case 'supervisor-call':
       state.supervisorCalls += 1;
       break;

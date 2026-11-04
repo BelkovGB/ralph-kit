@@ -3,6 +3,16 @@ import { rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import test, { after } from 'node:test';
 
+test('unfinished Lisa repair remains visible after the owner releases the lock', () => {
+  const root = tree({ 'state.json': JSON.stringify({ lisaRepair: {
+    status: 'needs-human', reason: 'repair review failed', changedPaths: ['scripts/ralph/ralph-loop.mjs'],
+  } }) });
+  const result = readRunState({ runtimeDir: root, configPath: path.join(root, 'absent.json') });
+  assert.equal(result.running, false);
+  assert.equal(result.lisaRepair.status, 'needs-human');
+  assert.equal(result.lisaRepair.reason, 'repair review failed');
+});
+
 import {
   readRunProgress,
   readRunState,

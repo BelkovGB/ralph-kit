@@ -8,6 +8,7 @@ import { analyzeRecovery, committedRecoveryPhases } from './ralph-recovery.mjs';
 import { isAncestorCommit } from './ralph-git.mjs';
 import { beginIssueMetrics, currentIssueMetrics, finishIssueMetrics,
   formatIssueMetrics, startStage } from './ralph-run-metrics.mjs';
+import { runRalphLifecycle, ralphRunOutcome } from './ralph-lifecycle.mjs';
 
 const humanOnlyCodes = new Set([
   'RALPH_AGENT_AUTH',
@@ -17,7 +18,7 @@ const humanOnlyCodes = new Set([
   'RALPH_RECOVERY_BLOCKED',
 ]);
 
-export function supervisorPrompt(config, state, error, call) {
+export function supervisorPrompt(config, state, error, call, options = {}) {
   const issue = state?.issue;
   const failure = error?.message ?? 'Задача отложена после повторных отказов ревью.';
   return [
@@ -39,6 +40,7 @@ export function supervisorPrompt(config, state, error, call) {
     'Не запускай даже для диагностики команды, которые устанавливают или заменяют зависимости проекта. Установка вне указанного кэша, постоянное изменение окружения и исправления вне проекта или текущей задачи требуют оператора. Не меняй системную защиту или доступы.',
     'Не редактируй state.json и локи. После resume оркестратор сам проверит восстановление и согласует этап с рабочим деревом, отменит устаревшие результаты проверок и ревью. При небезопасном состоянии он сохранит работу и запросит человека.',
     'Не меняй цель задачи и критерии приёмки, не отключай проверки и не меняй лимиты, настройки Ralph или доверенные инструкции.',
+    options.proposalOnly ? 'Дополнительно разрешён ремонт скриптов установленного Ralph до коммита текущей issue. Не меняй ralph-lifecycle.mjs, ralph-lifecycle-host.mjs и ralph-lisa-repair.mjs. Конфиг и инструкции остаются неизменными. После твоего ответа независимое ревью проверит ремонт, а управляющий процесс перезапустит Ralph. Не редактируй runtime-каталоги и временную доверенную копию.' : '',
     'Не удаляй незавершённую работу, не создавай commit и не переключай ветку. Не запускай второй Ralph Loop: оболочка продолжит его после твоего ответа.',
     'Если нужен доступ, согласование, решение за пределами задачи или безопасное исправление невозможно, запроси человека.',
     'Последним сообщением верни только JSON: {"verdict":"resume"|"human","reason":"краткая причина","validationPathDirectories":["абсолютный путь"]}. Поле validationPathDirectories необязательно.',
@@ -87,6 +89,10 @@ export function prepareLisaResume(config, store, before, dependencies = {}) {
   if (!status) return analyzeRecovery(config, issue, { run: execute });
   const allowed = new Set(['review-failed', 'committed', 'pushed', 'reviewing',
     'closing', 'agent-running', 'working-tree', 'validating']);
+  if (dependencies.acceptedRepair) {
+    allowed.add('validation-diagnostic');
+    allowed.add('validation-mutated');
+  }
   if (!issue || !allowed.has(issue.phase)) {
     throw new Error('Lisa: рабочее дерево требует ручного восстановления исходного этапа.');
   }
@@ -137,7 +143,7 @@ function parseLisaAnswer(message) {
   return answer;
 }
 
-export async function requestLisa(config, store, error, call) {
+export async function requestLisa(config, store, error, call, options = {}) {
   const lisaConfig = supervisorAgentConfig(config);
   const before = workspaceIdentity();
   if (currentIssueMetrics()) {
@@ -156,16 +162,17 @@ export async function requestLisa(config, store, error, call) {
   try {
     verifyAgentAuthentication(lisaConfig);
     const session = await runDevelopmentSession(lisaConfig, {
-      input: supervisorPrompt(config, store.state, error, call),
+      input: supervisorPrompt(config, store.state, error, call, options),
       progressLabel: 'Lisa',
       maxTurns: config.supervisor.maxTurns,
       timeoutMs: config.supervisor.timeoutMs,
       label: `Lisa: помощь Ralph${store.issue ? ` с issue #${store.issue.number}` : ''}`,
+      signal: options.signal,
     }, 'supervisor');
-    assertTrustedControlFilesUnchanged(config);
+    if (!options.proposalOnly) assertTrustedControlFilesUnchanged(config);
     assertLisaWorkspaceUnchanged(before, workspaceIdentity());
     const answer = parseLisaAnswer(session.lastAgentMessage);
-    if (answer.verdict === 'resume') {
+    if (answer.verdict === 'resume' && !options.proposalOnly) {
       try {
         const pathDirectories = lisaValidationPathDirectories(answer);
         const accepted = validatedLisaPathDirectories([
@@ -194,12 +201,14 @@ export async function requestLisa(config, store, error, call) {
 }
 
 export async function runWithSupervisor(config, store, runPlan, request = requestLisa) {
-  while (true) {
+  // Compatibility API for embedded callers; the CLI uses the same lifecycle
+  // owner with a fresh worker process instead of this in-memory start adapter.
+  const outcome = await runRalphLifecycle({ start: async () => {
     let result;
     let failure;
     try {
       result = await runPlan(config);
-      if (result?.verdict !== 'parked') return result;
+      if (result?.verdict !== 'parked') return ralphRunOutcome(result);
       const parkedIssues = result.phases?.at(-1)?.parkedIssues ?? result.parkedIssues;
       failure = new Error(`Отложены issues: ${parkedIssues?.join(', ') ?? 'неизвестно'}`);
     } catch (error) {
@@ -214,7 +223,8 @@ export async function runWithSupervisor(config, store, runPlan, request = reques
         (failure.code === 'RALPH_ITERATION_LIMIT' || result?.verdict === 'parked')) {
       throw failure;
     }
-
+    return { kind: 'repair-needed', result, failure };
+  }, repair: async ({ result, failure }) => {
     const call = store.reserveSupervisorCall();
     publishLiveStatus({ type: 'supervisor-call' });
     const label = `Lisa: вызов ${call}/${config.supervisor.maxInterventions}.` +
@@ -224,14 +234,14 @@ export async function runWithSupervisor(config, store, runPlan, request = reques
     try {
       answer = await request(supervisorPhaseConfig(config, store), store, failure, call);
     } catch (error) {
-      return { verdict: 'needs-human', reason: `Lisa остановилась: ${error.message}` };
+      return { verdict: 'human', reason: `Lisa остановилась: ${error.message}` };
     } finally {
       console.log(`Lisa: вызов ${call} завершён.`);
       store.finishSupervisorCall();
       publishLiveStatus({ type: 'activity', kind: 'supervisor', label, active: false });
     }
     if (answer?.verdict !== 'resume') {
-      return { verdict: 'needs-human', reason: answer?.reason ?? 'Lisa не разрешила продолжение.' };
+      return { verdict: 'human', reason: answer?.reason ?? 'Lisa не разрешила продолжение.' };
     }
     if (result?.verdict === 'parked' && store.issue) {
       store.updateIssue({ phase: 'working-tree', reviewFixAttempts: 0 });
@@ -240,5 +250,7 @@ export async function runWithSupervisor(config, store, runPlan, request = reques
       store.grantSupervisorIteration();
     }
     console.log(`Lisa: ${answer.reason}. Ralph продолжает работу.`);
-  }
+    return answer;
+  } });
+  return outcome.kind === 'needs-human' ? { verdict: 'needs-human', reason: outcome.reason } : outcome.result;
 }

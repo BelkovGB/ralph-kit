@@ -41,6 +41,9 @@ export function terminalSnapshot(store, metrics, startedMs, now = Date.now(), li
   };
   let stage = issue ? (stages[issue.phase] ?? issue.phase) : 'Подготовка';
   if (phaseActivity) stage = 'Выполняется';
+  const repair = state?.lisaRepair ?? live.lisaRepair;
+  if (repair && supervisor) stage = ({ repairing: 'Ремонт', checking: 'Проверка ремонта',
+    accepted: 'Ремонт принят', resuming: 'Возобновление', 'needs-human': 'Нужен оператор' })[repair.status] ?? stage;
   const wait = session?.active ? session.lastEventMs === null ? 'Ждём первое событие агента'
     : session.turns === 0 && session.toolResults === 0 ? 'Ждём первый рабочий шаг'
       : 'Ждём следующее событие агента' : null;

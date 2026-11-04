@@ -1529,7 +1529,8 @@ const scriptTail = `
   /* Что идёт прямо сейчас. Строка живёт минуты и существует только при живом
      прогоне: у брошенного лока сервер эти числа не отдаёт. */
   function renderNow() {
-    var run = stateData && stateData.running ? stateData.run : null;
+    var run = stateData && stateData.running ? stateData.run
+      : stateData && stateData.lisaRepair ? { lisaRepair: stateData.lisaRepair } : null;
     if (!run) return null;
     var box = el('div', 'now');
     if (run.issueNumber) {
@@ -1544,6 +1545,15 @@ const scriptTail = `
     var stage = run.supervisor
       ? 'Lisa · вызов ' + outOf(run.supervisor.call, run.supervisor.limit)
       : phaseWord(run.issuePhase);
+    if (run.lisaRepair) {
+      var repairLabels = { repairing: 'Ремонт', checking: 'Проверка ремонта', accepted: 'Ремонт принят',
+        resuming: 'Возобновление', 'needs-human': 'Нужен оператор' };
+      stage = 'Lisa · ' + (repairLabels[run.lisaRepair.status] || run.lisaRepair.status);
+      if (run.lisaRepair.reason) box.appendChild(el('span', 'now-message', String(run.lisaRepair.reason)));
+      if (run.lisaRepair.changedPaths && run.lisaRepair.changedPaths.length) {
+        box.appendChild(el('span', 'now-message', run.lisaRepair.changedPaths.join(', ')));
+      }
+    }
     if (stage) box.appendChild(el('span', 'now-stage', stage));
     var meta = [];
     if (run.maxIterations) {

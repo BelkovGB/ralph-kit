@@ -27,6 +27,13 @@ import {
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(scriptDirectory, '..', '..');
 const commandRunnerPath = path.join(scriptDirectory, 'ralph-command-runner.mjs');
+let trustedCommandRunner = null;
+
+// The lifecycle owner keeps the verifier loaded before Lisa edits the checkout.
+// The command helper is a separate process, so it must come from that same snapshot.
+export function useTrustedCommandRunner(snapshot = null) {
+  trustedCommandRunner = snapshot;
+}
 
 // Значения по умолчанию действуют, пока конфигурация не загружена: часть тестов
 // и ранние проверки запускают команды до `loadConfig`.
@@ -364,7 +371,8 @@ function runObservedCommand(name, args, options, timeoutMs, startedAt) {
       : commandEnvironment;
   const logCommand = hasTerminalSink() ? logDetail : console.log;
   logCommand(`Команда: ${name} ${args[0] ?? ''}`.trim());
-  const result = spawnSync(process.execPath, [commandRunnerPath], {
+  trustedCommandRunner?.assertUnchanged();
+  const result = spawnSync(process.execPath, [trustedCommandRunner?.commandRunnerPath ?? commandRunnerPath], {
     cwd: projectRoot,
     encoding: 'utf8',
     input: JSON.stringify({

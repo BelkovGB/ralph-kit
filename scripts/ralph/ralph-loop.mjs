@@ -124,6 +124,9 @@ import { parseUiOption, renderRunSummary } from './ralph-terminal.mjs';
 import { createTerminalHost } from './ralph-terminal-host.mjs';
 import { publishLiveStatus, readLiveStatus, reportActivity, resetLiveStatus, subscribeLiveStatus } from './ralph-live-status.mjs';
 import { currentIssueMetrics } from './ralph-run-metrics.mjs';
+import { runRalphLifecycleCli } from './ralph-lifecycle-host.mjs';
+import { receiveRalphWorkerStart, sendRalphWorkerMessage, ralphRunOutcome } from './ralph-lifecycle.mjs';
+import { lisaRepairTreeHash } from './ralph-lisa-repair.mjs';
 
 import {
   createOrReopenReviewIssues,
@@ -190,14 +193,33 @@ function reportIssueMetrics(outcome) {
 
 // Валидация вызывается из трёх мест lifecycle, и замер, поставленный только в
 // одном, занизил бы стоимость issue молча. Обёртка одна на все три.
+function repairStepSucceeded(step) {
+  const state = activeStateStore()?.state;
+  if (state?.issue) publishLiveStatus({ type: 'repair-step-passed',
+    runId: state.runId, phaseIndex: state.phaseIndex, issueNumber: state.issue.number, step });
+}
+
+async function observedRepairStep(step, operation) {
+  try {
+    const result = await operation();
+    repairStepSucceeded(step);
+    return result;
+  } catch (error) {
+    error.ralphFailureStep = step;
+    throw error;
+  }
+}
+
 function measuredValidation(runValidation) {
   const endStage = startStage('validation');
   try {
     const outcome = runValidation();
+    repairStepSucceeded('validation');
     endStage();
     return outcome;
   } catch (error) {
     endStage({ failed: true });
+    error.ralphFailureStep = 'validation';
     throw error;
   }
 }
@@ -470,11 +492,11 @@ async function reviewAndCloseCommittedIssue(config, repository, issue, commit) {
   // сессии, а таких попыток допускается reviewRetryAttempts.
   const endReview = startStage('review');
   try {
-    review = await runReviewWithRetries(
+    review = await observedRepairStep('review', () => runReviewWithRetries(
       config,
       () => runIndependentReview(config, repository, issue, commit),
       `Review issue #${issue.number}`,
-    );
+    ));
     endReview();
     // Замечания ниже порога не блокируют работу, но и не теряются: каждое
     // становится отложенной GitHub issue для ручного разбора.
@@ -875,12 +897,12 @@ export async function runAgentOnIssue(config, repository, issue, rules) {
   console.log(`\n=== Issue #${issue.number}: ${issue.title} ===\n`);
   const endImplementation = startStage('implementation');
   try {
-    codexResult = await runDevelopmentSession(config, {
+    codexResult = await observedRepairStep('development', () => runDevelopmentSession(config, {
       input: renderPrompt(config, issue, rules) + continuationPrompt,
       maxTurns: config.maxTurns,
       timeoutMs: config.runtime.agentTimeoutMs,
       label: `${config.agentCli} issue #${issue.number}`,
-    });
+    }));
     endImplementation();
   } catch (error) {
     endImplementation({ failed: true });
@@ -1574,7 +1596,7 @@ function publishPhaseConfig(config) {
   publishLiveStatus({ type: 'queue-progress', queueProgress: null });
 }
 
-async function main() {
+async function main(lifecycle = null) {
   const ui = parseUiOption(mode, process.argv.slice(mode === '--accept-manual-commit' ? 4 : 3));
   // Проверяем, что передан поддерживаемый режим запуска.
   if (!supportedModes.has(mode)) {
@@ -1582,6 +1604,13 @@ async function main() {
   }
 
   const config = loadConfig();
+  if (lifecycle?.accepted) {
+    if (lisaRepairTreeHash() !== lifecycle.accepted.acceptedTreeHash) {
+      fail('Lisa: дерево изменилось перед запуском исправленного Ralph.');
+    }
+    Object.assign(config, lifecycle.accepted.controlPlane);
+    assertTrustedControlFilesUnchanged(config);
+  }
   // Диагностика нужна до включения цикла. Изменяющие режимы остаются выключены.
   if (!config.active && mode !== '--check') {
     console.log('Ralph Loop выключен: active=false.');
@@ -1593,7 +1622,7 @@ async function main() {
   resetLiveStatus();
   publishPhaseConfig(firstPhaseConfig);
   const startedMs = Date.now();
-  const terminal = ui === 'split' ? await createTerminalHost({
+  const terminal = !lifecycle && ui === 'split' ? await createTerminalHost({
     snapshot: () => {
       const store = activeStateStore();
       const state = store?.state;
@@ -1612,18 +1641,21 @@ async function main() {
     },
   }) : null;
   const unsubscribeTerminal = terminal ? subscribeLiveStatus(() => terminal.refresh()) : () => {};
+  const unsubscribeLifecycle = lifecycle ? subscribeLiveStatus((snapshot) => {
+    sendRalphWorkerMessage(lifecycle, 'live', { snapshot });
+  }) : () => {};
   let restoreConsole;
   let releaseLock;
   let runResult;
   let runError;
   try {
-    restoreConsole = initializePersistentLog(runtimeLogPath, {
+    if (!lifecycle) restoreConsole = initializePersistentLog(runtimeLogPath, {
       mode,
       branch: firstPhaseConfig.branch,
       milestone: firstPhaseConfig.milestone,
       phase: `${firstPhaseIndex + 1}/${config.phases.length}`,
     }, terminal);
-    releaseLock = acquireRunLock(runtimeLockPath, {
+    if (!lifecycle) releaseLock = acquireRunLock(runtimeLockPath, {
       mode,
       projectRoot,
       branch: firstPhaseConfig.branch,
@@ -1677,6 +1709,7 @@ async function main() {
       const snapshot = controlPlaneSnapshot(phaseConfig);
       Object.assign(config, snapshot);
       Object.assign(phaseConfig, snapshot);
+      if (lifecycle) sendRalphWorkerMessage(lifecycle, 'prepared', { config: phaseConfig, stateRunId: activeStateStore()?.state?.runId });
       if (mergedBase) {
         // HEAD сдвинулся слиянием, а не работой агента: сохранённая база issue
         // обязана переехать вместе с ним, иначе продолжение потребует HEAD,
@@ -1704,10 +1737,11 @@ async function main() {
       );
     };
 
-    const result = mode === '--run'
+    const result = mode === '--run' && !lifecycle
       ? await runWithSupervisor(config, activeStateStore(),
         (effectiveConfig) => runPhasePlan(effectiveConfig, activeStateStore(), runPhase))
-      : await runPhase(firstPhaseConfig);
+      : mode === '--run' ? await runPhasePlan(config, activeStateStore(), runPhase)
+        : await runPhase(firstPhaseConfig);
     runResult = result;
     if (result?.verdict === 'needs-human') {
       const error = new Error(`Нужен человек: ${result.reason}`);
@@ -1729,6 +1763,7 @@ async function main() {
         restoreConsole?.();
       } finally {
         unsubscribeTerminal();
+        unsubscribeLifecycle();
         await terminal?.close();
         if (mode === '--run') {
           console.log(renderRunSummary({ result: runResult, error: runError, startedMs,
@@ -1747,11 +1782,18 @@ const isMainModule =
   process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
 
 export async function runCli() {
+  let lifecycle;
   try {
-    await main();
+    lifecycle = await receiveRalphWorkerStart({ lockPath: runtimeLockPath });
+    const result = mode === '--run' && !lifecycle ? await runRalphLifecycleCli() : await main(lifecycle);
+    if (lifecycle) sendRalphWorkerMessage(lifecycle, 'outcome', { outcome: ralphRunOutcome(result) });
   } catch (error) {
+    if (lifecycle) sendRalphWorkerMessage(lifecycle, 'outcome', { outcome: ralphRunOutcome(null, error) });
     console.error(`\nRalph Loop остановлен: ${error.message}`);
     process.exitCode = 1;
+  } finally {
+    if (lifecycle) lifecycle.finished = true;
+    if (process.send && process.connected) process.disconnect();
   }
 }
 

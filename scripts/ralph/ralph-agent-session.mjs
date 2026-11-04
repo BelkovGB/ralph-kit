@@ -162,6 +162,7 @@ export async function runAgentSession(backend, args, options) {
 }
 
 async function runObservedAgentSession(backend, args, options, sessionStartedMs) {
+  if (options.signal?.aborted) throw Object.assign(new Error('Сессия остановлена пользователем.'), { code: 'RALPH_STOPPED' });
   const { command, commandArgs } = commandSpec(backend.binary, args);
   const childEnvironment = backend.createSandboxedEnvironment(options.env ?? process.env, {
     authenticationFile: options.authenticationFile,
@@ -330,6 +331,16 @@ async function runObservedAgentSession(backend, args, options, sessionStartedMs)
     child.once('error', reject);
     child.once('close', (code, signal) => resolve({ code, signal }));
   });
+  let aborted = false;
+  let resolveAbort;
+  const abortResult = new Promise((resolve) => { resolveAbort = resolve; });
+  const abort = () => {
+    aborted = true;
+    terminateProcessTree(child);
+    resolveAbort({ code: null, signal: 'RALPH_STOPPED' });
+  };
+  options.signal?.addEventListener('abort', abort, { once: true });
+  if (options.signal?.aborted) abort();
   const turnLimitResult = new Promise((resolve) => {
     resolveTurnLimit = resolve;
   });
@@ -360,15 +371,18 @@ async function runObservedAgentSession(backend, args, options, sessionStartedMs)
       wallTimeout,
       turnLimitResult,
       idleTimeoutResult,
+      abortResult,
     ]);
   } finally {
     sessionSettled = true;
     clearTimeout(wallTimer);
     clearTimeout(idleTimer);
+    options.signal?.removeEventListener('abort', abort);
   }
-  if (limitReached || wallTimeoutReached || idleTimeoutReached) {
+  if (limitReached || wallTimeoutReached || idleTimeoutReached || aborted) {
     await waitForChildTermination(child, childResult, 10_000);
   }
+  if (aborted) throw Object.assign(new Error('Сессия остановлена пользователем.'), { code: 'RALPH_STOPPED', telemetry: sessionTelemetry() });
   if (stdoutBuffer.trim() !== '') {
     handleLine(stdoutBuffer);
   }
