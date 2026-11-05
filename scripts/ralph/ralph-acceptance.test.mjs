@@ -167,6 +167,56 @@ test('прогон: повтор ID в таблице результатов о�
   assert.throws(() => parseRun(text, 'runs/r.md'), /runs\/r\.md:6.*CART-001.*дважды/u);
 });
 
+test('прогон: объявленное принятие требует PASS у всех записанных кейсов', () => {
+  for (const status of ['FAIL', 'BLOCKED', 'SKIPPED']) {
+    const text = `## Итог\n\nВердикт: принято.\n\n${run([`| CART-001 | ${status} | причина |`])}`;
+    assert.throws(() => parseRun(text, 'runs/incomplete.md'), /runs\/incomplete\.md.*принято.*PASS/u);
+  }
+  const accepted = `Вердикт: принято.\n\n${run(['| CART-001 | PASS | |'])}`;
+  assert.equal(parseRun(accepted, 'runs/complete.md').length, 1);
+});
+
+test('сводка: вердикт считается по кейсам каждого прогона, без чужих непроверенных кейсов', () => {
+  const files = memoryFiles({
+    'docs/acceptance/modules.md': modulesText,
+    'docs/acceptance/cases/cart.md': cartCases,
+    'docs/acceptance/runs/2026-09-01-phase-1.md': run(['| CART-001 | BLOCKED | нет стенда |']),
+    'docs/acceptance/runs/2026-09-02-phase-1.md': run(['| CART-001 | SKIPPED | не запускали |']),
+    'docs/acceptance/runs/2026-09-03-phase-1.md': run(['| CART-001 | PASS | |', '| CART-002 | BLOCKED | нет данных |']),
+    'docs/acceptance/runs/2026-09-04-phase-1.md': run(['| CART-001 | FAIL | ошибка |', '| CART-002 | BLOCKED | нет данных |']),
+    'docs/acceptance/runs/2026-09-05-phase-1.md': run(['| CART-001 | PASS | |']),
+  });
+  const status = buildStatus(readAcceptance('docs/acceptance', files));
+  assert.deepEqual(status.runs.map(({ verdict }) => verdict), [
+    'не завершено', 'не завершено', 'не завершено', 'не принято', 'принято',
+  ]);
+  const text = renderStatus(status);
+  assert.match(text, /2026-09-03-phase-1\.md \| не завершено/u);
+  assert.match(text, /2026-09-05-phase-1\.md \| принято/u);
+  assert.equal(status.counts.never, 1);
+});
+
+test('status: неполный прогон явно назван, а ложное принятие останавливает запись', async () => {
+  for (const declared of [false, true]) {
+    const root = temporaryProjectTree({
+      'docs/acceptance/modules.md': modulesText,
+      'docs/acceptance/cases/cart.md': cartCases,
+      'docs/acceptance/runs/2026-09-01-phase-1.md': `${declared ? 'Вердикт: принято.\n\n' : ''}${run(['| CART-001 | BLOCKED | нет стенда |'])}`,
+    });
+    const output = capture();
+    const execute = () => main(['status'], { projectRoot: root, log: output.log, warn: output.warn });
+    const target = path.join(root, 'docs/acceptance/status.md');
+    if (declared) {
+      await assert.rejects(execute, /принято.*PASS/u);
+      assert.equal(existsSync(target), false);
+    } else {
+      await execute();
+      assert.match(output.out.join('\n'), /Последний прогон: runs\/2026-09-01-phase-1\.md — не завершено/u);
+      assert.match(readFileSync(target, 'utf8'), /2026-09-01-phase-1\.md \| не завершено/u);
+    }
+  }
+});
+
 test('сводка: последний статус, прогон и история из пяти, свежий справа', () => {
   const files = memoryFiles({
     'docs/acceptance/modules.md': modulesText,
