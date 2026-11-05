@@ -5,6 +5,15 @@ this paragraph. Name the stack, where each part of the code lives, the exact
 commands that build, lint and test it, and the documents that hold the live
 contracts. Keep it short: an agent reads this file on every task.
 
+## Working with the owner
+
+The owner is not required to be a programmer. Ask about users, their actions
+and the result they need. Choose libraries and code structure yourself within
+the agreed requirements. If a choice changes the product, data access,
+significant costs, support commitments or risk, explain the consequences in
+plain language, recommend an option and obtain the owner's decision. Preserve
+decisions already made; do not repeat questions answered by project documents.
+
 ## Ground rules
 
 - Update relevant documentation when changing architecture or public contracts.
