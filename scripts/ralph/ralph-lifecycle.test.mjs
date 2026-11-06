@@ -42,7 +42,7 @@ function git(cwd, args, env = {}) {
 }
 
 /** Одноразовый репозиторий с базовым коммитом, trailer-коммитом и bare origin. */
-function createLifecycleRepository(branch) {
+function createLifecycleRepository(branch, files = { 'work.txt': 'implemented\n' }) {
   const root = mkdtempSync(path.join(tmpdir(), 'ralph-lifecycle-'));
   const workTree = path.join(root, 'repo');
   const origin = path.join(root, 'origin.git');
@@ -55,8 +55,12 @@ function createLifecycleRepository(branch) {
   writeFileSync(path.join(workTree, 'base.txt'), 'base\n', 'utf8');
   git(workTree, ['add', 'base.txt']);
   git(workTree, ['commit', '--quiet', '-m', 'chore: base commit']);
-  writeFileSync(path.join(workTree, 'work.txt'), 'implemented\n', 'utf8');
-  git(workTree, ['add', 'work.txt']);
+  for (const [file, content] of Object.entries(files)) {
+    const target = path.join(workTree, file);
+    mkdirSync(path.dirname(target), { recursive: true });
+    writeFileSync(target, content, 'utf8');
+  }
+  git(workTree, ['add', '--', ...Object.keys(files)]);
   git(workTree, [
     'commit',
     '--quiet',
@@ -216,8 +220,8 @@ function lifecycleIssue(url = `https://example.test/issues/${issueNumber}`) {
   };
 }
 
-async function withLifecycleStand(branch, verdictJson, operation) {
-  const repository = createLifecycleRepository(branch);
+async function withLifecycleStand(branch, verdictJson, operation, files) {
+  const repository = createLifecycleRepository(branch, files);
   repository.branch = branch;
   const gh = createFakeGh(repository.root);
   const reviewOutputPath = path.join(repository.root, 'review-result.json');
@@ -335,6 +339,57 @@ test('already-fixed issue validates the linked commit instead of an empty HEAD d
       scope: 'issue', base: git(stand.repository.workTree, ['rev-parse', 'HEAD^']),
     });
   });
+});
+
+test('a declared UI issue cannot push or close without configured browser checks', async () => {
+  await withLifecycleStand('ralph/lifecycle-ui', passVerdict, async (stand) => {
+    setActiveStateStore(recordingStateStore());
+    const config = lifecycleConfig(stand.repository, stand.reviewOutputPath);
+    const issue = { ...lifecycleIssue(), body: '<!-- ralph-process: ui-change -->\nCheck the updated flow.' };
+    config.approvedIssueSnapshots[issueNumber].body = issue.body;
+    await assert.rejects(runAgentOnIssue(config, 'owner/repository', issue, 'rules'), {
+      code: 'RALPH_PROCESS_CONFIG', message: /browserValidationScripts/,
+    });
+    assert.equal(git(stand.repository.workTree, ['ls-remote', '--heads', 'origin']), '');
+    assert.equal(stand.gh.issueState().state, 'open');
+    assert.deepEqual(codexInvocations(stand.reviewOutputPath), []);
+  });
+});
+
+for (const route of ['already-fixed', 'committed']) {
+  test(`a report-only issue rejects product changes before revalidation (${route})`, async () => {
+    const reportPath = `docs/ralph-reports/issue-${issueNumber}.md`;
+    await withLifecycleStand('ralph/lifecycle-research-scope', passVerdict, async (stand) => {
+      const issue = { ...lifecycleIssue(), body: '<!-- ralph-process: research -->\nCompare the options.' };
+      const { workTree, commit } = stand.repository;
+      setActiveStateStore(recordingStateStore(route === 'committed' ? {
+        ...issue, phase: 'committed', commit, startingCommit: git(workTree, ['rev-parse', 'HEAD^']),
+      } : null));
+      const config = lifecycleConfig(stand.repository, stand.reviewOutputPath);
+      config.approvedIssueSnapshots[issueNumber].body = issue.body;
+      config.validationScripts = ['node missing-fixture-script.cjs'];
+      await assert.rejects(runAgentOnIssue(config, 'owner/repository', issue, 'rules'), {
+        code: 'RALPH_PROCESS_EVIDENCE', message: /docs\/ralph-reports/,
+      });
+      assert.equal(git(workTree, ['ls-remote', '--heads', 'origin']), '');
+      assert.equal(stand.gh.issueState().state, 'open');
+    }, { [reportPath]: '# Comparison\n', 'work.txt': 'unrelated product change\n' });
+  });
+}
+
+test('a report-only issue closes after its report is published and reviewed', async () => {
+  const reportPath = `docs/ralph-reports/issue-${issueNumber}.md`;
+  await withLifecycleStand('ralph/lifecycle-review-report', passVerdict, async (stand) => {
+    setActiveStateStore(recordingStateStore());
+    const config = lifecycleConfig(stand.repository, stand.reviewOutputPath);
+    const issue = { ...lifecycleIssue(), body: '<!-- ralph-process: review -->\nReview this branch.' };
+    config.approvedIssueSnapshots[issueNumber].body = issue.body;
+    const result = await runAgentOnIssue(config, 'owner/repository', issue, 'rules');
+    assert.equal(result.completed, true);
+    assert.equal(stand.gh.issueState().state, 'closed');
+    assert.deepEqual(codexInvocations(stand.reviewOutputPath), ['review']);
+    assert.equal(git(stand.repository.workTree, ['show', `${result.commit}:${reportPath}`]), '# Findings');
+  }, { [reportPath]: '# Findings\n' });
 });
 
 test('отказ ревью возвращает issue агенту, повторный отказ паркует её', async () => {

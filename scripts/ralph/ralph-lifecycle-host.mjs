@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url';
 import { loadConfig, configForPhase, controlPlaneSnapshot } from './ralph-config.mjs';
 import { acquireRunLock, initializePersistentLog, readJsonFile, resolveRalphRuntimeDirectory, writeJsonAtomic } from './ralph-runtime.mjs';
 import { run, useTrustedCommandRunner } from './ralph-process-runner.mjs';
+import { verifyBaseHistory } from './ralph-git.mjs';
+import { resolveIssueProcess } from './ralph-process-packs.mjs';
 import { createStateStore, setActiveStateStore } from './ralph-state-store.mjs';
 import { runReviewSession } from './ralph-agent-backends.mjs';
 import { requestLisa, supervisorAgentConfig, supervisorPhaseConfig, prepareLisaResume, lisaValidationPathDirectories } from './ralph-supervisor.mjs';
@@ -156,6 +158,7 @@ export async function runRalphLifecycleCli() {
         lastRepair = { repairId, issueNumber: store.issue?.number ?? null, runId: store.state.runId,
           phaseIndex: store.phaseIndex, failureStep, accepted: false, restarted: false, proved: false };
         let context;
+        let reportRepair;
         try {
           snapshot.assertUnchanged();
           context = captureLisaRepairContext(repairConfig, store, error, { repairId, statePath, failureStep });
@@ -189,14 +192,36 @@ export async function runRalphLifecycleCli() {
               for (const name of changedPaths.filter((name) => name.endsWith('.mjs'))) {
                 run('node', ['--check', path.join(root, name)]);
               }
-              const candidate = { ...proposedConfig, ...controlPlaneSnapshot(proposedConfig) };
-              runConfiguredValidation(candidate, { scope: 'issue', baseCommit: store.issue?.startingCommit,
-                validationPathDirectories: paths });
+              const candidate = {
+                ...proposedConfig,
+                ...controlPlaneSnapshot(proposedConfig),
+                approvedIssueSnapshots: { ...proposedConfig.approvedIssueSnapshots, ...store.approvedIssueSnapshots },
+              };
+              const issue = store.issue;
+              const pack = issue && resolveIssueProcess(candidate, issue.number);
+              if (pack?.reportPath && changedPaths.length > 0) {
+                const repairPaths = changedPaths.filter((name) => name !== pack.reportPath);
+                const controls = new Set([...candidate.trustedControlFileHashes.keys()]
+                  .map((file) => path.relative(root, file).replaceAll('\\', '/')));
+                if (repairPaths.some((name) => !controls.has(name))) {
+                  throw new Error(`Lisa: ремонт задачи ${pack.kind} может менять ${pack.reportPath} и доверенные файлы Ralph.`);
+                }
+                const previous = issue.processReportRepair;
+                reportRepair = {
+                  paths: [...new Set([...(issue.commit ? [] : previous?.paths ?? []), ...repairPaths])],
+                  priorCommit: issue.commit ?? previous?.priorCommit ?? null,
+                };
+              }
+              const target = !issue && failureStep === 'pull-request'
+                ? { scope: 'phase', baseCommit: verifyBaseHistory(candidate), skipPreflight: Boolean(candidate.validationProfiles) }
+                : { scope: 'issue', baseCommit: issue?.startingCommit, issueNumber: issue?.number };
+              runConfiguredValidation(candidate, { ...target, validationPathDirectories: paths });
             },
           });
           snapshot.assertUnchanged();
           const receipt = acceptLisaRepair(context, assessment);
           prepareLisaResume(repairConfig, store, context, { acceptedRepair: true });
+          if (reportRepair) store.updateIssue({ processReportRepair: reportRepair });
           store.setValidationPathDirectories(paths);
           if (store.supervisorExtraIterations < config.supervisor.maxAdditionalIterations) store.grantSupervisorIteration();
           updateRepair(repairId, { status: 'accepted', acceptedTreeHash: receipt.acceptedTreeHash, changedPaths: receipt.changedPaths });

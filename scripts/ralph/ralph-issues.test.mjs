@@ -848,6 +848,25 @@ test('push keeps repository hooks without a configured GitHub account', () => {
   ]);
 });
 
+test('phase push sends only the verified SHA and rejects a changed local HEAD', () => {
+  const expectedHead = 'a'.repeat(40);
+  const pushes = [];
+  const config = { branch: 'ralph/phase-1', githubAccount: null };
+  const dependencies = {
+    expectedHead,
+    run: () => ({ stdout: expectedHead }),
+    runNetwork: (_command, args) => { pushes.push(args); },
+    verifyPushedHead: (_config, head) => head,
+  };
+  assert.equal(pushBranchAndVerify(config, dependencies), expectedHead);
+  assert.throws(() => pushBranchAndVerify(config, {
+    ...dependencies, run: () => ({ stdout: 'b'.repeat(40) }),
+  }), /HEAD изменился после проверки фазы/u);
+  assert.deepEqual(pushes, [[
+    'push', '--set-upstream', 'origin', `${expectedHead}:refs/heads/ralph/phase-1`,
+  ]]);
+});
+
 test('reasoning effort falls back to medium/medium/high when the config omits it', () => {
   const original = JSON.parse(readFileSync(ralphConfigPath, 'utf8'));
   const { effort: _review, ...review } = original.review;

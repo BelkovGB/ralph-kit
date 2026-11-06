@@ -1,4 +1,5 @@
 import { validateIssueWorkingTree } from './ralph-loop.mjs';
+import { prepareConfig } from './ralph-config.mjs';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
@@ -103,6 +104,43 @@ test('issue and phase validation use separate project commands and a scoped base
     assert.equal(calls[0].options.env.RALPH_VALIDATION_SCOPE, scope);
     assert.equal(calls[0].options.env.RALPH_VALIDATION_BASE_COMMIT, baseCommit);
   }
+});
+
+test('browser commands run for approved UI work and the final phase only', () => {
+  const baseCommit = 'a'.repeat(40);
+  const config = hostValidationConfig({
+    preflightScripts: [],
+    validationProfiles: { issue: ['check-issue'], phase: ['check-phase'], baseSync: ['check-base'] },
+    browserValidationScripts: ['check-browser'],
+    approvedIssueSnapshots: {
+      12: { body: '<!-- ralph-process: ui-change -->\nCheck the updated flow.' },
+      13: { body: 'Ordinary issue.' },
+    },
+    review: { enabled: true },
+  });
+  for (const [scope, issueNumber, expected] of [
+    ['issue', 12, ['check-issue', 'check-browser']],
+    ['issue', 13, ['check-issue']],
+    ['phase', undefined, ['check-phase', 'check-browser']],
+    ['baseSync', undefined, ['check-base']],
+  ]) {
+    const calls = [];
+    const result = runConfiguredValidation(config, {
+      scope, baseCommit, issueNumber, run: unchangedHostTreeRun(calls),
+    });
+    assert.deepEqual(result.scripts, expected);
+    assert.equal(calls.length, expected.length);
+  }
+});
+
+test('browser commands use the same configuration constraints as ordinary checks', () => {
+  const config = JSON.parse(readFileSync(ralphConfigPath, 'utf8'));
+  const prepare = (browserValidationScripts) => prepareConfig(
+    { ...structuredClone(config), browserValidationScripts }, { captureControlPlane: false },
+  );
+  assert.deepEqual(prepare(['node check-browser.mjs']).browserValidationScripts, ['node check-browser.mjs']);
+  assert.throws(() => prepare('node check-browser.mjs'), /browserValidationScripts/);
+  assert.throws(() => prepare(['check-browser | echo PASS']), /операторы/);
 });
 
 test('Lisa can append an installed tool directory to validation PATH without changing config', () => {

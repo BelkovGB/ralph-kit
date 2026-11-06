@@ -701,6 +701,14 @@ export const fieldGroups = [
         default: [],
       })),
       {
+        path: 'browserValidationScripts',
+        label: 'Браузерные проверки',
+        type: 'list',
+        hint: 'Ralph выполняет эти команды после обычных проверок для задач ui-change и перед созданием или обновлением PR фазы. Одна команда на строку.',
+        unit: null,
+        default: [],
+      },
+      {
         path: 'validationEnvironment',
         label: 'Переменные проверок',
         type: 'list',

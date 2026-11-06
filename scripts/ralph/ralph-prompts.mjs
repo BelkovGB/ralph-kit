@@ -2,6 +2,8 @@
  * Prompt для реализации issue и для обоих ревьюеров.
  */
 
+import { validationScriptsFor } from './ralph-process-packs.mjs';
+
 function renderTemplate(template, replacements) {
   let result = template;
   for (const [placeholder, value] of Object.entries(replacements)) {
@@ -26,7 +28,12 @@ export function renderPrompt(config, issue, rules) {
   const renderedRules = renderTemplate(rules, replacements);
   const issueBody = issue.body?.trim() || '(Описание issue пустое.)';
 
-  return `${prompt}\n\n## Текущая issue\n\n- Number: #${issue.number}\n- Title: ${issue.title}\n- URL: ${issue.url}\n\n### Body и критерии готовности\n\n${issueBody}${developmentSkillsSection(config)}\n\n---\n\n${renderedRules}`;
+  const pack = issue.processPack;
+  const processInstructions = pack
+    ? `\n\n### Режим ${pack.kind}\n\n${pack.development}` +
+      (pack.reportPath ? ` Сохрани результат в ${pack.reportPath}. Это единственный файл, который можно изменить.` : '')
+    : '';
+  return `${prompt}\n\n## Текущая issue\n\n- Number: #${issue.number}\n- Title: ${issue.title}\n- URL: ${issue.url}\n\n### Body и критерии готовности\n\n${issueBody}${processInstructions}${developmentSkillsSection(config)}\n\n---\n\n${renderedRules}`;
 }
 
 /**
@@ -144,8 +151,8 @@ function issueChangeHeading(changes) {
 // Ревьюер, которому не сказали, что проверки уже прошли, тратит шаги на их
 // повторение или выдаёт «нужно прогнать тесты» за замечание. Ни то, ни другое
 // не является дефектом реализации.
-function reviewValidationEvidence(config) {
-  const scripts = config?.validationProfiles?.issue ?? config?.validationScripts ?? [];
+function reviewValidationEvidence(config, issue) {
+  const scripts = validationScriptsFor(config, 'issue', issue.number);
   if (scripts.length === 0) return '';
 
   return `
@@ -192,11 +199,16 @@ const auditInstruction =
 
 export function buildIndependentReviewPrompt(config, issue, commit, context = {}) {
   const issueBody = issue.body?.trim() || '(empty)';
+  const pack = issue.processPack;
+  const processInstructions = pack
+    ? `\n\nIssue process (${pack.kind}). ${pack.review}` +
+      (pack.reportPath ? ` The deliverable is ${pack.reportPath}.` : '')
+    : '';
 
   return `Review the current branch state at HEAD as the implementation of GitHub issue #${issue.number}: ${issue.title}. Commit ${commit} is the claimed implementation commit; verify that the current HEAD still satisfies the issue and has not regressed it.
 
 Issue body:
-${issueBody}${reviewPreviousFindings(context.previousFindings)}${context.changes ? reviewChangeInventory(issueChangeHeading(context.changes), context.changes) : ''}${reviewAlreadyAudited(context.previousReview)}${reviewValidationEvidence(config)}
+${issueBody}${processInstructions}${reviewPreviousFindings(context.previousFindings)}${context.changes ? reviewChangeInventory(issueChangeHeading(context.changes), context.changes) : ''}${reviewAlreadyAudited(context.previousReview)}${reviewValidationEvidence(config, issue)}
 
 ${automatedReviewGuidance(context.changes)}
 

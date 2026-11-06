@@ -13,7 +13,10 @@ import { prepareLisaRepairConfig } from './ralph-repair-policy.mjs';
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const contexts = new WeakMap();
 const assessments = new WeakMap();
-const protectedModules = new Set(['ralph-lifecycle.mjs', 'ralph-lifecycle-host.mjs', 'ralph-lisa-repair.mjs', 'ralph-repair-policy.mjs']);
+const protectedModules = new Set([
+  'ralph-lifecycle.mjs', 'ralph-lifecycle-host.mjs', 'ralph-lisa-repair.mjs',
+  'ralph-process-packs.mjs', 'ralph-repair-policy.mjs',
+]);
 const beforeCommit = new Set(['agent-running', 'working-tree', 'validating', 'validation-mutated', 'validation-diagnostic', 'review-failed']);
 const digest = (value) => createHash('sha256').update(value).digest('hex');
 

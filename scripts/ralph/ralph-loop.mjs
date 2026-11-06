@@ -115,6 +115,7 @@ import {
 } from './ralph-issue-contract.mjs';
 
 import { buildIndependentReviewPrompt, renderPrompt } from './ralph-prompts.mjs';
+import { assertProcessReport, resolveIssueProcess } from './ralph-process-packs.mjs';
 
 import { analyzeRecovery, applyRecoveryPlan, hasAcceptedLisaIssueRepair, committedRecoveryPhases, committedValidationFailurePatch, prepareRecovery } from './ralph-recovery.mjs';
 
@@ -440,7 +441,15 @@ export function reviewAlreadyPassed(issue, commit) {
   );
 }
 
-async function reviewAndCloseCommittedIssue(config, repository, issue, commit) {
+function assertCommittedProcessReport(issue, commit, reportBase = `${commit}^`) {
+  const saved = activeStateStore()?.issue;
+  assertProcessReport(issue.processPack, reportBase, commit, {
+    head: 'HEAD', committed: true, repair: saved?.commit === commit ? saved.processReportRepair : null,
+  });
+}
+
+async function reviewAndCloseCommittedIssue(config, repository, issue, commit, reportBase) {
+  assertCommittedProcessReport(issue, commit, reportBase);
   const passedOnPreviousRun = reviewAlreadyPassed(issue, commit);
   const pushedHead = await observedRepairStep('push', () => pushBranchAndVerify(config));
   activeStateStore()?.updateIssue({
@@ -597,11 +606,33 @@ export function validateIssueWorkingTree(config, foreignPaths, dependencies = {}
   validate(config, {
     scope: 'issue',
     baseCommit: dependencies.baseCommit,
+    issueNumber: dependencies.issueNumber,
     skipPreflight: Boolean(config.validationProfiles),
     onPrepared: () => { prepared = status(); },
   });
   if (status() !== prepared) fail('Validation changed the prepared working tree.');
   return workingTreeEntries(prepared).filter((entry) => !foreignPaths.has(entry.path));
+}
+
+function retryIssueValidation(config, issue, error) {
+  const attempts = (activeStateStore()?.issue?.validationFixAttempts ?? 0) + 1;
+  activeStateStore()?.updateIssue({
+    phase: 'working-tree',
+    validationFixAttempts: attempts,
+    ...recordedFailure(error),
+  });
+  observeIssue('validation-fail');
+  if (attempts >= config.maxTestFixAttempts) throw error;
+  console.error(
+    `Issue #${issue.number}: validation не прошла (${attempts}/${config.maxTestFixAttempts}). ` +
+      'Ralph передаст ошибку агенту на следующей итерации.',
+  );
+  return { completed: false, validationFailed: true };
+}
+
+function shouldCommitAcceptedRepair(state, issue) {
+  return hasAcceptedLisaIssueRepair(state, issue) && !state.issue.commit &&
+    !state.issue.processReportRepair?.needsDevelopment;
 }
 
 async function commitAndCompleteIssue(config, repository, issue, startingCommit, lastAgentMessage) {
@@ -657,10 +688,12 @@ async function commitAndCompleteIssue(config, repository, issue, startingCommit,
     if (parent.status !== 0 || !/^[0-9a-f]{40}$/.test(parent.stdout)) {
       fail(`Issue #${issue.number}: у ALREADY_FIXED commit ${commit} нет базового родителя для проверки.`);
     }
+    assertCommittedProcessReport(issue, commit, parent.stdout);
     activeStateStore()?.updateIssue({ phase: 'validating' });
     try {
       measuredValidation(() => runConfiguredValidation(config, {
         scope: 'issue', baseCommit: parent.stdout,
+        issueNumber: issue.number,
         skipPreflight: Boolean(config.validationProfiles),
       }));
     } catch (error) {
@@ -678,19 +711,7 @@ async function commitAndCompleteIssue(config, repository, issue, startingCommit,
         });
         throw error;
       }
-      const attempts = (activeStateStore()?.issue?.validationFixAttempts ?? 0) + 1;
-      activeStateStore()?.updateIssue({
-        phase: 'working-tree',
-        validationFixAttempts: attempts,
-        ...recordedFailure(error),
-      });
-      observeIssue('validation-fail');
-      if (attempts >= config.maxTestFixAttempts) throw error;
-      console.error(
-        `Issue #${issue.number}: validation не прошла (${attempts}/${config.maxTestFixAttempts}); ` +
-          'Ralph передаст ошибку агенту на следующей итерации.',
-      );
-      return { completed: false, validationFailed: true };
+      return retryIssueValidation(config, issue, error);
     }
     assertValidationLeftTree(
       changes,
@@ -704,6 +725,7 @@ async function commitAndCompleteIssue(config, repository, issue, startingCommit,
   try {
     validatedEntries = measuredValidation(() => validateIssueWorkingTree(config, foreignPaths, {
       baseCommit: startingCommit,
+      issueNumber: issue.number,
     }));
   } catch (error) {
     if (error.code === 'RALPH_VALIDATION_MUTATED') {
@@ -720,19 +742,7 @@ async function commitAndCompleteIssue(config, repository, issue, startingCommit,
       });
       throw error;
     }
-    const attempts = (activeStateStore()?.issue?.validationFixAttempts ?? 0) + 1;
-    activeStateStore()?.updateIssue({
-      phase: 'working-tree',
-      validationFixAttempts: attempts,
-      ...recordedFailure(error),
-    });
-    observeIssue('validation-fail');
-    if (attempts >= config.maxTestFixAttempts) throw error;
-    console.error(
-      `Issue #${issue.number}: validation не прошла (${attempts}/${config.maxTestFixAttempts}); ` +
-        'Ralph продолжит исправление существующего diff.',
-    );
-    return { completed: false, validationFailed: true };
+    return retryIssueValidation(config, issue, error);
   }
   activeStateStore()?.updateIssue({ phase: 'staging' });
   // Именно пути агента, а не `--all`: остальное в дереве принадлежит оператору
@@ -766,10 +776,29 @@ async function commitAndCompleteIssue(config, repository, issue, startingCommit,
   // коммитит индекс с пустым core.hooksPath, между двумя вызовами ничего не
   // выполняется.
   const expectedTree = run('git', ['write-tree']).stdout;
-  activeStateStore()?.updateIssue({
+  const store = activeStateStore();
+  const reportRepair = hasAcceptedLisaIssueRepair(store?.state, issue) ? store.issue.processReportRepair : null;
+  try {
+    assertProcessReport(issue.processPack, startingCommit, expectedTree, { repair: reportRepair });
+  } catch (error) {
+    if (error.code !== 'RALPH_PROCESS_EVIDENCE') throw error;
+    console.error(`Issue #${issue.number}: ${error.message}`);
+    if (shouldCommitAcceptedRepair(store?.state, issue)) {
+      // Lisa can repair the toolchain before the deliverable is ready.
+      store.updateIssue({
+        phase: 'working-tree',
+        processReportRepair: { ...reportRepair, needsDevelopment: true },
+        ...recordedFailure(error),
+      });
+      return { completed: false, validationFailed: true };
+    }
+    return retryIssueValidation(config, issue, error);
+  }
+  store?.updateIssue({
     phase: 'staging',
     expectedTree,
     commitMessage,
+    ...(issue.processPack?.reportPath ? { processReportRepair: reportRepair ?? null } : {}),
   });
   commitStagedChanges(commitMessage, issue, config.runtime.validationTimeoutMs);
 
@@ -833,19 +862,25 @@ export function recoverHostValidationMutation(
 
 export async function runAgentOnIssue(config, repository, issue, rules) {
   issue = assertTrustedIssue(config, issue, repository);
+  issue.processPack = resolveIssueProcess(config, issue.number);
+  if (issue.processPack) console.log(`Issue #${issue.number}: режим ${issue.processPack.kind}.`);
   const storedIssue =
     activeStateStore()?.issue?.number === issue.number ? activeStateStore().issue : null;
   if (storedIssue) {
     applyRecoveryPlan(analyzeRecovery(config, storedIssue, { hostWorkingTreeHash }), activeStateStore());
   }
   recoverHostValidationMutation(storedIssue);
-  if (hasAcceptedLisaIssueRepair(activeStateStore()?.state) && !storedIssue.commit) {
+  if (shouldCommitAcceptedRepair(activeStateStore()?.state, issue)) {
     return commitAndCompleteIssue(config, repository, issue, storedIssue.startingCommit,
       `fix: repair Ralph for issue #${issue.number}`);
   }
   if (storedIssue?.commit && committedRecoveryPhases.includes(storedIssue.phase)) {
     assertCleanTree(`Issue #${issue.number}: committed recovery требует чистое рабочее дерево.`);
     const commit = verifiedIssueCommit(storedIssue.commit, issue);
+    const base = storedIssue.startingCommit;
+    const reportBase = issue.processPack?.reportPath && base !== commit && isAncestorCommit(base, commit)
+      ? base : undefined;
+    assertCommittedProcessReport(issue, commit, reportBase);
     console.log(
       `Issue #${issue.number}: продолжаем pipeline с сохранённого commit ${commit} ` +
         `(phase=${storedIssue.phase}).`,
@@ -854,6 +889,7 @@ export async function runAgentOnIssue(config, repository, issue, rules) {
     try {
       measuredValidation(() => runConfiguredValidation(config, {
         scope: 'issue', baseCommit: storedIssue.startingCommit,
+        issueNumber: issue.number,
         skipPreflight: Boolean(config.validationProfiles), retryConnectionFailure: true,
       }));
     } catch (error) {
@@ -864,7 +900,7 @@ export async function runAgentOnIssue(config, repository, issue, rules) {
       });
       throw error;
     }
-    return reviewAndCloseCommittedIssue(config, repository, issue, commit);
+    return reviewAndCloseCommittedIssue(config, repository, issue, commit, reportBase);
   }
 
   if (storedIssue?.phase === 'validation-diagnostic') {
@@ -986,6 +1022,8 @@ function createPullRequest(config, repository) {
   assertCleanTree('Нельзя создать PR: в рабочем дереве есть незакоммиченные изменения.');
 
   const phaseBase = verifyBaseHistory(config);
+  const checkedHead = config.browserValidationScripts?.length
+    ? run('git', ['rev-parse', 'HEAD']).stdout : undefined;
   runConfiguredValidation(config, {
     scope: 'phase', baseCommit: phaseBase,
     skipPreflight: Boolean(config.validationProfiles),
@@ -1001,9 +1039,13 @@ function createPullRequest(config, repository) {
     fail(`В ветке ${config.branch} нет коммитов поверх origin/${config.baseBranch}.`);
   }
 
-  pushBranchAndVerify(config);
+  pushBranchAndVerify(config, { expectedHead: checkedHead });
 
-  return ensurePullRequestForBranch(config, repository);
+  const pullRequest = ensurePullRequestForBranch(config, repository);
+  if (checkedHead && pullRequest.headRefOid !== checkedHead) {
+    fail(`HEAD PR #${pullRequest.number} изменился после проверки фазы: проверен ${checkedHead}, получен ${pullRequest.headRefOid}.`);
+  }
+  return pullRequest;
 }
 
 
@@ -1073,6 +1115,12 @@ export function printCheck(
   } else {
     printScriptList('Команды проверок', config.validationScripts);
   }
+  printScriptList('Браузерные проверки', config.browserValidationScripts ?? []);
+  for (const issue of issues) {
+    const approved = config.approvedIssueSnapshots?.[issue.number];
+    const pack = resolveIssueProcess(config, issue.number, approved?.body ?? issueBodyWithoutRalphMetadata(issue));
+    if (pack) console.log(`Issue #${issue.number}: режим ${pack.kind}.`);
+  }
   console.log(
     `Review issue: ${
       config.review.enabled ? `${config.review.model} (effort=${config.review.effort})` : 'выключен'
@@ -1107,8 +1155,8 @@ export function printCheck(
   // до коммита и ревью, ни разу не запустив тесты, и промолчит об этом.
   if (!config.validationProfiles && (config.validationScripts ?? []).length === 0) {
     console.log(
-      'ВНИМАНИЕ: команды проверок не заданы. Прогон дойдёт до коммита и ревью, ни разу ' +
-        `не запустив тесты и линтер: заполните "validationScripts" в ${path.relative(
+      'ВНИМАНИЕ: команды проверок не заданы для обычных задач. ' +
+        `Заполните "validationScripts" в ${path.relative(
           projectRoot,
           configPath,
         )} или на вкладке «Проверки» пульта.`,
@@ -1428,7 +1476,7 @@ export async function runContinuousLoop(context, actions) {
     const linkedCommit = storedPhase ? null : actions.linkedCommitForIssue?.(currentIssue);
     if (linkedCommit) currentIssue.linkedCommit = linkedCommit;
     const needsDevelopmentIteration =
-      !(hasAcceptedLisaIssueRepair(stateStore?.state, currentIssue) && !stateStore.issue.commit) &&
+      !shouldCommitAcceptedRepair(stateStore?.state, currentIssue) &&
       !committedRecoveryPhases.includes(storedPhase) &&
       storedPhase !== 'validation-diagnostic' && !linkedCommit;
 
@@ -1469,7 +1517,7 @@ export async function runContinuousLoop(context, actions) {
       });
       if (
         needsDevelopmentIteration &&
-        ['RALPH_AGENT_AUTH', 'RALPH_AGENT_WRITE_ACCESS', 'RALPH_UNTRUSTED_ISSUE'].includes(
+        ['RALPH_AGENT_AUTH', 'RALPH_AGENT_WRITE_ACCESS', 'RALPH_UNTRUSTED_ISSUE', 'RALPH_PROCESS_CONFIG'].includes(
           error.code,
         )
       ) {
