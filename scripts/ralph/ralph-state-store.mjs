@@ -33,6 +33,18 @@ export function activeStateStore() {
   return currentStateStore;
 }
 
+const exactForeignPathsFormat = 'exact-v1';
+
+export function issueForeignPaths(issue) {
+  const paths = issue?.foreignPaths ?? [];
+  if (paths.length > 0 && issue.foreignPathsFormat !== exactForeignPathsFormat) {
+    const error = new Error(`Issue #${issue.number}. Сохранён неоднозначный список чужих путей. Проверьте рабочее дерево и индекс вручную.`);
+    error.code = 'RALPH_RECOVERY_BLOCKED';
+    throw error;
+  }
+  return paths;
+}
+
 export function createStateStore(config, selectedMode, statePath = runtimeStatePath, options = {}) {
   let state = readJsonFile(statePath, null);
   const configuredPhaseIndex = config.phaseIndex ?? 0;
@@ -137,6 +149,7 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
         authorAssociation: issue.authorAssociation ?? null,
         startingCommit,
         foreignPaths: [...foreignPaths],
+        foreignPathsFormat: exactForeignPathsFormat,
         phase: 'agent-running',
         validationFixAttempts: 0,
         lastFailure: null,

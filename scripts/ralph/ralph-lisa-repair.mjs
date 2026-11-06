@@ -5,8 +5,9 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { run, removeTemporaryDirectory } from './ralph-process-runner.mjs';
-import { isAncestorCommit } from './ralph-git.mjs';
+import { gitPathKey, isAncestorCommit } from './ralph-git.mjs';
 import { committedRecoveryPhases } from './ralph-recovery.mjs';
+import { issueForeignPaths } from './ralph-state-store.mjs';
 import { agentInstructionFiles } from './ralph-config.mjs';
 import { prepareLisaRepairConfig } from './ralph-repair-policy.mjs';
 
@@ -20,6 +21,7 @@ const protectedModules = new Set([
 ]);
 const beforeCommit = new Set(['agent-running', 'working-tree', 'validating', 'validation-mutated', 'validation-diagnostic', 'review-failed']);
 const digest = (value) => createHash('sha256').update(value).digest('hex');
+const gitPath = (name) => path.sep === '\\' ? name.replaceAll('\\', '/') : name;
 
 function identity(options) {
   if (options.identity) return options.identity();
@@ -30,12 +32,12 @@ function identity(options) {
 
 function tree(root, options) {
   const files = options.files ? options.files() : (options.run ?? run)(
-    'git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard'],
+    'git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard'], { rawStdout: true },
   ).stdout.split('\0').filter(Boolean);
   const result = new Map();
   const controls = [...(options.controlFiles ?? []), ...agentInstructionFiles(root)];
   for (const name of [...new Set([...files, ...controls.map((file) => path.relative(root, file))])].sort()) {
-    const relative = name.replaceAll('\\', '/');
+    const relative = gitPath(name);
     const target = path.resolve(root, name);
     if (path.isAbsolute(name) || relative.split('/').includes('..') || !target.startsWith(`${root}${path.sep}`)) {
       throw new Error(`Lisa: небезопасный путь ${name}.`);
@@ -124,8 +126,9 @@ export async function assessLisaRepair(context, options = {}) {
   const treeOptions = { ...options, controlFiles: [...saved.controls.keys()] };
   const after = tree(saved.root, treeOptions);
   const paths = changedPaths(saved.baseline, after);
-  for (const name of saved.state?.issue?.foreignPaths ?? []) {
-    if (paths.includes(name.replaceAll('\\', '/'))) throw new Error(`Lisa изменила чужую работу: ${name}.`);
+  const changedKeys = new Set(paths.map(gitPathKey));
+  for (const name of issueForeignPaths(saved.state?.issue)) {
+    if (changedKeys.has(gitPathKey(gitPath(name)))) throw new Error(`Lisa изменила чужую работу: ${name}.`);
   }
   const ralphPaths = paths.filter((name) => name.startsWith('scripts/ralph/'));
   const instructionFiles = new Set([...saved.instructions.keys(), ...agentInstructionFiles(saved.root),
@@ -154,7 +157,7 @@ export async function assessLisaRepair(context, options = {}) {
     }
   }
   for (const [file, hash] of saved.controls) {
-    const relative = path.relative(saved.root, file).replaceAll('\\', '/');
+    const relative = gitPath(path.relative(saved.root, file));
     const stats = lstatSync(file, { throwIfNoEntry: false });
     const current = stats?.isFile() ? digest(readFileSync(file)) : null;
     if (hash === current) continue;
@@ -166,7 +169,7 @@ export async function assessLisaRepair(context, options = {}) {
     }
   }
   let candidate = structuredClone(saved.config);
-  if (saved.rawConfig && paths.includes(path.relative(saved.root, saved.configPath).replaceAll('\\', '/'))) {
+  if (saved.rawConfig && paths.includes(gitPath(path.relative(saved.root, saved.configPath)))) {
     candidate = prepareLisaRepairConfig(saved.rawConfig, JSON.parse(readFileSync(saved.configPath, 'utf8')),
       saved.config, saved.state?.phaseIndex ?? 0, options);
   }
@@ -175,10 +178,10 @@ export async function assessLisaRepair(context, options = {}) {
     before: saved.baseline.get(name)?.content?.toString('utf8') ?? null,
     after: after.get(name)?.content?.toString('utf8') ?? null,
   }));
-  const originalInstructions = [...saved.instructions.keys()].map((file) => ({
-    path: path.relative(saved.root, file).replaceAll('\\', '/'),
-    content: saved.baseline.get(path.relative(saved.root, file).replaceAll('\\', '/'))?.content?.toString('utf8'),
-  }));
+  const originalInstructions = [...saved.instructions.keys()].map((file) => {
+    const relative = gitPath(path.relative(saved.root, file));
+    return { path: relative, content: saved.baseline.get(relative)?.content?.toString('utf8') };
+  });
   const review = await options.review({ context, policy: structuredClone(saved.config), state: structuredClone(saved.state), changes, originalInstructions });
   if (!repairReviewVerdicts.includes(review?.verdict) ||
     typeof review.reason !== 'string' || review.reason.trim() === '' ||

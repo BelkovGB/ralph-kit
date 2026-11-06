@@ -24,7 +24,7 @@ function fixture(t, phase = 'review-failed') {
   const head = run('git', ['rev-parse', 'HEAD']).stdout;
   const issue = { number: 12, phase, startingCommit: head, commit: head,
     recoveryHead: head, reviewedCommit: head, pushedHead: head, expectedTree: 'old',
-    reviewFixAttempts: 2, validationFixAttempts: 1, foreignPaths: ['unrelated.txt'],
+    reviewFixAttempts: 2, validationFixAttempts: 1, foreignPaths: ['unrelated.txt'], foreignPathsFormat: 'exact-v1',
     reviewFindings: 'A regression scenario is missing' };
   const store = { issue, updateIssue(patch) { Object.assign(issue, patch); } };
   return { root, run, head, issue, store, config: { branch: 'main' },

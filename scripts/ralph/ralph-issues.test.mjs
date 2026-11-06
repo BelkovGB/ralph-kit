@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import {
   existsSync,
   mkdirSync,
@@ -41,11 +42,11 @@ import {
   issueChangeInventory,
   linkedCommitForIssue,
   pushBranchAndVerify,
+  readWorkingTreeEntries,
   resetPinnedGitHubOrigin,
+  stageWorkingTreeEntries,
   syncPhaseBranchWithBase,
   verifyConfiguredGitHubOrigin,
-  workingTreeEntries,
-  workingTreePaths,
 } from './ralph-git.mjs';
 import {
   approveConfiguredIssue,
@@ -76,7 +77,7 @@ import {
   verifyRepositoryWriteAccess,
 } from './ralph-github-client.mjs';
 import { createStateStore } from './ralph-state-store.mjs';
-import { approvedLedgerFixture, ralphConfigPath, withPatchedRalphConfig } from './ralph-test-support.mjs';
+import { approvedLedgerFixture, ralphConfigPath, temporaryProjectTree, withPatchedRalphConfig } from './ralph-test-support.mjs';
 
 test('finding fingerprint is stable for Unicode titles and changes with location', () => {
   const pullRequest = { number: 61 };
@@ -272,11 +273,10 @@ test('a branch that moved on is judged by ancestry, not by an exact HEAD match',
 });
 
 test('the moved-branch check tells apart untouched files from contested ones', () => {
-  const run = (_name, args) => {
-    if (args[0] === 'diff' && args[1] === '--name-only') {
-      return { status: 0, stdout: 'scripts/ralph/ralph-loop.mjs\nAGENTS.md' };
-    }
-    return { status: 1, stdout: '' };
+  const run = (_name, args, options) => {
+    assert.deepEqual(args, ['diff', '--name-only', '-z', '--no-renames', 'old', 'new']);
+    assert.equal(options.rawStdout, true);
+    return { status: 0, stdout: 'scripts/ralph/ralph-loop.mjs\0AGENTS.md\0' };
   };
 
   // Оператор правил control plane, агент правит спеку: пересечения нет.
@@ -1632,22 +1632,51 @@ test('после отказа ревью база следующей сесси�
   );
 });
 
-test('разбор git status переживает обрезку пробелов и переименование', () => {
-  // `run` обрезает пробелы по краям вывода, поэтому первая строка приходит без
-  // ведущего пробела статуса: срез на три символа съел бы первый символ её пути.
-  const raw = ' M src/app/items/item-form.ts\n M e2e/example.spec.ts\n';
+test('машинный статус Git сохраняет пробелы, Unicode, обе стороны rename и колонки', () => {
+  const source = 'old файл.txt';
+  const destination = ' renamed файл.txt';
+  const modified = '  leading space.txt';
+  const untracked = 'untracked/ещё файл.txt';
+  const deleted = 'staged removal.txt';
+  const literal = 'literal [x].txt';
+  const unrelated = 'literal x.txt';
+  const root = temporaryProjectTree({ [source]: 'rename me\n', [modified]: 'before\n', [deleted]: 'remove me\n' });
+  const git = (args) => execFileSync('git', args, { cwd: root, encoding: 'utf8' });
 
-  assert.deepEqual(workingTreePaths(raw), workingTreePaths(raw.trim()));
-  assert.deepEqual(workingTreePaths(raw.trim()), [
-    'src/app/items/item-form.ts',
-    'e2e/example.spec.ts',
-  ]);
+  git(['init', '--quiet']);
+  git(['add', '--', source, modified, deleted]);
+  git(['-c', 'user.name=Ralph test', '-c', 'user.email=ralph@example.test', 'commit', '--quiet', '-m', 'test: fixture']);
+  git(['mv', '--', source, destination]);
+  git(['rm', '--', deleted]);
+  writeFileSync(path.join(root, destination), 'modified after staging rename\n');
+  writeFileSync(path.join(root, modified), 'after\n');
+  mkdirSync(path.join(root, 'untracked'));
+  writeFileSync(path.join(root, untracked), 'draft\n');
+  writeFileSync(path.join(root, literal), 'exact path\n');
+  writeFileSync(path.join(root, unrelated), 'operator file\n');
 
-  // Непрослеженные файлы и переименования: из `R old -> new` нужен новый путь.
-  assert.deepEqual(workingTreePaths('?? design/example.pen\nR  a.ts -> b.ts'), [
-    'design/example.pen',
-    'b.ts',
-  ]);
+  const entries = readWorkingTreeEntries((command, args, options) => {
+    assert.equal(command, 'git');
+    assert.equal(options.rawStdout, true);
+    return { status: 0, stdout: git(args) };
+  });
+  assert.deepEqual(new Map(entries.map((entry) => [entry.path, entry])), new Map([
+    [modified, { index: ' ', worktree: 'M', path: modified }],
+    [destination, { index: 'R', worktree: 'M', path: destination, originalPath: source }],
+    [deleted, { index: 'D', worktree: ' ', path: deleted }],
+    [untracked, { index: '?', worktree: '?', path: untracked }],
+    [literal, { index: '?', worktree: '?', path: literal }],
+    [unrelated, { index: '?', worktree: '?', path: unrelated }],
+  ]));
+  stageWorkingTreeEntries(entries.filter(({ path: file }) => file !== unrelated), (_command, args) => git(args));
+  assert.match(git(['show', `:${destination}`]), /modified after staging rename/u);
+  assert.deepEqual(
+    new Set(git(['diff', '--cached', '--name-only', '-z', '--no-renames']).split('\0').filter(Boolean)),
+    new Set([source, destination, modified, untracked, deleted, literal]),
+  );
+  git(['-c', 'user.name=Ralph test', '-c', 'user.email=ralph@example.test', 'commit', '--quiet', '-m', 'test: staged paths']);
+  assert.match(git(['show', `HEAD:${destination}`]), /modified after staging rename/u);
+  assert.equal(git(['status', '--porcelain=v1', '-z']), `?? ${unrelated}\0`);
 });
 
 test('пределы повторов разведены по цене одной попытки', () => {
@@ -1958,36 +1987,6 @@ The pull request remains draft so a human can make the final merge decision.`;
     milestonePassReviewIsClean(passBody('\n- **P1 — дефект** (a.ts:1)\n  текст\n'), marker),
     false,
   );
-});
-
-test('уже застадированное удаление не попадает в git add', () => {
-  // `git rm` убирает файл и из дерева, и из индекса. Путь остаётся в porcelain
-  // как `D `, но `git add` по нему отвечает `did not match any files` и роняет
-  // прогон кодом 128.
-  const status = [
-    ' M src/items/items.controller.ts',
-    'D  src/items/services/item-uploader.service.ts',
-    '?? src/items/services/item-uploader-renamed.service.ts',
-  ].join('\n');
-
-  const entries = workingTreeEntries(status.trim());
-  assert.deepEqual(
-    entries.map((entry) => `${entry.index}${entry.worktree}`),
-    [' M', 'D ', '??'],
-  );
-
-  // Стадировать нужно только изменённое в дереве; удаление уже в индексе и в
-  // коммит попадёт само.
-  assert.deepEqual(
-    entries.filter((entry) => entry.worktree !== ' ').map((entry) => entry.path),
-    [
-      'src/items/items.controller.ts',
-      'src/items/services/item-uploader-renamed.service.ts',
-    ],
-  );
-
-  // Список путей задачи при этом полный: удалённый файл — тоже её изменение.
-  assert.equal(workingTreePaths(status.trim()).length, 3);
 });
 
 /**

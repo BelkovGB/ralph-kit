@@ -46,6 +46,7 @@ import {
   activeStateStore,
   createStateStore,
   holdIssuePublication,
+  issueForeignPaths,
   runtimeStatePath,
   setActiveStateStore,
   unpublishedIssueHead,
@@ -84,8 +85,10 @@ import {
   verifiedIssueCommit,
   verifyBaseHistory,
   verifyPushedHead,
-  workingTreeEntries,
-  workingTreePaths,
+  gitPathKey,
+  readWorkingTreeEntries,
+  stageWorkingTreeEntries,
+  workingTreeEntryPaths,
 } from './ralph-git.mjs';
 
 import {
@@ -600,21 +603,33 @@ async function reviewAndCloseCommittedIssue(config, repository, issue, commit, e
   return { completed: true, commit, review };
 }
 
+function isForeignEntry(entry, foreignPaths) {
+  return workingTreeEntryPaths(entry).some((file) => foreignPaths.has(gitPathKey(file)));
+}
+
+function assertNoForeignStaging(entries, foreignPaths) {
+  if (entries.some((entry) => isForeignEntry(entry, foreignPaths) && ![' ', '?'].includes(entry.index))) {
+    fail('В индексе есть чужие изменения; ремонт сохранён без commit. Нужен оператор.');
+  }
+}
+
 // Preflight may generate tracked output. Stage the validated post-preflight
 // tree, excluding operator-owned paths; tests themselves remain read-only.
 export function validateIssueWorkingTree(config, foreignPaths, dependencies = {}) {
-  const status = dependencies.workingTreeStatus ?? workingTreeStatus;
+  const readEntries = dependencies.readWorkingTreeEntries ?? readWorkingTreeEntries;
   const validate = dependencies.runConfiguredValidation ?? runConfiguredValidation;
-  let prepared = status();
+  const foreignKeys = new Set([...foreignPaths].map(gitPathKey));
+  let prepared = readEntries();
   validate(config, {
     scope: 'issue',
     baseCommit: dependencies.baseCommit,
     issueNumber: dependencies.issueNumber,
     skipPreflight: Boolean(config.validationProfiles),
-    onPrepared: () => { prepared = status(); },
+    onPrepared: () => { prepared = readEntries(); },
   });
-  if (status() !== prepared) fail('Validation changed the prepared working tree.');
-  return workingTreeEntries(prepared).filter((entry) => !foreignPaths.has(entry.path));
+  if (JSON.stringify(readEntries()) !== JSON.stringify(prepared)) fail('Validation changed the prepared working tree.');
+  assertNoForeignStaging(prepared, foreignKeys);
+  return prepared.filter((entry) => !isForeignEntry(entry, foreignKeys));
 }
 
 function retryIssueValidation(config, issue, error) {
@@ -642,7 +657,7 @@ async function commitAndCompleteIssue(config, repository, issue, startingCommit,
   assertTrustedControlFilesUnchanged(config);
   const currentBranch = run('git', ['branch', '--show-current']).stdout;
   const currentCommit = run('git', ['rev-parse', 'HEAD']).stdout;
-  const changes = run('git', ['status', '--porcelain']).stdout;
+  const changes = readWorkingTreeEntries();
   const violations = [];
 
   if (currentBranch !== config.branch) {
@@ -661,13 +676,10 @@ async function commitAndCompleteIssue(config, repository, issue, startingCommit,
   // оператором конфиг и черновик на сотни килобайт, который следующий коммит
   // агента удаляет вместе с рабочей копией. Ревьюер, увидев в диффе задачи
   // чужой файл, отклоняет работу заход за заходом.
-  const foreignPaths = new Set(activeStateStore()?.issue?.foreignPaths ?? []);
-  if (workingTreeEntries(changes).some((entry) => foreignPaths.has(entry.path) && ![' ', '?'].includes(entry.index))) {
-    fail('В индексе есть чужие изменения; ремонт сохранён без commit. Нужен оператор.');
-  }
-  const agentEntries = workingTreeEntries(changes).filter((entry) => !foreignPaths.has(entry.path));
-  const agentPaths = agentEntries.map((entry) => entry.path);
-  const untouchedForeign = workingTreePaths(changes).filter((file) => foreignPaths.has(file));
+  const foreignPaths = new Set(issueForeignPaths(activeStateStore()?.issue).map(gitPathKey));
+  assertNoForeignStaging(changes, foreignPaths);
+  const agentEntries = changes.filter((entry) => !isForeignEntry(entry, foreignPaths));
+  const untouchedForeign = changes.filter((entry) => isForeignEntry(entry, foreignPaths)).map((entry) => entry.path);
   if (untouchedForeign.length > 0) {
     console.log(
       `Issue #${issue.number}: вне коммита оставлено ${untouchedForeign.length} файлов, ` +
@@ -676,7 +688,7 @@ async function commitAndCompleteIssue(config, repository, issue, startingCommit,
     );
   }
 
-  if (agentPaths.length === 0) {
+  if (agentEntries.length === 0) {
     const alreadyFixedCommit = alreadyFixedCommitFromAgent(lastAgentMessage);
     if (!alreadyFixedCommit) {
       fail(`Issue #${issue.number}: агент не оставил изменений и не указал ALREADY_FIXED commit.`);
@@ -713,10 +725,9 @@ async function commitAndCompleteIssue(config, repository, issue, startingCommit,
       }
       return retryIssueValidation(config, issue, error);
     }
-    assertValidationLeftTree(
-      changes,
-      `Issue #${issue.number}: проверки already-fixed решения изменили рабочее дерево.`,
-    );
+    if (JSON.stringify(readWorkingTreeEntries()) !== JSON.stringify(changes)) {
+      fail(`Issue #${issue.number}: проверки already-fixed решения изменили рабочее дерево.`);
+    }
     return reviewAndCloseCommittedIssue(config, repository, issue, commit, currentCommit, { validationBase: parent.stdout });
   }
 
@@ -752,12 +763,7 @@ async function commitAndCompleteIssue(config, repository, issue, startingCommit,
   // лежащий в индексе, `git add` не примет: после `git rm` файла нет ни в
   // дереве, ни в индексе, и pathspec не совпадает ни с чем — код 128 и обрыв
   // прогона. В коммит такой путь и так попадёт, он уже застадирован.
-  const pathsToStage = validatedEntries
-    .filter((entry) => entry.worktree !== ' ')
-    .map((entry) => entry.path);
-  if (pathsToStage.length > 0) {
-    run('git', ['add', '--all', '--', ...pathsToStage]);
-  }
+  stageWorkingTreeEntries(validatedEntries);
 
   const stagedDiff = run('git', ['diff', '--cached', '--quiet'], {
     allowFailure: true,
@@ -806,9 +812,8 @@ async function commitAndCompleteIssue(config, repository, issue, startingCommit,
   // Чистое дерево здесь не требуется: файлы оператора намеренно остались вне
   // коммита. Требуется другое — чтобы после коммита не осталось ничего, что
   // агент изменил сам.
-  const leftBehind = workingTreePaths(run('git', ['status', '--porcelain']).stdout).filter(
-    (file) => !foreignPaths.has(file),
-  );
+  const leftBehind = readWorkingTreeEntries().filter((entry) => !isForeignEntry(entry, foreignPaths))
+    .map((entry) => entry.path);
   if (commitCount !== 1 || leftBehind.length > 0) {
     fail(
       `Issue #${issue.number}: оркестратор ожидал один commit и никаких своих изменений вне него, ` +
@@ -933,7 +938,8 @@ export async function runAgentOnIssue(config, repository, issue, rules) {
       `Issue #${issue.number}: recovery ожидал HEAD ${startingCommit}, но найден ${currentHead}.`,
     );
   }
-  activeStateStore()?.beginIssue(issue, startingCommit, workingTreePaths(workingTreeStatus()));
+  activeStateStore()?.beginIssue(issue, startingCommit,
+    continuation ? [] : readWorkingTreeEntries().flatMap(workingTreeEntryPaths));
 
   const linkedCommit = issue.linkedCommit ?? linkedCommitForIssue(issue);
   if (!continuation && linkedCommit) {

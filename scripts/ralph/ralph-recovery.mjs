@@ -1,10 +1,13 @@
 import { run } from './ralph-process-runner.mjs';
-import { holdIssuePublication } from './ralph-state-store.mjs';
-import { isRalphInfrastructurePath } from './ralph-scope.mjs';
+import { holdIssuePublication, issueForeignPaths } from './ralph-state-store.mjs';
+import { isRalphInfrastructureGitPath } from './ralph-scope.mjs';
 import { clearedFailure } from './ralph-failure-summary.mjs';
 import { assertTrustedIssue } from './ralph-issue-contract.mjs';
 import { publicIssueIdentity } from './ralph-github-client.mjs';
-import { filesChangedBetween, isAncestorCommit, localGitHubRepository, validateRecoveredCommit, verifyRepository, workingTreePaths } from './ralph-git.mjs';
+import {
+  filesChangedBetween, gitPathKey, isAncestorCommit, localGitHubRepository, readWorkingTreeEntries,
+  validateRecoveredCommit, verifyRepository, workingTreeEntryPaths,
+} from './ralph-git.mjs';
 
 export const committedRecoveryPhases = ['committed', 'pushed', 'reviewing', 'closing'];
 const workingPhases = new Set([
@@ -108,9 +111,8 @@ export function analyzeRecovery(config, issue, dependencies = {}) {
       blocked('Ручной коммит не содержит продолжения сохранённой задачи.');
     }
     if (issue.phase === 'review-failed') {
-      const changed = git('diff', '--name-only', '--no-renames', issue.startingCommit, manualCommit)
-        .split(/\r?\n/).filter(Boolean);
-      if (!changed.some((file) => !isRalphInfrastructurePath(file))) {
+      const changed = filesChangedBetween(issue.startingCommit, manualCommit, execute);
+      if (!changed?.some((file) => !isRalphInfrastructureGitPath(file))) {
         blocked('Ручной коммит не содержит исправления после отклонённого ревью.');
       }
     }
@@ -120,8 +122,9 @@ export function analyzeRecovery(config, issue, dependencies = {}) {
     for (const commit of commits) {
       const parents = git('show', '-s', '--format=%P', commit).split(' ');
       if (parents.length !== 1) blocked('Ручное принятие не поддерживает слияния; требуется разбор истории.');
-      const paths = git('diff-tree', '--no-commit-id', '--name-only', '--no-renames', '-r', commit).split(/\r?\n/).filter(Boolean);
-      if (paths.every(isRalphInfrastructurePath)) continue;
+      const paths = execute('git', ['diff-tree', '--no-commit-id', '--name-only', '-z', '--no-renames', '-r', commit],
+        { rawStdout: true }).stdout.split('\0').filter(Boolean);
+      if (paths.every(isRalphInfrastructureGitPath)) continue;
       const trailer = git('show', '-s', '--format=%(trailers:key=Ralph-Issue,valueonly)', commit);
       if (trailer !== `#${issue.number}` || !isAncestorCommit(commit, manualCommit, execute)) {
         blocked(`После сохранённой базы найден посторонний продуктовый коммит ${commit}.`);
@@ -139,11 +142,6 @@ export function analyzeRecovery(config, issue, dependencies = {}) {
       },
     };
   }
-  if (issue.phase === 'validation-mutated') {
-    if (!issue.validationExpectedTreeHash || dependencies.hostWorkingTreeHash?.() !== issue.validationExpectedTreeHash) {
-      blocked(`Issue #${issue.number}: восстановите точное дерево до изменения host-проверкой.`);
-    }
-  }
   if (committedRecoveryPhases.includes(issue.phase)) {
     if (status !== '') blocked(`Issue #${issue.number}: committed recovery требует чистое рабочее дерево.`);
     const expected = issue.recoveryHead ?? issue.pushedHead ?? issue.commit;
@@ -151,6 +149,12 @@ export function analyzeRecovery(config, issue, dependencies = {}) {
       blocked(`Issue #${issue.number}: HEAD изменился после сохранённого коммита или ревью; требуется явное принятие и новая проверка.`);
     }
     return ready;
+  }
+  issueForeignPaths(issue);
+  if (issue.phase === 'validation-mutated') {
+    if (!issue.validationExpectedTreeHash || dependencies.hostWorkingTreeHash?.() !== issue.validationExpectedTreeHash) {
+      blocked(`Issue #${issue.number}: восстановите точное дерево до изменения host-проверкой.`);
+    }
   }
   if (issue.phase === 'staging' && issue.expectedTree && head !== issue.startingCommit) {
     if (status !== '') blocked('После staging найдены новый HEAD и незакоммиченные изменения.');
@@ -167,9 +171,9 @@ export function analyzeRecovery(config, issue, dependencies = {}) {
       return { kind: 'advance', head, patch: { startingCommit: head } };
     }
     if (workingPhases.has(phase) && status !== '') {
-      const dirty = new Set(workingTreePaths(status));
+      const dirty = new Set(readWorkingTreeEntries(execute).flatMap(workingTreeEntryPaths).map(gitPathKey));
       const moved = filesChangedBetween(issue.startingCommit, head, execute);
-      if (moved !== null && moved.every((file) => !dirty.has(file))) {
+      if (moved !== null && moved.every((file) => !dirty.has(gitPathKey(file)))) {
         return { kind: 'advance', head, patch: { startingCommit: head } };
       }
     }

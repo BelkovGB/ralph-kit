@@ -1,5 +1,6 @@
 import { validateIssueWorkingTree } from './ralph-loop.mjs';
 import { prepareConfig } from './ralph-config.mjs';
+import { readWorkingTreeEntries } from './ralph-git.mjs';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
@@ -642,10 +643,39 @@ function artifactProject(files = {}) {
 }
 
 function artifactGit(root) {
-  return (command, args) => ({
-    stdout: execFileSync(command, args, { cwd: root, encoding: 'utf8' }).trim(),
-  });
+  return (command, args, options = {}) => {
+    const stdout = execFileSync(command, args, { cwd: root, encoding: 'utf8' });
+    return { status: 0, stdout: options.rawStdout ? stdout : stdout.trim() };
+  };
 }
+
+test('validation detects content changes to an existing untracked path with a leading space', () => {
+  const relative = ' draft.txt';
+  const root = artifactProject({ [relative]: 'original draft\n' });
+  const git = artifactGit(root);
+
+  try {
+    git('git', ['init', '--quiet']);
+    git('git', ['-c', 'user.name=Ralph test', '-c', 'user.email=ralph@example.test',
+      'commit', '--allow-empty', '--quiet', '-m', 'test: baseline']);
+    const resultBefore = git('git', ['status', '--porcelain']).stdout;
+    assert.throws(
+      () => runConfiguredValidation(hostValidationConfig({ preflightScripts: [] }), {
+        projectRoot: root,
+        mkdir() {},
+        run(command, args, options) {
+          if (command === 'git') return git(command, args, options);
+          writeFileSync(path.join(root, relative), 'modified draft\n');
+          return { status: 0, stdout: '', stderr: '' };
+        },
+      }),
+      (error) => error.code === 'RALPH_VALIDATION_MUTATED' && error.message.includes(relative),
+    );
+    assert.equal(git('git', ['status', '--porcelain']).stdout, resultBefore);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test('конфиг на Windows отклоняет регистровый вариант .git с указанием пути', {
   skip: process.platform !== 'win32',
@@ -869,11 +899,13 @@ test('prepared callback observes generated files before guarded validation', () 
 
 
 test('issue staging includes generated files and preserves foreign paths', () => {
-  let status = ' M source.js';
+  let status = [{ index: ' ', worktree: 'M', path: 'source.js' }];
   const entries = validateIssueWorkingTree({}, new Set(['operator.txt']), {
-    workingTreeStatus: () => status,
+    readWorkingTreeEntries: () => status,
     runConfiguredValidation: (_config, options) => {
-      status = ' M source.js\n M generated.html\n?? generated-new.html\n M operator.txt';
+      status = [...status, { index: ' ', worktree: 'M', path: 'generated.html' },
+        { index: '?', worktree: '?', path: 'generated-new.html' },
+        { index: ' ', worktree: 'M', path: 'operator.txt' }];
       options.onPrepared();
     },
   });
@@ -881,14 +913,42 @@ test('issue staging includes generated files and preserves foreign paths', () =>
 });
 
 test('issue staging rejects mutations after preparation', () => {
-  let status = ' M source.js';
+  let status = [{ index: ' ', worktree: 'M', path: 'source.js' }];
   assert.throws(() => validateIssueWorkingTree({}, new Set(), {
-    workingTreeStatus: () => status,
+    readWorkingTreeEntries: () => status,
     runConfiguredValidation: (_config, options) => {
       options.onPrepared();
-      status += '\n?? test-created.txt';
+      status = [...status, { index: '?', worktree: '?', path: 'test-created.txt' }];
     },
   }), /Validation changed/);
+});
+
+test('issue staging blocks a foreign rename staged by preflight and preserves its index', () => {
+  const source = ' operator файл.txt';
+  const destination = 'renamed operator файл.txt';
+  const root = artifactProject({ [source]: 'operator work\n' });
+  const git = artifactGit(root);
+  let preparedIndex;
+
+  try {
+    git('git', ['init', '--quiet']);
+    git('git', ['add', '--', source]);
+    git('git', ['-c', 'user.name=Ralph test', '-c', 'user.email=ralph@example.test',
+      'commit', '--quiet', '-m', 'test: baseline']);
+    const foreign = process.platform === 'win32' ? source.toUpperCase() : source;
+    assert.throws(() => validateIssueWorkingTree({}, new Set([foreign]), {
+      readWorkingTreeEntries: () => readWorkingTreeEntries(git),
+      runConfiguredValidation: (_config, options) => {
+        git('git', ['mv', '--', source, destination]);
+        preparedIndex = git('git', ['write-tree']).stdout;
+        options.onPrepared();
+      },
+    }), /В индексе есть чужие изменения/u);
+    assert.equal(git('git', ['write-tree']).stdout, preparedIndex);
+    assert.equal(git('git', ['show', `:${destination}`]).stdout, 'operator work');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('committed recovery retries a connection failure once before escalation', () => {

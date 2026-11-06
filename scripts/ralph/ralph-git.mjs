@@ -150,10 +150,12 @@ export function issueCommits(issue, head, execute = run) {
  * вперёд по чужим файлам» от «ветка ушла вперёд по тем же, что правит агент».
  */
 export function filesChangedBetween(from, to, execute = run) {
-  const changed = execute('git', ['diff', '--name-only', from, to], { allowFailure: true });
+  const changed = execute('git', ['diff', '--name-only', '-z', '--no-renames', from, to], {
+    allowFailure: true, rawStdout: true,
+  });
   if (changed.status !== 0) return null;
 
-  return changed.stdout.split(/\r?\n/).filter(Boolean);
+  return changed.stdout.split('\0').filter(Boolean);
 }
 
 /**
@@ -169,39 +171,44 @@ export function isAncestorCommit(ancestor, descendant, execute = run) {
   );
 }
 
-/**
- * Разбор `git status --porcelain` в записи `{index, worktree, path}`.
- *
- * Формат — `XY <путь>`, где X описывает индекс, Y рабочее дерево, а
- * переименование записано как `старый -> новый`, и нужен последний.
- *
- * Колонки разбираются, а не отбрасываются: от них зависит, надо ли путь вообще
- * стадировать. Файл, удалённый через `git rm`, стоит как `D ` — его нет ни в
- * дереве, ни в индексе, и `git add` по такому пути отвечает `did not match any
- * files` с кодом 128, обрывая прогон на уже сделанной работе.
- *
- * Отрезать ровно три символа нельзя: `run` обрезает пробелы по краям вывода, и
- * первая строка приходит без ведущего пробела статуса, поэтому такой срез съел
- * бы первый символ её пути — `src/app/...` превратился бы в `rc/app/...`.
- */
-export function workingTreeEntries(status) {
-  const entries = new Map();
-  for (const line of String(status ?? '').split(/\r?\n/)) {
-    if (line.trim() === '') continue;
-    // После двух колонок статуса porcelain всегда ставит ровно один пробел.
-    // Если на третьей позиции его нет, значит обрезка съела ведущий пробел
-    // первой строки и колонка индекса пуста.
-    const restored = line[2] === ' ' ? line : ` ${line}`;
-    const filePath = restored.slice(2).trim().split(' -> ').at(-1);
-    if (filePath) {
-      entries.set(filePath, { index: restored[0], worktree: restored[1], path: filePath });
+export function readWorkingTreeEntries(execute = run) {
+  const { stdout } = execute(
+    'git', ['status', '--porcelain=v1', '-z', '--untracked-files=all'], { rawStdout: true },
+  );
+  const records = stdout.split('\0');
+  if (records.pop() !== '') fail('Git status вернул неполный список путей.');
+
+  const entries = [];
+  for (let position = 0; position < records.length; position += 1) {
+    const record = records[position];
+    const [index, worktree] = record;
+    const file = record.slice(3);
+    if (record[2] !== ' ' || !file) fail('Git status вернул некорректную запись пути.');
+
+    const entry = { index, worktree, path: file };
+    if (index === 'R' || index === 'C' || worktree === 'R' || worktree === 'C') {
+      // В формате -z Git записывает новый путь перед исходным.
+      position += 1;
+      entry.originalPath = records[position];
+      if (!entry.originalPath) fail('Git status не сообщил исходный путь переименования или копирования.');
     }
+    entries.push(entry);
   }
-  return [...entries.values()];
+  return entries;
 }
 
-export function workingTreePaths(status) {
-  return workingTreeEntries(status).map((entry) => entry.path);
+export function workingTreeEntryPaths({ path: file, originalPath }) {
+  return originalPath === undefined ? [file] : [file, originalPath];
+}
+
+export function gitPathKey(file) {
+  return process.platform === 'win32' ? file.toLowerCase() : file;
+}
+
+export function stageWorkingTreeEntries(entries, execute = run) {
+  const paths = new Set(entries.filter(({ worktree }) => worktree !== ' ').flatMap((entry) =>
+    entry.worktree === 'R' ? workingTreeEntryPaths(entry) : [entry.path]));
+  if (paths.size > 0) execute('git', ['--literal-pathspecs', 'add', '--all', '--', ...paths]);
 }
 
 /**

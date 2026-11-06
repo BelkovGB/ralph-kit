@@ -4,7 +4,10 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'nod
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { analyzeRecovery, applyRecoveryPlan, committedValidationFailurePatch, prepareRecovery, resumeAcceptedIssue } from './ralph-recovery.mjs';
+import {
+  analyzeRecovery, applyRecoveryPlan, committedValidationFailurePatch, prepareRecovery, resumeAcceptedIssue,
+  savedIssueReview,
+} from './ralph-recovery.mjs';
 import { createStateStore } from './ralph-state-store.mjs';
 
 test('offline recovery binds an accepted snapshot to origin, branch, milestone and issue number', () => {
@@ -32,7 +35,7 @@ function fixture(t) {
   const run = (_command, args, options = {}) => {
     const result = spawnSync('git', args, { cwd: root, encoding: 'utf8' });
     if (result.status !== 0 && !options.allowFailure) throw new Error(result.stderr);
-    return { ...result, stdout: result.stdout.trim(), stderr: result.stderr.trim() };
+    return { ...result, stdout: options.rawStdout ? result.stdout : result.stdout.trim(), stderr: result.stderr.trim() };
   };
   const git = (...args) => run('git', args).stdout;
   git('init', '-q', '-b', 'feature');
@@ -87,6 +90,73 @@ test('diagnostic validation preserves the unfinished diff for a check-only resum
   assert.equal(f.store.issue.validationFixAttempts, 0);
 });
 
+test('recovery blocks a branch advance that renamed an exact dirty source path', (t) => {
+  const f = fixture(t);
+  const source = ' source файл.txt';
+  const target = 'renamed файл.txt';
+  const base = f.commit(source, 'before rename', 'source file');
+  f.git('mv', '--', source, target);
+  f.git('commit', '-qm', 'rename the file');
+  writeFileSync(path.join(f.root, source), 'unfinished Ralph work');
+  f.store.updateIssue({ startingCommit: base });
+  const before = readFileSync(f.statePath, 'utf8');
+
+  assert.throws(f.analyze, /recovery ожидал HEAD/u);
+  assert.equal(readFileSync(f.statePath, 'utf8'), before);
+  assert.equal(readFileSync(path.join(f.root, source), 'utf8'), 'unfinished Ralph work');
+});
+
+test('recovery blocks an ambiguous legacy foreign list before touching the index', (t) => {
+  const f = fixture(t);
+  f.store.updateIssue({ startingCommit: f.manual, foreignPathsFormat: undefined, foreignPaths: ['"operator file.txt"', 'draft/'] });
+  writeFileSync(path.join(f.root, 'operator file.txt'), 'operator edit');
+  f.git('add', '--', 'operator file.txt');
+  const before = f.git('write-tree');
+
+  assert.throws(f.analyze, /неоднозначн.*чужих путей/u);
+  assert.equal(f.git('write-tree'), before);
+});
+
+test('recovery blocks a staged foreign rename chain hidden by a legacy destination-only list', (t) => {
+  const f = fixture(t);
+  const base = f.commit('old.txt', 'operator content', 'track operator file');
+  f.git('mv', '--', 'old.txt', 'first.txt');
+  f.store.updateIssue({ startingCommit: base, foreignPathsFormat: undefined, foreignPaths: ['first.txt'] });
+  f.git('mv', '--', 'first.txt', 'second.txt');
+  assert.equal(f.run('git', ['status', '--porcelain=v1', '-z'], { rawStdout: true }).stdout, 'R  second.txt\0old.txt\0');
+  const indexPath = path.join(f.root, '.git', 'index');
+  const index = readFileSync(indexPath);
+  const state = readFileSync(f.statePath);
+
+  assert.throws(f.analyze, { code: 'RALPH_RECOVERY_BLOCKED', message: /неоднозначн.*чужих путей/u });
+  assert.deepEqual(readFileSync(indexPath), index);
+  assert.deepEqual(readFileSync(f.statePath), state);
+  assert.equal(readFileSync(path.join(f.root, 'second.txt'), 'utf8'), 'operator content');
+});
+
+test('recovery resumes from legacy state with an empty or missing foreign list', (t) => {
+  const f = fixture(t);
+  writeFileSync(path.join(f.root, 'app.txt'), 'unfinished Ralph work');
+  for (const foreignPaths of [[], undefined]) {
+    f.store.updateIssue({ startingCommit: f.manual, foreignPathsFormat: undefined, foreignPaths });
+    assert.equal(f.analyze().kind, 'ready');
+  }
+});
+
+test('clean committed and closing recovery keep the exact-HEAD PASS with a legacy foreign list', (t) => {
+  const f = fixture(t);
+  const result = { verdict: 'pass', summary: 'Reviewed HEAD', findings: [] };
+  for (const phase of ['committed', 'closing']) {
+    f.store.updateIssue({
+      phase, commit: f.manual, recoveryHead: f.manual,
+      foreignPathsFormat: undefined, foreignPaths: ['first.txt'],
+      reviewReceipt: { head: f.manual, result },
+    });
+    assert.deepEqual(f.analyze(), { kind: 'ready', head: f.manual });
+    assert.deepEqual(savedIssueReview(f.store.issue, f.manual), result);
+  }
+});
+
 test('auth, trust and validation mutation failures retain strict committed recovery', () => {
   for (const code of ['RALPH_AGENT_AUTH', 'RALPH_CONTROL_PLANE_CHANGED', 'RALPH_VALIDATION_MUTATED',
     'RALPH_PREFLIGHT_FAILED', 'RALPH_RECOVERY_BLOCKED']) {
@@ -119,6 +189,14 @@ test('explicit manual acceptance queues full validation and review, retaining hi
   assert.equal(f.store.issue.validationFixAttempts, 2);
   assert.equal(f.store.issue.reviewFindings, 'Previous finding');
   assert.equal(f.analyze().kind, 'ready');
+});
+
+test('manual acceptance does not treat a product path with leading space as an instruction', (t) => {
+  const f = fixture(t);
+  const unrelated = f.commit(' AGENTS.md', 'operator work', 'unrelated product change');
+
+  assert.throws(() => f.analyze({ manualCommit: f.manual }), /посторонний продуктовый коммит/u);
+  assert.equal(f.git('rev-parse', 'HEAD'), unrelated);
 });
 
 test('manual mode persists acceptance and the next run resumes validation', (t) => {

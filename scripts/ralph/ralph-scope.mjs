@@ -32,18 +32,21 @@ export function isRalphInfrastructurePath(file) {
     .replaceAll('\\', '/')
     .replace(/^\.\//, '')
     .replace(/:\d+(?::\d+)?$/, '');
+  return isRalphInfrastructureGitPath(normalized);
+}
 
+export function isRalphInfrastructureGitPath(file) {
   return (
-    isAgentInstructionFileName(normalized.slice(normalized.lastIndexOf('/') + 1)) ||
-    normalized === '.agents' ||
-    normalized.startsWith('.agents/') ||
+    isAgentInstructionFileName(file.slice(file.lastIndexOf('/') + 1)) ||
+    file === '.agents' ||
+    file.startsWith('.agents/') ||
     // Claude Code читает из `.claude/**` агентов, скиллы, настройки и хуки.
     // Файл, положенный туда, меняет поведение будущей сессии, поэтому каталог
     // относится к control plane наравне с `.agents/**`.
-    normalized === '.claude' ||
-    normalized.startsWith('.claude/') ||
-    normalized === 'scripts/ralph' ||
-    normalized.startsWith('scripts/ralph/')
+    file === '.claude' ||
+    file.startsWith('.claude/') ||
+    file === 'scripts/ralph' ||
+    file.startsWith('scripts/ralph/')
   );
 }
 

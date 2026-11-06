@@ -220,8 +220,9 @@ export function hostValidationEnvironment(config, source = process.env, lisaPath
  */
 export function hostWorkingTreeEntries(dependencies = {}) {
   const execute = dependencies.run ?? run;
+  const root = dependencies.projectRoot ?? projectRoot;
   const listPaths = (args) =>
-    execute('git', args)
+    execute('git', args, { rawStdout: true })
       .stdout.split(String.fromCharCode(0))
       .filter(Boolean);
   // Два списка вместо обхода всего проекта: изменённые относительно коммита
@@ -242,9 +243,9 @@ export function hostWorkingTreeEntries(dependencies = {}) {
     ) {
       fail(`Небезопасный путь в выводе git: ${relativePath}`);
     }
-    const filePath = path.join(projectRoot, normalizedPath);
+    const filePath = path.join(root, normalizedPath);
     const stats = lstatSync(filePath, { throwIfNoEntry: false });
-    const key = relativePath.replaceAll('\\', '/');
+    const key = relativePath;
     if (!stats) {
       entries.set(key, 'deleted');
       continue;
@@ -383,9 +384,10 @@ export function runConfiguredScripts(config, scripts, label, options = {}) {
     }
   };
 
+  const workingTreeSnapshot = () => hostWorkingTreeEntries({ run: execute, projectRoot: options.projectRoot });
   try {
     for (const script of preparation) runScript(script, 'preflight');
-    baseline = hostWorkingTreeEntries({ run: execute });
+    baseline = workingTreeSnapshot();
     options.onPrepared?.();
     let connectionRetryUsed = false;
     for (const script of guarded) {
@@ -396,7 +398,7 @@ export function runConfiguredScripts(config, scripts, label, options = {}) {
           throw error;
         }
         // Never retry a test that changed files: the final guard reports the mutation.
-        if (changedTreePaths(baseline, hostWorkingTreeEntries({ run: execute })).length > 0) throw error;
+        if (changedTreePaths(baseline, workingTreeSnapshot()).length > 0) throw error;
         assertTrustedControlFilesUnchanged(config);
         connectionRetryUsed = true;
         connectionFailure = error;
@@ -428,7 +430,7 @@ export function runConfiguredScripts(config, scripts, label, options = {}) {
 
   if (baseline !== null) {
     try {
-      const observed = hostWorkingTreeEntries({ run: execute });
+      const observed = workingTreeSnapshot();
       const mutatedPaths = changedTreePaths(baseline, observed);
       if (mutatedPaths.length > 0) {
         const named = mutatedPaths.slice(0, namedMutatedPathLimit);
