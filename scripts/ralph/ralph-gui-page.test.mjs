@@ -8,6 +8,21 @@ import test from 'node:test';
 // и проверки пропускаются, как в соседних тестах.
 const guiPagePath = fileURLToPath(new URL('./ralph-gui-page.mjs', import.meta.url));
 
+test('the GUI shows the full report path after a review stop', { skip: !existsSync(guiPagePath) }, async () => {
+  const { renderPage } = await import('./ralph-gui-page.mjs');
+  const page = renderPage();
+  const start = page.indexOf('  function statusLine(data) {');
+  const end = page.indexOf('  function loadState()', start);
+  assert.ok(start >= 0 && end > start);
+  const stopReportPath = 'C:\\Проекты\\Длинный путь\\run-stop-reports\\отчёт.md';
+  const classes = new Map();
+  const context = { stateData: { running: false, run: null, stopReportPath },
+    statusText: { classList: { toggle: (name, enabled) => classes.set(name, enabled) } }, statusDot: {} };
+  vm.runInNewContext(`${page.slice(start, end)}\nrenderStatus();`, context);
+  assert.equal(context.statusText.textContent, `Последний отчёт об остановке после отказов ревью — ${stopReportPath}`);
+  assert.equal(classes.get('has-report'), true);
+});
+
 test('Lisa model and effort choices use the default CLI in an older config', { skip: !existsSync(guiPagePath) }, async () => {
   const { renderPage } = await import('./ralph-gui-page.mjs');
   const { fieldGroups } = await import('./ralph-gui-fields.mjs');

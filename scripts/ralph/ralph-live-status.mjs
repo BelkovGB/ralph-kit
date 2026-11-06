@@ -32,6 +32,9 @@ export function publishLiveStatus(event) {
     case 'repair-step-passed':
       state.lastPassedStep = structuredClone(values);
       break;
+    case 'issue-observation':
+      state.issueObservation = { ...values, sequence: (state.issueObservation?.sequence ?? 0) + 1 };
+      break;
     case 'supervisor-call':
       state.supervisorCalls += 1;
       break;

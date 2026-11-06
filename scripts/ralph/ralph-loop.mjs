@@ -198,6 +198,12 @@ function repairStepSucceeded(step, state = activeStateStore()?.state) {
     runId: state.runId, phaseIndex: state.phaseIndex, issueNumber: state.issue?.number ?? null, step });
 }
 
+function observeIssue(kind, details) {
+  const state = activeStateStore()?.state;
+  if (state?.issue) publishLiveStatus({ type: 'issue-observation', kind,
+    runId: state.runId, phaseIndex: state.phaseIndex, issueNumber: state.issue.number, ...details });
+}
+
 async function observedRepairStep(step, operation) {
   try {
     const result = await operation();
@@ -553,6 +559,7 @@ async function reviewAndCloseCommittedIssue(config, repository, issue, commit) {
       reviewFindings: reviewContextText(review),
       ...clearedFailure,
     });
+    observeIssue('review-fail', { findings: review.findings.length, commit, pushedHead });
     reopenIssueWithComment(repository, issue, formatReviewComment(review));
 
     // Бюджет итераций общий на всю фазу, и без этого предела одна issue съедает
@@ -677,6 +684,7 @@ async function commitAndCompleteIssue(config, repository, issue, startingCommit,
         validationFixAttempts: attempts,
         ...recordedFailure(error),
       });
+      observeIssue('validation-fail');
       if (attempts >= config.maxTestFixAttempts) throw error;
       console.error(
         `Issue #${issue.number}: validation не прошла (${attempts}/${config.maxTestFixAttempts}); ` +
@@ -718,6 +726,7 @@ async function commitAndCompleteIssue(config, repository, issue, startingCommit,
       validationFixAttempts: attempts,
       ...recordedFailure(error),
     });
+    observeIssue('validation-fail');
     if (attempts >= config.maxTestFixAttempts) throw error;
     console.error(
       `Issue #${issue.number}: validation не прошла (${attempts}/${config.maxTestFixAttempts}); ` +

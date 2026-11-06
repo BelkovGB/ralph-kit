@@ -15,7 +15,12 @@ function fixture(issueOverrides = {}) {
   } };
   const config = { supervisor: { maxInterventions: 2 }, trustedControlFileHashes: new Map(), agentInstructionFiles: [] };
   const options = { projectRoot: root, identity: () => ({ branch: 'phase', head: 'head' }),
-    files: () => ['scripts/ralph/ralph-loop.mjs', 'user.txt'] };
+    files: () => ['scripts/ralph/ralph-loop.mjs', 'user.txt'],
+    run: (name, args) => {
+      assert.equal(name, 'git');
+      assert.deepEqual(args, ['diff', '--cached', '--binary', '--no-ext-diff', '--no-textconv']);
+      return { status: 0, stdout: '' };
+    } };
   const context = captureLisaRepairContext(config, { state, issue: state.issue }, new Error('failed'), options);
   return { root, state, config, options, context, cleanup: () => rmSync(root, { recursive: true, force: true }) };
 }

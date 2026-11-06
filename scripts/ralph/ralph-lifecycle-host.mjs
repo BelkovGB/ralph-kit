@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { readFileSync, unlinkSync } from 'node:fs';
 import path from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 import { loadConfig, configForPhase, controlPlaneSnapshot } from './ralph-config.mjs';
 import { acquireRunLock, initializePersistentLog, readJsonFile, resolveRalphRuntimeDirectory, writeJsonAtomic } from './ralph-runtime.mjs';
@@ -12,6 +13,7 @@ import { validatedLisaPathDirectories, runConfiguredValidation, assertTrustedCon
 import { captureLisaRepairContext, assessLisaRepair, acceptLisaRepair,
   createTrustedRepairRuntime, updateLisaRepairContextState, lisaFailureFingerprint, lisaRepairTreeHash, lisaRepairIndexHash } from './ralph-lisa-repair.mjs';
 import { runRalphLifecycle, startRalphWorker, repairStepPassed } from './ralph-lifecycle.mjs';
+import { clearLatestRunStopReport, parkedReviewPhase, writeRunStopReport } from './ralph-run-stop-report.mjs';
 import { publishLiveStatus, readLiveStatus, reportActivity, resetLiveStatus, subscribeLiveStatus } from './ralph-live-status.mjs';
 import { createTerminalHost } from './ralph-terminal-host.mjs';
 import { parseUiOption } from './ralph-terminal.mjs';
@@ -19,6 +21,8 @@ import { parseUiOption } from './ralph-terminal.mjs';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 export async function runRalphLifecycleCli() {
+  const started = Date.now();
+  const startedMs = performance.now();
   let config = loadConfig();
   if (!config.active) { console.log('Ralph Loop выключен: active=false.'); return; }
   const runtime = resolveRalphRuntimeDirectory(root);
@@ -42,12 +46,19 @@ export async function runRalphLifecycleCli() {
   let prepared;
   let accepted = null;
   let pendingFailure = null;
+  let lastRepair = null;
+  let lisaCallsThisRun = 0;
+  let stopReason;
+  let stopReport;
+  let stopReportFailed = false;
+  const workers = [];
   let store;
   try {
+    try { clearLatestRunStopReport(runtime); } catch { /* an older report remains readable */ }
     resetLiveStatus();
     store = setActiveStateStore(createStateStore(firstPhase, '--run', statePath, { runId }));
+    const initialIterations = { phaseIndex: store.phaseIndex, used: store.iterationsUsed };
     const ui = parseUiOption('--run', process.argv.slice(3));
-    const started = Date.now();
     terminal = ui === 'split' ? await createTerminalHost({ snapshot: () => {
       const state = readJsonFile(statePath, null);
       return { store: state ? { state, issue: state.issue, phaseIndex: state.phaseIndex,
@@ -77,6 +88,9 @@ export async function runRalphLifecycleCli() {
             throw new Error('Lisa: дерево изменилось до запуска исправленного процесса; нужен оператор.');
           }
         }
+        const worker = { observations: [], lastPassedStep: null, parked: null };
+        workers.push(worker);
+        let observationSequence = 0;
         const result = await startRalphWorker({
           entry: path.join(root, 'scripts/ralph/ralph-loop.mjs'), root, token, runId, lockPath,
           accepted, signal: controller.signal,
@@ -84,8 +98,14 @@ export async function runRalphLifecycleCli() {
             const lock = readJsonFile(lockPath);
             if (lock.token !== token) throw new Error('Ralph: владелец блокировки изменился.');
             writeJsonAtomic(lockPath, { ...lock, workerPid: pid });
+            if (pendingFailure && pid) pendingFailure.restarted = true;
           },
           onLive: (value) => {
+            worker.lastPassedStep = value.lastPassedStep;
+            if (value.issueObservation?.sequence > observationSequence) {
+              observationSequence = value.issueObservation.sequence;
+              worker.observations.push(value.issueObservation);
+            }
             if (repairStepPassed(pendingFailure, value.lastPassedStep)) pendingFailure.proved = true;
             publishLiveStatus({ type: 'worker-snapshot', snapshot: value });
           },
@@ -94,12 +114,14 @@ export async function runRalphLifecycleCli() {
             prepared = message.config;
           },
         });
+        worker.parked = parkedReviewPhase(result);
         const lock = readJsonFile(lockPath);
         if (lock?.token === token) writeJsonAtomic(lockPath, { ...lock, workerPid: null });
         const current = readJsonFile(statePath, null);
         if (current) store = setActiveStateStore(createStateStore(configForPhase(config, current.phaseIndex), '--run', statePath));
         if (result.kind === 'repair-needed' && pendingFailure && !pendingFailure.proved) {
           updateRepair(pendingFailure.repairId, { status: 'needs-human', reason: 'Повтор прежнего отказа без прогресса.' });
+          stopReason = 'repeat-without-progress';
           return { kind: 'needs-human', reason: 'Повтор прежнего отказа без прогресса; работа сохранена.' };
         }
         if (pendingFailure && current?.lisaRepair && result.kind === 'needs-human') {
@@ -114,11 +136,13 @@ export async function runRalphLifecycleCli() {
       repair: async (result) => {
         if (!config.supervisor?.enabled || !store?.state || !prepared ||
             store.supervisorCalls >= config.supervisor.maxInterventions) {
+          stopReason = 'lisa-unavailable';
           return { verdict: 'human', reason: 'Lisa выключена, контекст недоступен или лимит вмешательств исчерпан.' };
         }
         const error = Object.assign(new Error(result.failure?.message ?? 'Задачи отложены.'), { code: result.failure?.code });
         if (store.supervisorExtraIterations >= config.supervisor.maxAdditionalIterations &&
             ['RALPH_ITERATION_LIMIT', 'RALPH_PARKED'].includes(error.code)) {
+          stopReason = 'lisa-iteration-reserve-exhausted';
           return { verdict: 'human', reason: 'Резерв дополнительных итераций исчерпан.' };
         }
         const repairConfig = supervisorPhaseConfig({ ...config,
@@ -129,12 +153,15 @@ export async function runRalphLifecycleCli() {
         const failureStep = result.failure?.step ?? store.issue?.phase ?? 'phase';
         store.beginLisaRepair({ repairId, runId: store.state.runId, phaseIndex: store.phaseIndex,
           failureStep, failureFingerprint: lisaFailureFingerprint(error, failureStep) });
+        lastRepair = { repairId, issueNumber: store.issue?.number ?? null, runId: store.state.runId,
+          phaseIndex: store.phaseIndex, failureStep, accepted: false, restarted: false, proved: false };
         let context;
         try {
           snapshot.assertUnchanged();
           context = captureLisaRepairContext(repairConfig, store, error, { repairId, statePath, failureStep });
           reportActivity('supervisor', `Lisa: вызов ${call}/${config.supervisor.maxInterventions}.`);
           publishLiveStatus({ type: 'supervisor-call' });
+          lisaCallsThisRun += 1;
           const answer = await requestLisa(repairConfig, store, error, call, { proposalOnly: true, signal: controller.signal });
           if (controller.signal.aborted) return { verdict: 'human', reason: 'Остановлено пользователем.' };
           if (answer.verdict !== 'resume') throw new Error(answer.reason);
@@ -176,13 +203,14 @@ export async function runRalphLifecycleCli() {
           console.log(`Lisa: файлы ремонта: ${receipt.changedPaths.join(', ') || 'нет изменений'}. Проверки пройдены.`);
           config = { ...receipt.config, ...receipt.controlPlane };
           accepted = receipt;
-          pendingFailure = { repairId, issueNumber: context.issueNumber, runId: context.runId,
-            phaseIndex: context.phaseIndex, failureStep: context.failureStep, proved: false };
+          lastRepair.accepted = true;
+          pendingFailure = lastRepair;
           updateRepair(repairId, { status: 'resuming' });
           console.log(`Lisa: ${answer.reason}. Ralph продолжает работу в новом процессе.`);
           return { verdict: 'resume' };
         } catch (cause) {
           updateRepair(repairId, { status: 'needs-human', reason: cause.message });
+          stopReason = 'lisa-repair-declined';
           return { verdict: 'human', reason: cause.message };
         } finally {
           store.finishSupervisorCall();
@@ -190,7 +218,22 @@ export async function runRalphLifecycleCli() {
         }
       },
     });
-    if (outcome.kind === 'needs-human') throw new Error(`Нужен человек: ${outcome.reason ?? outcome.failure?.message}`);
+    if (outcome.kind === 'needs-human') {
+      const phase = workers.at(-1)?.parked;
+      if (phase) {
+        try {
+          if (readJsonFile(lockPath)?.token !== token) throw new Error('Ralph no longer owns the run lock.');
+          stopReport = writeRunStopReport(runtime, {
+            runId, startedAt: new Date(started), stoppedAt: new Date(), durationMs: Math.round(performance.now() - startedMs),
+            phase, limits: configForPhase(config, phase.phaseIndex), workers, state: readJsonFile(statePath, null),
+            initialIterations, repair: lastRepair, lisaCallsThisRun, stopReason,
+          });
+        } catch {
+          stopReportFailed = true;
+        }
+      }
+      throw new Error(`Нужен человек: ${outcome.reason ?? outcome.failure?.message}`);
+    }
     if (controller.signal.aborted) process.exitCode = 130;
     return outcome;
   } finally {
@@ -202,5 +245,10 @@ export async function runRalphLifecycleCli() {
     restoreLog?.();
     await terminal?.close();
     release();
+    if (stopReport) {
+      console.log(`Отчёт Ralph об остановке — ${stopReport.filePath}`);
+      if (!stopReport.shownInGui) console.error('Не удалось показать отчёт Ralph в пульте.');
+    }
+    if (stopReportFailed) console.error('Не удалось сохранить отчёт Ralph об остановке.');
   }
 }

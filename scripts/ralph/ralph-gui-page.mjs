@@ -424,6 +424,11 @@ a { color: var(--accent); }
   font-size: 13px;
 }
 
+.status-text.has-report {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 .panel { max-width: 1160px; margin: 0 auto; }
 
 /* Вкладки внутри настроек. Они намеренно тише боковой навигации: ни акцентной
@@ -1327,6 +1332,7 @@ const scriptTail = `
     if (!data) return 'Данные загружаются';
     if (data.staleLock && !data.running) return 'Прошлый прогон упал, не закрывшись. Следующий запуск начнётся как обычно';
     var run = data.run;
+    if (!data.running && data.stopReportPath) return 'Последний отчёт об остановке после отказов ревью — ' + data.stopReportPath;
     if (!data.running || !run) return 'Прогона нет';
     var parts = [];
     if (run.issueNumber) parts.push('Issue #' + run.issueNumber);
@@ -1351,6 +1357,7 @@ const scriptTail = `
     statusText.textContent = statusLine(stateData);
     var running = !!(stateData && stateData.running);
     var stale = !!(stateData && stateData.staleLock && !running);
+    statusText.classList.toggle('has-report', !running && !stale && !!(stateData && stateData.stopReportPath));
     statusDot.className = 'dot' + (running ? ' is-running' : stale ? ' is-stale' : '');
   }
 

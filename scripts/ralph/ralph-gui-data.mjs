@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { describeOutcome } from './ralph-run-metrics.mjs';
+import { readLatestRunStopReportPath } from './ralph-run-stop-report.mjs';
 import {
   isProcessAlive,
   readJsonFile,
@@ -263,6 +264,7 @@ export function readRunState(dependencies = {}) {
   const lock = readJsonSafely(path.join(directory, 'run.lock'), null);
   const state = readJsonSafely(path.join(directory, 'state.json'), null);
   if (!lock) return { running: false, run: null, staleLock: false, plannedPhases,
+    stopReportPath: readLatestRunStopReportPath(directory),
     ...(state?.lisaRepair ? { lisaRepair: state.lisaRepair } : {}) };
   const running = alive(lock.pid);
   // Хвост журнала читается только у живого прогона: у брошенного лока последние
@@ -718,6 +720,7 @@ export function stateResponse(dependencies = {}) {
     running: Boolean(state.running),
     run: state.run ?? null,
     staleLock: Boolean(state.staleLock),
+    ...(state.stopReportPath ? { stopReportPath: state.stopReportPath } : {}),
     // План фаз читается из конфигурации и живёт дольше прогона: страница
     // показывает «фаза 2 из 3» и когда состояния на диске уже нет.
     plannedPhases: state.plannedPhases ?? [],
