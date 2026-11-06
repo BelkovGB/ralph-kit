@@ -142,6 +142,9 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
         lastFailureSummary: null,
         commit: null,
         pushedHead: null,
+        pendingPublishHead: null,
+        lastPublishedHead: null,
+        reviewReceipt: null,
         expectedTree: null,
         commitMessage: null,
       };
@@ -275,4 +278,14 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
       removeFileIfExists(statePath);
     },
   };
+}
+
+export function unpublishedIssueHead(issue) {
+  const head = issue?.recoveryHead ?? issue?.commit;
+  return issue?.pendingPublishHead ?? (issue?.commit && head !== issue.pushedHead ? head : null);
+}
+
+// Preserve publication evidence when resetting the local validation or repair stage.
+export function holdIssuePublication(issue, pendingPublishHead = unpublishedIssueHead(issue)) {
+  return { pendingPublishHead, lastPublishedHead: issue?.pushedHead ?? issue?.lastPublishedHead ?? null };
 }

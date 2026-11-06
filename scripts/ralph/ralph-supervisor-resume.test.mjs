@@ -68,6 +68,18 @@ test('clean committed recovery keeps validated commit evidence', (t) => {
   assert.deepEqual(f.issue, before);
 });
 
+test('Lisa invalidates review without losing an unpublished commit', (t) => {
+  const f = fixture(t, 'reviewing');
+  f.issue.pushedHead = 'previously-published';
+  f.issue.pendingPublishHead = f.head;
+  f.issue.reviewReceipt = { head: f.head, result: { verdict: 'pass', summary: 'Reviewed', findings: [] } };
+  f.edit();
+  supervisor.prepareLisaResume(f.config, f.store, f.before, { run: f.run });
+  assert.equal(f.issue.reviewReceipt, null);
+  assert.equal(f.issue.pendingPublishHead, f.head);
+  assert.equal(f.issue.lastPublishedHead, 'previously-published');
+});
+
 test('iteration-limit after review failure resumes through real recovery with Lisa edits', async (t) => {
   const f = fixture(t);
   let calls = 0;

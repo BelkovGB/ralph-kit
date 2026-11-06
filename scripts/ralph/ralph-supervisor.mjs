@@ -5,6 +5,7 @@ import { publishLiveStatus, reportActivity } from './ralph-live-status.mjs';
 import { assertTrustedControlFilesUnchanged, hostHomeDirectory, validatedLisaPathDirectories } from './ralph-validation-runner.mjs';
 import { run } from './ralph-process-runner.mjs';
 import { analyzeRecovery, committedRecoveryPhases } from './ralph-recovery.mjs';
+import { holdIssuePublication } from './ralph-state-store.mjs';
 import { isAncestorCommit } from './ralph-git.mjs';
 import { beginIssueMetrics, currentIssueMetrics, finishIssueMetrics,
   formatIssueMetrics, startStage } from './ralph-run-metrics.mjs';
@@ -108,7 +109,8 @@ export function prepareLisaResume(config, store, before, dependencies = {}) {
   const patch = {
     phase: 'working-tree', startingCommit: after.head,
     ...(dependencies.acceptedRepair ? { lisaRepairId: before.repairId } : {}),
-    commit: null, recoveryHead: null, pushedHead: null, reviewedCommit: null,
+    commit: null, recoveryHead: null, pushedHead: null, reviewedCommit: null, reviewReceipt: null,
+    ...holdIssuePublication(issue),
     expectedTree: null, commitMessage: null,
     validationExpectedTreeHash: null, validationFailureFingerprint: null,
     ...(issue.phase === 'review-failed' ? { reviewFixAttempts: 0 } : {}),

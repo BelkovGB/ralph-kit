@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 import { controlPlaneExcludePathspec, fail } from './ralph-scope.mjs';
 import { run, runNetwork } from './ralph-process-runner.mjs';
-import { activeStateStore } from './ralph-state-store.mjs';
+import { activeStateStore, holdIssuePublication } from './ralph-state-store.mjs';
 import { clearedFailure } from './ralph-failure-summary.mjs';
 
 /**
@@ -334,7 +334,8 @@ export function reconcileStateAfterCrash(config, stateStore = activeStateStore()
       );
     }
     const commit = validateRecoveredCommit(storedIssue, currentHead);
-    stateStore.updateIssue({ phase: 'committed', commit, recoveryHead: commit, pushedHead: null, ...clearedFailure });
+    stateStore.updateIssue({ phase: 'committed', commit, recoveryHead: commit, pushedHead: null,
+      ...holdIssuePublication(storedIssue, commit), ...clearedFailure });
     console.log(`Issue #${storedIssue.number}: распознан commit ${commit} после crash.`);
     return;
   }
@@ -349,7 +350,8 @@ export function reconcileStateAfterCrash(config, stateStore = activeStateStore()
 
   commitStagedChanges(storedIssue.commitMessage, storedIssue, config.runtime.validationTimeoutMs);
   const commit = validateRecoveredCommit(storedIssue, run('git', ['rev-parse', 'HEAD']).stdout);
-  stateStore.updateIssue({ phase: 'committed', commit, recoveryHead: commit, pushedHead: null, ...clearedFailure });
+  stateStore.updateIssue({ phase: 'committed', commit, recoveryHead: commit, pushedHead: null,
+    ...holdIssuePublication(storedIssue, commit), ...clearedFailure });
   console.log(`Issue #${storedIssue.number}: staging завершён commit ${commit} после crash.`);
 }
 

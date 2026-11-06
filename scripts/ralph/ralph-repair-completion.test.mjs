@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { closeIssueOnce, ensurePullRequestForBranch } from './ralph-github-client.mjs';
 import { runContinuousLoop } from './ralph-loop.mjs';
-import { hasAcceptedLisaIssueRepair } from './ralph-recovery.mjs';
+import { committedValidationFailurePatch, hasAcceptedLisaIssueRepair } from './ralph-recovery.mjs';
 import { actions, context, withFakeGh } from './ralph-test-support.mjs';
 import { run } from './ralph-process-runner.mjs';
 
@@ -84,6 +84,52 @@ test('closed issue without an accepted receipt still rejects dirty work', async 
   await assert.rejects(runContinuousLoop(context({ stateStore: store }), actions({
     openIssues: () => [], issueState: () => 'CLOSED', workingTreeStatus: () => ' M user.txt',
   })), /закрыта.*рабочее дерево/s);
+});
+
+for (const hasNextIssue of [false, true]) {
+  test(`a local rejected commit blocks publication of the phase (next issue: ${hasNextIssue})`, async () => {
+    const issue = { number: 12, title: 'Local issue', body: 'Preserve this commit' };
+    const store = repairStore();
+    store.state.lisaRepair = null;
+    store.state.issue = { ...issue, phase: 'review-failed', commit: 'local-head', recoveryHead: 'local-head' };
+    store.reserveIteration = () => 1;
+    const nextIssue = { number: 13, title: 'Next issue', body: 'Work waits' };
+    const result = await runContinuousLoop(context({ stateStore: store }), actions({
+      openIssues: () => hasNextIssue ? [issue, nextIssue] : [issue],
+      runAgentOnIssue: async (_config, _repo, current) => {
+        assert.equal(current.number, 12);
+        return { completed: false, parked: true, publicationBlocked: true };
+      },
+      createPullRequest: () => { throw new Error('Do not publish this phase'); },
+    }));
+    assert.equal(result.verdict, 'parked');
+    assert.equal(store.issue?.commit, 'local-head');
+  });
+}
+
+test('a closed issue cannot clear an unpublished commit from the queue', async () => {
+  const store = repairStore();
+  store.state.lisaRepair = null;
+  Object.assign(store.issue, { phase: 'review-failed', commit: 'local-head', recoveryHead: 'local-head' });
+  await assert.rejects(runContinuousLoop(context({ stateStore: store }), actions({
+    openIssues: () => [], issueState: () => 'CLOSED',
+    createPullRequest: () => { throw new Error('Do not publish this phase'); },
+  })), /Неопубликованный коммит сохранён/u);
+  assert.equal(store.issue.commit, 'local-head');
+});
+
+test('a failed revalidation retains the unpublished barrier when the issue is closed', async () => {
+  const store = repairStore();
+  store.state.lisaRepair = null;
+  Object.assign(store.issue, { phase: 'reviewing', commit: 'local-head', recoveryHead: 'local-head',
+    reviewReceipt: { head: 'local-head', result: { verdict: 'pass', summary: 'Reviewed', findings: [] } } });
+  Object.assign(store.issue, committedValidationFailurePatch(store.issue, { code: 'RALPH_VALIDATION_FAILED' }));
+  assert.equal(store.issue.commit, null);
+  await assert.rejects(runContinuousLoop(context({ stateStore: store }), actions({
+    openIssues: () => [], issueState: () => 'CLOSED', workingTreeStatus: () => '',
+    createPullRequest: () => { throw new Error('Do not publish this phase'); },
+  })), /Неопубликованный коммит сохранён/u);
+  assert.equal(store.issue.pendingPublishHead, 'local-head');
 });
 
 test('review failure after an accepted repair consumes a development iteration', async () => {
