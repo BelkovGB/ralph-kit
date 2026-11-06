@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
 import {
   existsSync,
   mkdirSync,
@@ -49,6 +48,8 @@ import {
   workingTreePaths,
 } from './ralph-git.mjs';
 import {
+  approveConfiguredIssue,
+  assertTrustedIssue,
   issueBodyWithReviewContext,
   issueBodyWithoutRalphMetadata,
   issueCompletionState,
@@ -74,7 +75,8 @@ import {
   verifyGitHubAuthentication,
   verifyRepositoryWriteAccess,
 } from './ralph-github-client.mjs';
-import { ralphConfigPath, withPatchedRalphConfig } from './ralph-test-support.mjs';
+import { createStateStore } from './ralph-state-store.mjs';
+import { approvedLedgerFixture, ralphConfigPath, withPatchedRalphConfig } from './ralph-test-support.mjs';
 
 test('finding fingerprint is stable for Unicode titles and changes with location', () => {
   const pullRequest = { number: 61 };
@@ -1024,44 +1026,65 @@ test('a top-level field the code does not read is rejected, not ignored', () => 
   );
 });
 
-// Сумму журнала печатают сообщения об остановке, когда эталона нет или он не
-// совпал. Тест считает её от журнала этой копии набора: журнал у каждого проекта
-// свой, а константа здесь повторяла бы значение из `.agents/ralph.config.json`
-// и разошлась бы с ним у любого, кто внёс в журнал запись.
-function currentLedgerHash() {
-  const ledgerPath = loadConfig().approvedIssueSnapshotsPath;
-  return createHash('sha256').update(readFileSync(ledgerPath)).digest('hex');
-}
+test('автоодобрение без журнала сохраняет доверенный снимок между запусками', () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'ralph-approval-state-'));
+  const statePath = path.join(directory, 'state.json');
+  const issue = { number: 7, title: 'Approved', body: 'Original criteria', authorLogin: 'owner' };
+  const noLedger = {
+    autoApproveConfiguredIssues: undefined,
+    approvedIssueSnapshotsFile: undefined,
+    approvedIssueSnapshotsHash: undefined,
+    trustedIssueAuthors: [],
+  };
+  const openStore = (config) => createStateStore(
+    { ...config, branch: 'ralph/phase', milestone: 'Fixture phase' }, '--run', statePath,
+  );
 
-test('the approved ledger checksum is taken from the operator config, not from the code', () => {
+  try {
+    withPatchedRalphConfig(noLedger, (config) => {
+      assert.deepEqual(config.approvedIssueSnapshots, {});
+      assert.equal(config.approvedIssueSnapshotsPath, undefined);
+      const store = openStore(config);
+      assert.throws(
+        () => approveConfiguredIssue(config, { ...issue, authorLogin: 'stranger' }, 'owner/repo', store),
+        /is not trusted/u,
+      );
+      approveConfiguredIssue(config, issue, 'owner/repo', store);
+      assert.equal(assertTrustedIssue(config, issue, 'owner/repo').body, issue.body);
+    });
+    withPatchedRalphConfig(noLedger, (config) => {
+      const store = openStore(config);
+      Object.assign(config.approvedIssueSnapshots, store.approvedIssueSnapshots);
+      const changed = { ...issue, body: 'Unapproved criteria' };
+      approveConfiguredIssue(config, changed, 'owner/repo', store);
+      assert.throws(() => assertTrustedIssue(config, changed, 'owner/repo'), /immutable snapshot/u);
+    });
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('the approved ledger checksum is taken from the operator config, not from the code', (t) => {
   // Эталон лежит в конфиге, потому что обновление набора перезаписывает
   // `scripts/ralph/**` целиком, а конфиг не трогает. Поэтому тест меняет журнал
   // и эталон вместе: сумма из конфига обязана разрешить прогон на содержимом,
   // которого код набора не знает.
-  const ledgerPath = loadConfig().approvedIssueSnapshotsPath;
-  const originalLedger = readFileSync(ledgerPath, 'utf8');
   const approved = { 7: { title: 'Approved', body: 'Approved body.' } };
-  const ledger = `${JSON.stringify(approved, null, 2)}\n`;
-
-  try {
-    writeFileSync(ledgerPath, ledger, 'utf8');
-    const hash = createHash('sha256').update(readFileSync(ledgerPath)).digest('hex');
-    withPatchedRalphConfig({ approvedIssueSnapshotsHash: hash }, (config) => {
-      assert.equal(config.approvedIssueSnapshotsHash, hash);
-      assert.deepEqual(config.approvedIssueSnapshots, approved);
-    });
-  } finally {
-    writeFileSync(ledgerPath, originalLedger, 'utf8');
-  }
+  const ledger = approvedLedgerFixture(t, `${JSON.stringify(approved, null, 2)}\n`);
+  withPatchedRalphConfig(ledger.fields, (config) => {
+    assert.equal(config.approvedIssueSnapshotsHash, ledger.fields.approvedIssueSnapshotsHash);
+    assert.deepEqual(config.approvedIssueSnapshots, approved);
+  });
 });
 
-test('a checksum that does not match the ledger stops the load', () => {
+test('a checksum that does not match the ledger stops the load', (t) => {
   // Журнал здесь целый, а эталон чужой: подделкой может быть и он, поэтому
   // расхождение останавливает прогон с любой стороны.
-  const ledgerHash = currentLedgerHash();
+  const ledger = approvedLedgerFixture(t);
+  const ledgerHash = ledger.fields.approvedIssueSnapshotsHash;
   assert.throws(
     () =>
-      withPatchedRalphConfig({ approvedIssueSnapshotsHash: '0'.repeat(64) }, () => {
+      withPatchedRalphConfig({ ...ledger.fields, approvedIssueSnapshotsHash: '0'.repeat(64) }, () => {
         throw new Error('loadConfig should have failed');
       }),
     (error) => {
@@ -1074,13 +1097,14 @@ test('a checksum that does not match the ledger stops the load', () => {
   );
 });
 
-test('a missing checksum key stops the load and says what to write', () => {
+test('a missing checksum for an explicit ledger stops the load and says what to write', (t) => {
   // Ключа нет — Ralph не сверит журнал ни с чем, и молчаливое умолчание здесь
   // означало бы, что автономная сессия одобряет себе задачи сама.
-  const ledgerHash = currentLedgerHash();
+  const ledger = approvedLedgerFixture(t);
+  const ledgerHash = ledger.fields.approvedIssueSnapshotsHash;
   assert.throws(
     () =>
-      withPatchedRalphConfig({ approvedIssueSnapshotsHash: undefined }, () => {
+      withPatchedRalphConfig({ ...ledger.fields, approvedIssueSnapshotsHash: undefined }, () => {
         throw new Error('loadConfig should have failed');
       }),
     (error) => {
@@ -1091,13 +1115,14 @@ test('a missing checksum key stops the load and says what to write', () => {
   );
 });
 
-test('a checksum in the wrong shape stops the load before it is compared', () => {
+test('a checksum in the wrong shape stops the load before it is compared', (t) => {
   // Обрезанная или набранная заглавными сумма никогда не совпадёт с посчитанной,
   // и «не совпадает» увело бы оператора проверять журнал вместо своей опечатки.
-  for (const value of ['ABC', currentLedgerHash().toUpperCase(), 42]) {
+  const ledger = approvedLedgerFixture(t);
+  for (const value of ['ABC', ledger.fields.approvedIssueSnapshotsHash.toUpperCase(), 42]) {
     assert.throws(
       () =>
-        withPatchedRalphConfig({ approvedIssueSnapshotsHash: value }, () => {
+        withPatchedRalphConfig({ ...ledger.fields, approvedIssueSnapshotsHash: value }, () => {
           throw new Error('loadConfig should have failed');
         }),
       /должно содержать SHA-256: 64 знака шестнадцатеричной записи в нижнем регистре/u,
@@ -1105,12 +1130,13 @@ test('a checksum in the wrong shape stops the load before it is compared', () =>
   }
 });
 
-test('a checksum pasted with spaces around it still matches the ledger', () => {
+test('a checksum pasted with spaces around it still matches the ledger', (t) => {
   // Сумму копируют из сообщения об остановке, и терминал приносит её вместе с
   // переводом строки. Без обрезки человек получил бы претензию к форме значения
   // вместо расхождения, которого нет.
-  const hash = currentLedgerHash();
-  withPatchedRalphConfig({ approvedIssueSnapshotsHash: `  ${hash}\n` }, (config) => {
+  const ledger = approvedLedgerFixture(t);
+  const hash = ledger.fields.approvedIssueSnapshotsHash;
+  withPatchedRalphConfig({ ...ledger.fields, approvedIssueSnapshotsHash: `  ${hash}\n` }, (config) => {
     assert.equal(config.approvedIssueSnapshotsHash, hash);
   });
 });
@@ -1125,7 +1151,7 @@ test('the console marks the fields the config cannot do without', () => {
       if (field.required === true) marked.add(field.path);
     }
   }
-  assert.deepEqual(marked, new Set(['prompt', 'phases', 'approvedIssueSnapshotsHash']));
+  assert.deepEqual(marked, new Set(['prompt', 'phases']));
 });
 
 test('умолчание не убирает артефакты проверок', () => {

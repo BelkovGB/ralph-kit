@@ -477,7 +477,6 @@ function applyLoopDefaults(config) {
   config.rulesFile ??= '.agents/ralph-rules.md';
   config.autoApproveConfiguredIssues ??= true;
   config.trustedIssueAuthors ??= [];
-  config.approvedIssueSnapshotsFile ??= 'scripts/ralph/approved-issues.json';
 }
 
 // Форма эталонной суммы: 64 знака шестнадцатеричной записи в нижнем регистре.
@@ -493,6 +492,13 @@ const approvedIssueSnapshotsHashPattern = /^[0-9a-f]{64}$/u;
  * обновление вместе с журналом проекта.
  */
 function readApprovedIssueSnapshots(config) {
+  if (config.autoApproveConfiguredIssues === true &&
+      config.approvedIssueSnapshotsFile === undefined && config.approvedIssueSnapshotsHash === undefined) {
+    config.approvedIssueSnapshots = {};
+    return;
+  }
+
+  config.approvedIssueSnapshotsFile ??= 'scripts/ralph/approved-issues.json';
   const approvedIssueSnapshotsPath = resolveProjectFile(
     config.approvedIssueSnapshotsFile,
     'approvedIssueSnapshotsFile',
@@ -1011,7 +1017,7 @@ function collectTrustedControlFileHashes(config) {
   const trustedControlFiles = [
     configPath,
     config.rulesPath,
-    config.approvedIssueSnapshotsPath,
+    ...(config.approvedIssueSnapshotsPath ? [config.approvedIssueSnapshotsPath] : []),
     // Модули перечислены поимённо, а не сканированием каталога: сканирование
     // приняло бы в доверенный набор любой подложенный файл. Тест требует, чтобы
     // каждый .mjs из scripts/ralph был в этом списке.
