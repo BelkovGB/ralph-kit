@@ -38,6 +38,24 @@ export function resetPinnedGitHubOrigin() {
   pinnedGitHubRemoteUrl = null;
 }
 
+export function localGitHubRepository(config, dependencies = {}) {
+  const execute = dependencies.run ?? run;
+  const pinned = verifyConfiguredGitHubOrigin(config, dependencies);
+  const githubRemote = /^(?:https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@(?:github\.com(?::22)?|ssh\.github\.com:443)\/)([a-z0-9_.-]+)\/([a-z0-9_.-]+?)(?:\.git)?\/?$/iu;
+  const repositoryOf = (url) => githubRemote.exec(url)?.slice(1).join('/').toLowerCase();
+  const fetchUrl = pinned ?? execute('git', ['remote', 'get-url', 'origin'], { allowFailure: true }).stdout;
+  const repository = repositoryOf(fetchUrl);
+  if (!repository) return null;
+
+  const pushUrls = pinned ?? execute('git', ['remote', 'get-url', '--push', '--all', 'origin'], { allowFailure: true }).stdout;
+  if (pushUrls.split(/\r?\n/u).some((url) => repositoryOf(url) !== repository)) {
+    throw Object.assign(new Error('Адрес отправки origin ведёт в другой репозиторий GitHub.'), {
+      code: 'RALPH_RECOVERY_BLOCKED',
+    });
+  }
+  return repository;
+}
+
 export function verifyConfiguredGitHubOrigin(config, dependencies = {}) {
   if (config.githubAccount == null) return null;
   const execute = dependencies.run ?? run;
@@ -364,6 +382,7 @@ export function verifyRepository(config, requireClean) {
 
   run('git', ['check-ref-format', '--branch', config.branch]);
   let currentBranch = run('git', ['branch', '--show-current']).stdout;
+  let baseFetched = false;
   const changes = run('git', ['status', '--porcelain']).stdout;
   const currentHead = run('git', ['rev-parse', 'HEAD']).stdout;
   const recoveryAllowed = activeStateStore()?.allowsDirtyRecovery(currentBranch, currentHead);
@@ -417,6 +436,7 @@ export function verifyRepository(config, requireClean) {
         runNetwork('git', ['fetch', ...fetchRemoteBranchArguments(config, config.baseBranch)], {
           echoOutput: true,
         });
+        baseFetched = true;
         run('git', ['show-ref', '--verify', '--quiet', `refs/remotes/origin/${config.baseBranch}`]);
         run('git', ['switch', '-c', config.branch, `origin/${config.baseBranch}`], {
           inherit: true,
@@ -430,7 +450,7 @@ export function verifyRepository(config, requireClean) {
     }
   }
 
-  return { currentBranch, clean: changes === '' };
+  return { currentBranch, clean: changes === '', ...(baseFetched ? { baseFetched } : {}) };
 }
 
 /**
@@ -454,9 +474,11 @@ export function syncPhaseBranchWithBase(config, dependencies = {}) {
   const executeNetwork = dependencies.runNetwork ?? runNetwork;
   const contains = dependencies.isAncestorCommit ?? isAncestorCommit;
 
-  executeNetwork('git', ['fetch', ...fetchRemoteBranchArguments(config, config.baseBranch)], {
-    echoOutput: true,
-  });
+  if (dependencies.fetch !== false) {
+    executeNetwork('git', ['fetch', ...fetchRemoteBranchArguments(config, config.baseBranch)], {
+      echoOutput: true,
+    });
+  }
   const baseRef = `origin/${config.baseBranch}`;
   execute('git', ['show-ref', '--verify', '--quiet', `refs/remotes/${baseRef}`]);
 
@@ -495,13 +517,17 @@ export function syncPhaseBranchWithBase(config, dependencies = {}) {
   return true;
 }
 
-export function verifyBaseHistory(config) {
-  runNetwork('git', ['fetch', ...fetchRemoteBranchArguments(config, config.baseBranch)], {
-    echoOutput: true,
-  });
+export function verifyBaseHistory(config, dependencies = {}) {
+  const execute = dependencies.run ?? run;
+  if (dependencies.fetch !== false) {
+    const executeNetwork = dependencies.runNetwork ?? runNetwork;
+    executeNetwork('git', ['fetch', ...fetchRemoteBranchArguments(config, config.baseBranch)], {
+      echoOutput: true,
+    });
+  }
   const baseRef = `origin/${config.baseBranch}`;
-  run('git', ['show-ref', '--verify', '--quiet', `refs/remotes/${baseRef}`]);
-  const mergeBase = run('git', ['merge-base', 'HEAD', baseRef], {
+  execute('git', ['show-ref', '--verify', '--quiet', `refs/remotes/${baseRef}`]);
+  const mergeBase = execute('git', ['merge-base', 'HEAD', baseRef], {
     allowFailure: true,
   });
   if (mergeBase.status !== 0 || mergeBase.stdout === '') {

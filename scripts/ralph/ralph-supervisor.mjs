@@ -110,6 +110,7 @@ export function prepareLisaResume(config, store, before, dependencies = {}) {
     phase: 'working-tree', startingCommit: after.head,
     ...(dependencies.acceptedRepair ? { lisaRepairId: before.repairId } : {}),
     commit: null, recoveryHead: null, pushedHead: null, reviewedCommit: null, reviewReceipt: null,
+    publicationCheckpoint: null,
     ...holdIssuePublication(issue),
     expectedTree: null, commitMessage: null,
     validationExpectedTreeHash: null, validationFailureFingerprint: null,

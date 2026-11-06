@@ -9,10 +9,57 @@ import {
   ensurePullRequestForBranch,
   existingPullRequest,
   refreshIssue,
+  verifyMilestones,
   verifyPullRequestTarget,
 } from './ralph-github-client.mjs';
+import { localGitHubRepository, syncPhaseBranchWithBase, verifyBaseHistory } from './ralph-git.mjs';
 import { run } from './ralph-process-runner.mjs';
 import { withFakeGh } from './ralph-test-support.mjs';
+
+test('startup resolves all phase milestones from the same paginated snapshot', () => {
+  const calls = [];
+  const result = verifyMilestones('owner/repository', ['First', 'Last'], {
+    maxPages: 3,
+    runNetwork: (command, args) => {
+      assert.equal(command, 'gh');
+      assert.ok(args.includes('state=all'));
+      calls.push(args.at(-1));
+      return { stdout: JSON.stringify(calls.length === 1
+        ? Array.from({ length: 100 }, (_, number) => ({ number, title: number === 0 ? 'First' : `Other ${number}` }))
+        : [{ number: 100, title: 'Last' }]) };
+    },
+  });
+  assert.deepEqual(result.map(({ number }) => number), [0, 100]);
+  assert.deepEqual(calls, ['page=1', 'page=2']);
+});
+
+test('local GitHub identity checks every push URL without the network', () => {
+  const config = { githubAccount: null };
+  const dependencies = {
+    run: (_command, args) => ({ stdout: args.includes('--push')
+      ? 'https://github.com/owner/repo.git\ngit@github.com:owner/other.git'
+      : 'git@github.com:Owner/Repo.git' }),
+  };
+  assert.throws(() => localGitHubRepository(config, dependencies), { code: 'RALPH_RECOVERY_BLOCKED' });
+  assert.equal(localGitHubRepository(config, {
+    run: () => ({ stdout: 'ssh://git@ssh.github.com:443/Owner/Repo.git' }),
+  }), 'owner/repo');
+});
+
+test('base history reuses the startup fetch and still refreshes before publication', () => {
+  const fetches = [];
+  const config = { baseBranch: 'main' };
+  const dependencies = {
+    run: (_command, args) => ({ status: 0, stdout: args[0] === 'merge-base' ? 'base-sha' : '' }),
+    runNetwork: (_command, args) => fetches.push(args),
+    isAncestorCommit: () => true,
+  };
+  assert.equal(syncPhaseBranchWithBase(config, dependencies), false);
+  assert.equal(verifyBaseHistory(config, { ...dependencies, fetch: false }), 'base-sha');
+  assert.equal(fetches.length, 1);
+  assert.equal(verifyBaseHistory(config, dependencies), 'base-sha');
+  assert.equal(fetches.length, 2);
+});
 
 /**
  * Механика PR и milestone, переехавшая из цикла: до переноса эти функции были

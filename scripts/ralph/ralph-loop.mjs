@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -7,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import {
   acquireRunLock,
   initializePersistentLog,
+  isTransientFailure,
   readJsonFile,
   resolveRalphRuntimeDirectory,
 } from './ralph-runtime.mjs';
@@ -61,6 +63,7 @@ import {
 
 import {
   assertTrustedControlFilesUnchanged,
+  hostValidationEnvironment,
   hostWorkingTreeHash,
   runConfiguredValidation,
   runPreflight,
@@ -74,6 +77,7 @@ import {
   isAncestorCommit,
   issueChangeInventory,
   linkedCommitForIssue,
+  localGitHubRepository,
   pushBranchAndVerify,
   reconcileStateAfterCrash,
   syncPhaseBranchWithBase,
@@ -91,12 +95,14 @@ import {
   issueState,
   openIssues,
   postIssueCommentOnce,
+  publicIssueIdentity,
   pullRequestDetails,
   refreshIssue,
   reopenIssueWithComment,
   repositoryName,
+  repositoryPermissions,
   verifyGitHubAuthentication,
-  verifyMilestone,
+  verifyMilestones,
   verifyPullRequestTarget,
   verifyRepositoryWriteAccess,
 } from './ralph-github-client.mjs';
@@ -119,7 +125,7 @@ import { assertProcessReport, resolveIssueProcess } from './ralph-process-packs.
 
 import {
   analyzeRecovery, applyRecoveryPlan, committedRecoveryPhases, committedValidationFailurePatch,
-  hasAcceptedLisaIssueRepair, prepareRecovery, savedIssueReview,
+  hasAcceptedLisaIssueRepair, prepareRecovery, resumeAcceptedIssue, savedIssueReview,
 } from './ralph-recovery.mjs';
 
 import { KIT_VERSION } from './ralph-version.mjs';
@@ -266,9 +272,7 @@ function verifyMergedBase(config, previousHead) {
 
 function verifyTools(config) {
   run('git', ['--version']);
-  run('gh', ['--version']);
   run(agentBinary(config), ['--version']);
-  verifyGitHubAuthentication(config);
 }
 
 // -----------------------------------------------------------------------------
@@ -422,14 +426,34 @@ function assertCommittedProcessReport(issue, commit, reportBase = `${commit}^`) 
 }
 
 function assertIssueReadyForPublication(config, repository, issue, expectedHead, alreadyPublished = false) {
+  if (issue.acceptedRepository && localGitHubRepository(config) !== issue.acceptedRepository) {
+    throw Object.assign(new Error(`Issue #${issue.number}: origin изменился. Локальная работа сохранена.`), {
+      code: 'RALPH_RECOVERY_BLOCKED',
+    });
+  }
+  const githubHost = process.env.GH_HOST?.toLowerCase();
+  if (issue.acceptedRepository && config.githubAccount == null && githubHost && githubHost !== 'github.com') {
+    throw Object.assign(new Error(`Issue #${issue.number}: GH_HOST не соответствует публичному GitHub.`), {
+      code: 'RALPH_RECOVERY_BLOCKED',
+    });
+  }
   const latest = refreshIssue(repository, issue.number);
+  if (issue.acceptedRepository) {
+    const target = publicIssueIdentity(latest.url);
+    if (target?.repository !== issue.acceptedRepository || target.number !== issue.number || latest.number !== issue.number) {
+      throw Object.assign(new Error(`Issue #${issue.number}: ответ GitHub относится к другой задаче. Локальная работа сохранена.`), {
+        code: 'RALPH_UNTRUSTED_ISSUE',
+      });
+    }
+  }
   const state = activeStateStore()?.state;
   const publishedHead = state?.issue?.pushedHead ?? state?.issue?.lastPublishedHead;
   const closedRepair = latest.state === 'CLOSED' && publishedHead && hasAcceptedLisaIssueRepair(state, issue) &&
     isAncestorCommit(publishedHead, expectedHead);
   const closingPublishedIssue = latest.state === 'CLOSED' && (alreadyPublished || closedRepair);
-  if ((latest.state !== 'OPEN' && !closingPublishedIssue) ||
-      (issue.milestone != null && latest.milestone !== issue.milestone)) {
+  const changedMilestone = issue.milestone != null ? latest.milestone !== issue.milestone
+    : Boolean(issue.expectedMilestone && latest.milestoneTitle !== issue.expectedMilestone);
+  if ((latest.state !== 'OPEN' && !closingPublishedIssue) || changedMilestone) {
     throw Object.assign(new Error(
       `Issue #${issue.number}: состояние или milestone изменились перед публикацией. Локальная работа сохранена.`,
     ), { code: 'RALPH_UNTRUSTED_ISSUE' });
@@ -437,7 +461,38 @@ function assertIssueReadyForPublication(config, repository, issue, expectedHead,
   assertTrustedIssue(config, latest, repository);
 }
 
-async function reviewAndCloseCommittedIssue(config, repository, issue, commit, expectedHead, reportBase) {
+function publicationUnavailable(error) {
+  if (isTransientFailure(error) || ['RALPH_GITHUB_ACCOUNT', 'RALPH_COMMAND_IDLE_TIMEOUT'].includes(error.code)) return true;
+  return error.code === 'RALPH_COMMAND_FAILED' &&
+    /\bdial (?:tcp|udp).*?\b(?:lookup|connectex)|\b(?:no such host|network is unreachable|no route to host|connection refused|couldn't connect to server)\b/iu
+      .test(`${error.message}\n${error.stderr ?? ''}`);
+}
+
+function publicationValidationFingerprint(config, stateStore, base) {
+  if (!config.trustedControlFileHashes?.size || !/^[a-f0-9]{40}$/u.test(base ?? '')) return null;
+  const environment = hostValidationEnvironment(config, process.env, stateStore?.validationPathDirectories ?? []);
+  return createHash('sha256').update(JSON.stringify({
+    base, issue: stateStore?.issue?.number, branch: config.branch,
+    controlPlane: [...config.trustedControlFileHashes].sort(),
+    preflight: config.preflightScripts, validation: config.validationProfiles ?? config.validationScripts,
+    browser: config.browserValidationScripts, artifacts: config.validationArtifactPaths,
+    environment: Object.entries(environment).sort(),
+  })).digest('hex');
+}
+
+function pendingIssuePublication(config, stateStore, head = stateStore?.issue?.recoveryHead) {
+  const issue = stateStore?.issue;
+  const checkpoint = issue?.publicationCheckpoint;
+  if (!config.review?.enabled || !issue?.commit || !committedRecoveryPhases.includes(issue.phase) ||
+      !head || checkpoint?.head !== head || issue.reviewReceipt?.head !== head ||
+      issue.reviewReceipt.result?.verdict !== 'pass') return null;
+  const pending = checkpoint.step === 'push' ? issue.pendingPublishHead === head && issue.pushedHead !== head
+    : checkpoint.step === 'close' && issue.phase === 'closing' && issue.pushedHead === head;
+  if (!pending || typeof checkpoint.fingerprint !== 'string') return null;
+  return checkpoint.fingerprint === publicationValidationFingerprint(config, stateStore, checkpoint.base) ? checkpoint : null;
+}
+
+async function reviewAndCloseCommittedIssue(config, repository, issue, commit, expectedHead, { reportBase, validationBase } = {}) {
   assertCommittedProcessReport(issue, commit, reportBase);
   assertCleanTree(`Issue #${issue.number}: перед ревью или публикацией требуется чистое рабочее дерево.`);
   const store = activeStateStore();
@@ -477,6 +532,7 @@ async function reviewAndCloseCommittedIssue(config, repository, issue, commit, e
       commit,
       reviewedCommit: expectedHead,
       reviewReceipt: receipt,
+      publicationCheckpoint: null,
       ...pendingPublication,
       expectedTree: null,
       commitMessage: null,
@@ -486,10 +542,15 @@ async function reviewAndCloseCommittedIssue(config, repository, issue, commit, e
       ...clearedFailure,
     });
     observeIssue('review-fail', { findings: review.findings.length, commit, pushedHead: store?.issue?.pushedHead });
-    assertIssueReadyForPublication(config, repository, issue, expectedHead);
-    recordDeferredFindingsSafely(config, repository, review, scope);
-    updateIssueReviewContext(repository, issue, review);
-    reopenIssueWithComment(repository, issue, formatReviewComment(review));
+    try {
+      assertIssueReadyForPublication(config, repository, issue, expectedHead);
+      recordDeferredFindingsSafely(config, repository, review, scope);
+      updateIssueReviewContext(repository, issue, review);
+      reopenIssueWithComment(repository, issue, formatReviewComment(review));
+    } catch (error) {
+      if (!publicationUnavailable(error)) throw error;
+      console.error(`Issue #${issue.number}: замечания сохранены локально, GitHub недоступен. ${error.message}`);
+    }
 
     if (reviewFixAttempts >= config.maxReviewFixAttempts) {
       console.error(
@@ -506,13 +567,21 @@ async function reviewAndCloseCommittedIssue(config, repository, issue, commit, e
 
   // Вердикт относится к проверенному HEAD независимо от состояния публикации.
   const resumePhase = committedRecoveryPhases.includes(store?.issue?.phase) ? {} : { phase: 'committed' };
+  const fingerprint = receipt ? publicationValidationFingerprint(config, store, validationBase) : null;
+  const checkpoint = fingerprint ? {
+    head: expectedHead, base: validationBase, fingerprint, step: alreadyPublished ? 'close' : 'push',
+  } : null;
+  if (checkpoint) assertTrustedControlFilesUnchanged(config);
   store?.updateIssue({ ...resumePhase, commit, recoveryHead: expectedHead,
-    reviewReceipt: receipt, ...pendingPublication, ...clearedFailure });
+    reviewReceipt: receipt, publicationCheckpoint: checkpoint, ...pendingPublication, ...clearedFailure });
   if (!alreadyPublished) {
-    assertIssueReadyForPublication(config, repository, issue, expectedHead);
     assertCleanTree(`Issue #${issue.number}: перед push требуется чистое рабочее дерево.`);
-    await observedRepairStep('push', () => pushBranchAndVerify(config, { expectedHead }));
-    store?.updateIssue({ phase: 'closing', pushedHead: expectedHead, pendingPublishHead: null });
+    await observedRepairStep('push', () => {
+      assertIssueReadyForPublication(config, repository, issue, expectedHead);
+      return pushBranchAndVerify(config, { expectedHead });
+    });
+    store?.updateIssue({ phase: 'closing', pushedHead: expectedHead, pendingPublishHead: null,
+      publicationCheckpoint: checkpoint && { ...checkpoint, step: 'close' } });
   }
   await observedRepairStep('close', () => {
     assertIssueReadyForPublication(config, repository, issue, expectedHead, true);
@@ -582,11 +651,6 @@ async function commitAndCompleteIssue(config, repository, issue, startingCommit,
   if (currentCommit !== startingCommit) {
     violations.push('Агент самостоятельно создал commit');
   }
-  const currentIssueState = issueState(repository, issue.number);
-  if (currentIssueState !== 'OPEN' && !(currentIssueState === 'CLOSED' &&
-      hasAcceptedLisaIssueRepair(activeStateStore()?.state, issue))) {
-    violations.push('Агент самостоятельно изменил состояние issue');
-  }
   if (violations.length > 0) {
     fail(`Issue #${issue.number}: ${violations.join('; ')}. Цикл остановлен.`);
   }
@@ -653,7 +717,7 @@ async function commitAndCompleteIssue(config, repository, issue, startingCommit,
       changes,
       `Issue #${issue.number}: проверки already-fixed решения изменили рабочее дерево.`,
     );
-    return reviewAndCloseCommittedIssue(config, repository, issue, commit, currentCommit);
+    return reviewAndCloseCommittedIssue(config, repository, issue, commit, currentCommit, { validationBase: parent.stdout });
   }
 
   activeStateStore()?.updateIssue({ phase: 'validating' });
@@ -761,7 +825,7 @@ async function commitAndCompleteIssue(config, repository, issue, startingCommit,
     ...holdIssuePublication(store?.issue, commit),
     ...clearedFailure,
   });
-  return reviewAndCloseCommittedIssue(config, repository, issue, commit, commit);
+  return reviewAndCloseCommittedIssue(config, repository, issue, commit, commit, { validationBase: startingCommit });
 }
 
 // -----------------------------------------------------------------------------
@@ -823,22 +887,30 @@ export async function runAgentOnIssue(config, repository, issue, rules) {
       `Issue #${issue.number}: продолжаем pipeline с сохранённого commit ${commit} ` +
         `(phase=${storedIssue.phase}).`,
     );
-    const resumePhase = storedIssue.phase;
-    try {
-      measuredValidation(() => runConfiguredValidation(config, {
-        scope: 'issue', baseCommit: storedIssue.startingCommit,
-        issueNumber: issue.number,
-        skipPreflight: Boolean(config.validationProfiles), retryConnectionFailure: true,
-      }));
-    } catch (error) {
-      activeStateStore().updateIssue({
-        phase: resumePhase,
-        ...committedValidationFailurePatch(storedIssue, error),
-        ...recordedFailure(error),
-      });
-      throw error;
+    const publication = pendingIssuePublication(config, activeStateStore(), expectedHead);
+    if (publication) {
+      assertTrustedControlFilesUnchanged(config);
+      console.log(`Issue #${issue.number}: проверки и PASS подтверждены для ${expectedHead}. Продолжаем ${publication.step}.`);
+    } else {
+      const resumePhase = storedIssue.phase;
+      try {
+        measuredValidation(() => runConfiguredValidation(config, {
+          scope: 'issue', baseCommit: base,
+          issueNumber: issue.number,
+          skipPreflight: Boolean(config.validationProfiles), retryConnectionFailure: true,
+        }));
+      } catch (error) {
+        activeStateStore().updateIssue({
+          phase: resumePhase, publicationCheckpoint: null,
+          ...committedValidationFailurePatch(storedIssue, error),
+          ...recordedFailure(error),
+        });
+        throw error;
+      }
     }
-    return reviewAndCloseCommittedIssue(config, repository, issue, commit, expectedHead, reportBase);
+    return reviewAndCloseCommittedIssue(config, repository, issue, commit, expectedHead, {
+      reportBase, validationBase: publication?.base ?? base,
+    });
   }
 
   if (storedIssue?.phase === 'validation-diagnostic') {
@@ -1019,14 +1091,20 @@ export function printCheck(
   repositoryState,
   issues,
   budget = iterationBudget(config, null),
+  { queueError, publicationStatus, baseError } = {},
 ) {
+  const queueAvailable = issues !== null;
+  issues ??= [];
   console.log('Диагностика конфигурации Ralph Loop завершена.');
   console.log(`Состояние запуска: active=${config.active === true}`);
   console.log('Агент и команды проверок проекта не запускались; готовность фазы требует их отдельной проверки.');
   console.log(`Версия набора: ${KIT_VERSION}`);
   console.log(`Фаза: ${(config.phaseIndex ?? 0) + 1}/${config.phaseCount ?? 1}`);
-  console.log(`Репозиторий: ${repository}`);
-  console.log(`Milestone: ${milestone.title} (${issues.length} открытых issues)`);
+  console.log(`Репозиторий: ${repository ?? 'не определён'}`);
+  console.log(`Milestone: ${milestone.title}${queueAvailable ? ` (${issues.length} открытых issues)` : ''}`);
+  if (queueError) console.log(`Очередь GitHub недоступна: ${queueError}`);
+  if (publicationStatus) console.log(`Публикация: ${publicationStatus}`);
+  if (baseError) console.log(`История локальной базы не проверена: ${baseError}`);
   console.log(`Ветка: ${repositoryState.currentBranch}`);
   console.log(`Рабочее дерево: ${repositoryState.clean ? 'чистое' : 'есть изменения'}`);
   console.log(
@@ -1074,7 +1152,7 @@ export function printCheck(
   );
   if (issues[0]) {
     console.log(`Следующая issue: #${issues[0].number} ${issues[0].title}`);
-  } else {
+  } else if (queueAvailable) {
     console.log('Открытых issues нет; режим --run попытается создать PR.');
   }
   // Журнал внутри scripts/ralph легко заменить образцом при обновлении.
@@ -1148,9 +1226,11 @@ function issueMetricsContext(config, issue, iteration) {
 }
 
 export async function runContinuousLoop(context, actions) {
-  const { config, repository, milestone, rules } = context;
+  const { config, rules } = context;
+  let { repository, milestone, localRepository } = context;
   publishPhaseConfig(config);
   const stateStore = context.stateStore ?? activeStateStore();
+  let deferredPreflight = context.deferredPreflight;
   let iteration = stateStore?.iterationsUsed ?? 0;
   const pendingIssues = new Map();
   const completedIssueNumbers = new Set();
@@ -1166,10 +1246,23 @@ export async function runContinuousLoop(context, actions) {
   });
 
   while (true) {
-    reportActivity('queue', 'Обновление очереди задач в GitHub');
-    const listedIssues = actions
-      .openIssues(repository, milestone)
-      .filter((issue) => !isRalphInfrastructureIssue(issue));
+    if (deferredPreflight && !pendingIssuePublication(config, stateStore)) {
+      actions.runPreflight(config);
+      deferredPreflight = false;
+    }
+    const acceptedIssue = actions.resumeAcceptedIssue?.(config, stateStore);
+    if (acceptedIssue) {
+      if (repository && repository.toLowerCase() !== acceptedIssue.acceptedRepository) {
+        fail(`Issue #${acceptedIssue.number}: локальный origin изменился после выбора задачи.`);
+      }
+      repository = acceptedIssue.acceptedRepository;
+      reportActivity('queue', `Продолжение принятой issue #${acceptedIssue.number} из локального снимка`);
+    } else {
+      if (context.resolveQueue) ({ repository, milestone, localRepository } = context.resolveQueue(repository));
+      reportActivity('queue', 'Обновление очереди задач в GitHub');
+    }
+    const listedIssues = acceptedIssue ? [acceptedIssue] : actions
+      .openIssues(repository, milestone).filter((issue) => !isRalphInfrastructureIssue(issue));
     // GitHub может кратко вернуть пустую страницу сразу после закрытия issue.
     // Держим уже увиденные открытые задачи в локальной очереди, но прямым GET
     // подтверждаем состояние каждой пропавшей задачи.
@@ -1183,7 +1276,7 @@ export async function runContinuousLoop(context, actions) {
       }
     }
     const listedIssueNumbers = new Set(listedIssues.map((issue) => issue.number));
-    for (const [issueNumber, pendingIssue] of pendingIssues) {
+    for (const [issueNumber, pendingIssue] of acceptedIssue ? [] : pendingIssues) {
       if (listedIssueNumbers.has(issueNumber)) continue;
       // Пропасть из списка фазы задача может тремя способами, и все три —
       // решение оператора снять её с цикла: её закрыли, вынули из milestone или
@@ -1217,7 +1310,7 @@ export async function runContinuousLoop(context, actions) {
     const issuesByNumber = new Map();
     // Сначала добавляем ответ GitHub, затем локальную очередь: локальная копия
     // содержит самый свежий body после review и должна победить устаревший REST-ответ.
-    for (const issue of [...listedIssues, ...pendingIssues.values()]) {
+    for (const issue of acceptedIssue ? listedIssues : [...listedIssues, ...pendingIssues.values()]) {
       if (parkedIssueNumbers.has(issue.number)) continue;
       if (completedIssueNumbers.has(issue.number)) {
         // REST-список может кратко вернуть уже закрытую issue. Прямой GET
@@ -1393,8 +1486,8 @@ export async function runContinuousLoop(context, actions) {
       : issues[0];
     if (config.stopAfterFirstIssue) singleIssueNumber ??= currentIssue.number;
     reportActivity('issue-preparation', `Подготовка задачи #${currentIssue.number}`);
-    const refreshedIssue = actions.refreshIssue(repository, currentIssue.number, currentIssue);
-    const leftMilestone = refreshedIssue.milestone !== undefined && refreshedIssue.milestone !== milestone.number;
+    const refreshedIssue = acceptedIssue ?? actions.refreshIssue(repository, currentIssue.number, currentIssue);
+    const leftMilestone = !acceptedIssue && refreshedIssue.milestone !== undefined && refreshedIssue.milestone !== milestone.number;
     if (leftMilestone ||
         (refreshedIssue.state !== 'OPEN' && !hasAcceptedLisaIssueRepair(stateStore?.state, currentIssue))) {
       if (stateStore?.issue?.number === currentIssue.number) {
@@ -1417,8 +1510,9 @@ export async function runContinuousLoop(context, actions) {
       completedIssueNumbers.add(currentIssue.number);
       continue;
     }
-    approveConfiguredIssue(config, refreshedIssue, repository, stateStore);
+    if (!acceptedIssue) approveConfiguredIssue(config, refreshedIssue, repository, stateStore);
     currentIssue = refreshedIssue;
+    if (localRepository) currentIssue.acceptedRepository = localRepository;
     const storedPhase =
       stateStore?.issue?.number === currentIssue.number ? stateStore.issue.phase : null;
     const linkedCommit = storedPhase ? null : actions.linkedCommitForIssue?.(currentIssue);
@@ -1459,6 +1553,18 @@ export async function runContinuousLoop(context, actions) {
       reportActivity('issue', `Работа над задачей #${currentIssue.number}`);
       result = await actions.runAgentOnIssue(config, repository, currentIssue, rules);
     } catch (error) {
+      if (['push', 'close'].includes(error.ralphFailureStep) &&
+          publicationUnavailable(error) &&
+          !hasAcceptedLisaIssueRepair(stateStore?.state, currentIssue)) {
+        const head = stateStore?.issue?.recoveryHead;
+        const step = error.ralphFailureStep;
+        const reason = `Issue #${currentIssue.number}: коммит ${head} сохранён локально. ` +
+          `Ожидается ${step}: ${error.message}`;
+        stateStore?.updateIssue(recordedFailure(error));
+        console.error(reason);
+        actions.reportIssueMetrics?.({ outcome: 'publication-pending', reason });
+        return { mode: 'run', verdict: 'publication-pending', issueNumber: currentIssue.number, head, step };
+      }
       actions.reportIssueMetrics?.({
         outcome: error.code ?? 'aborted',
         reason: error.message?.slice(0, 200) ?? null,
@@ -1515,15 +1621,27 @@ export async function executeMode(context, actions) {
   const { mode: selectedMode, config, repository, milestone, repositoryState } = context;
 
   if (selectedMode === '--check') {
-    const issues = actions.openIssues(repository, milestone);
+    let queueError = context.queueError;
+    let issues = null;
+    if (!queueError) {
+      try {
+        issues = actions.openIssues(repository, milestone);
+      } catch (error) {
+        queueError = error.message;
+      }
+    }
     const budget = iterationBudget(config, context.stateStore);
-    actions.printCheck(config, repository, milestone, repositoryState, issues, budget);
-    return { mode: 'check', issues: issues.length, iterationBudget: budget };
+    actions.printCheck(config, repository, milestone, repositoryState, issues, budget, {
+      queueError, publicationStatus: context.publicationStatus, baseError: context.baseError,
+    });
+    return { mode: 'check', issues: issues?.length ?? null, iterationBudget: budget };
   }
 
-  if (!context.preflightCompleted) actions.runPreflight(config);
+  const deferredPreflight = !context.preflightCompleted && repositoryState?.clean &&
+    Boolean(pendingIssuePublication(config, context.stateStore ?? activeStateStore()));
+  if (!context.preflightCompleted && !deferredPreflight) actions.runPreflight(config);
 
-  return runContinuousLoop(context, actions);
+  return runContinuousLoop({ ...context, deferredPreflight }, actions);
 }
 
 function defaultActions() {
@@ -1536,6 +1654,7 @@ function defaultActions() {
     printCheck,
     runPreflight,
     runAgentOnIssue,
+    resumeAcceptedIssue,
     createPullRequest,
     runMilestoneReview,
     createOrReopenReviewIssues,
@@ -1674,6 +1793,13 @@ async function main(lifecycle = null) {
     setActiveStateStore(createStateStore(firstPhaseConfig, mode === '--accept-manual-commit' ? '--check' : mode));
     Object.assign(config.approvedIssueSnapshots, activeStateStore().approvedIssueSnapshots);
     reportActivity('startup', 'Проверка инструментов и настроек запуска');
+    if (mode === '--accept-manual-commit') {
+      const { accepted } = prepareRecovery(firstPhaseConfig, activeStateStore(), mode, {
+        hostWorkingTreeHash, manualCommit: process.argv[3] ?? '',
+      });
+      console.log('Ручной коммит принят. Следующий --run заново выполнит проверки и ревью; задача ещё не завершена.');
+      return { mode, accepted };
+    }
     const rules = loadRalphRules(config);
     verifyTools(config);
     verifyAgentSkills();
@@ -1684,32 +1810,58 @@ async function main(lifecycle = null) {
       run('git', ['check-ref-format', '--branch', phase.branch]);
       run('git', ['check-ref-format', '--branch', phase.baseBranch]);
     }
-    const repository = repositoryName();
-    reportActivity('startup', 'Проверка доступа к GitHub и фаз проекта');
-    verifyRepositoryWriteAccess(repository);
-    const milestones = config.phases.map((phase) => verifyMilestone(repository, phase.milestone));
+    let githubScope;
+    const resolveQueue = (phaseConfig, expectedRepository) => {
+      if (!githubScope) {
+        reportActivity('startup', 'Проверка доступа к GitHub и фаз проекта');
+        run('gh', ['--version']);
+        verifyGitHubAuthentication(config);
+        const repository = repositoryName();
+        let publicationStatus;
+        let localRepository;
+        if (mode === '--run') {
+          localRepository = localGitHubRepository(phaseConfig);
+          if (localRepository && localRepository !== repository.toLowerCase()) {
+            fail('Локальный origin не соответствует репозиторию GitHub CLI.');
+          }
+          verifyRepositoryWriteAccess(repository);
+        } else {
+          try {
+            publicationStatus = repositoryPermissions(repository)?.push === true ? 'право записи есть' : 'нет права записи';
+          } catch (error) {
+            publicationStatus = `право записи не подтверждено (${error.message})`;
+          }
+        }
+        const milestones = verifyMilestones(repository, config.phases.map((phase) => phase.milestone));
+        githubScope = { repository, milestones, publicationStatus, localRepository };
+      }
+      const { repository, milestones, publicationStatus, localRepository } = githubScope;
+      if (expectedRepository && repository.toLowerCase() !== expectedRepository.toLowerCase()) {
+        fail('Репозиторий очереди GitHub не совпадает с репозиторием принятой задачи.');
+      }
+      return { repository, milestone: milestones[phaseConfig.phaseIndex], publicationStatus, localRepository };
+    };
     const actions = defaultActions();
     const runPhase = async (phaseConfig) => {
       publishPhaseConfig(phaseConfig);
       reportActivity('phase-preparation', `Подготовка ветки фазы: ${phaseConfig.branch}`);
-      const recoveryOptions = {
-        hostWorkingTreeHash,
-        ...(mode === '--accept-manual-commit' ? { manualCommit: process.argv[3] ?? '' } : {}),
-      };
-      const { repositoryState, accepted } = prepareRecovery(
-        phaseConfig, activeStateStore(), mode, recoveryOptions,
-      );
-      if (mode === '--accept-manual-commit') {
-        console.log('Ручной коммит принят. Следующий --run заново выполнит проверки и ревью; задача ещё не завершена.');
-        return { mode, accepted };
+      const { repositoryState } = prepareRecovery(phaseConfig, activeStateStore(), mode, { hostWorkingTreeHash });
+      const accepted = mode === '--run' ? resumeAcceptedIssue(phaseConfig, activeStateStore()) : null;
+      let online;
+      let queueError;
+      let baseError;
+      if (mode === '--check') {
+        try { verifyBaseHistory(phaseConfig, { fetch: false }); } catch (error) { baseError = error.message; }
+        try { online = resolveQueue(phaseConfig); } catch (error) { queueError = error.message; }
+      } else if (!accepted) {
+        online = resolveQueue(phaseConfig);
       }
       // Слияние базы идёт до слепка control plane и после переключения ветки:
       // база может принести правки `.agents/**` или `scripts/ralph/**`, и
       // слепок, снятый до неё, объявил бы их подделкой доверенных файлов.
       const previousHead = run('git', ['rev-parse', 'HEAD']).stdout;
-      const mergedBase =
-        mode === '--run' && !activeStateStore()?.issue &&
-        phaseConfig.syncBaseBranch && syncPhaseBranchWithBase(phaseConfig);
+      const syncBase = mode === '--run' && !activeStateStore()?.issue && phaseConfig.syncBaseBranch;
+      const mergedBase = syncBase && syncPhaseBranchWithBase(phaseConfig, { fetch: !repositoryState.baseFetched });
       // Слепок пересчитывается сразу после переключения ветки и до сессии
       // агента. `verifyRepository` — единственное место, где рабочее дерево
       // меняет сам цикл, а `.claude/**` и `AGENTS.md` есть не на каждой ветке:
@@ -1731,14 +1883,18 @@ async function main(lifecycle = null) {
       if (mode === '--run') {
         reconcileStateAfterCrash(phaseConfig, activeStateStore());
       }
-      verifyBaseHistory(phaseConfig);
-      const milestone = milestones[phaseConfig.phaseIndex];
+      if (mode === '--run' && !accepted) verifyBaseHistory(phaseConfig, { fetch: !syncBase && !repositoryState.baseFetched });
       return executeMode(
         {
           mode,
           config: phaseConfig,
-          repository,
-          milestone,
+          repository: accepted?.acceptedRepository ?? online?.repository,
+          milestone: online?.milestone ?? { title: phaseConfig.milestone },
+          localRepository: online?.localRepository,
+          publicationStatus: online?.publicationStatus ?? (queueError ? 'доступ не подтверждён' : undefined),
+          queueError,
+          baseError,
+          resolveQueue: mode === '--run' ? (expected) => resolveQueue(phaseConfig, expected) : undefined,
           preflightCompleted: Boolean(mergedBase),
           repositoryState,
           rules,

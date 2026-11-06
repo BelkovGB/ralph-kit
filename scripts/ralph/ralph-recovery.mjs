@@ -2,7 +2,9 @@ import { run } from './ralph-process-runner.mjs';
 import { holdIssuePublication } from './ralph-state-store.mjs';
 import { isRalphInfrastructurePath } from './ralph-scope.mjs';
 import { clearedFailure } from './ralph-failure-summary.mjs';
-import { filesChangedBetween, isAncestorCommit, validateRecoveredCommit, verifyRepository, workingTreePaths } from './ralph-git.mjs';
+import { assertTrustedIssue } from './ralph-issue-contract.mjs';
+import { publicIssueIdentity } from './ralph-github-client.mjs';
+import { filesChangedBetween, isAncestorCommit, localGitHubRepository, validateRecoveredCommit, verifyRepository, workingTreePaths } from './ralph-git.mjs';
 
 export const committedRecoveryPhases = ['committed', 'pushed', 'reviewing', 'closing'];
 const workingPhases = new Set([
@@ -32,6 +34,7 @@ export function committedValidationFailurePatch(issue, error) {
     startingCommit: issue.recoveryHead ?? issue.pushedHead ?? issue.commit,
     foreignPaths: [],
     commit: null, recoveryHead: null, pushedHead: null, reviewedCommit: null, reviewReceipt: null,
+    publicationCheckpoint: null,
     ...holdIssuePublication(issue),
     expectedTree: null, commitMessage: null,
     validationExpectedTreeHash: null, validationFailureFingerprint: null,
@@ -51,6 +54,24 @@ export function hasAcceptedLisaIssueRepair(state, issue = state?.issue) {
 
 function blocked(message) {
   throw Object.assign(new Error(message), { code: 'RALPH_RECOVERY_BLOCKED' });
+}
+
+export function resumeAcceptedIssue(config, stateStore, dependencies = {}) {
+  const issue = stateStore?.issue;
+  if (!issue || !config.approvedIssueSnapshots?.[issue.number]) return null;
+  if (stateStore.state?.branch !== config.branch || stateStore.state?.milestone !== config.milestone) {
+    blocked(`Issue #${issue.number}: ветка или milestone не совпали с сохранённой задачей.`);
+  }
+  const repository = (dependencies.localGitHubRepository ?? localGitHubRepository)(config, dependencies);
+  if (!repository) return null;
+
+  const target = publicIssueIdentity(issue.url);
+  if (!target) return null;
+  if (target.repository !== repository || target.number !== issue.number) {
+    blocked(`Issue #${issue.number}: сохранённая задача не соответствует локальному origin.`);
+  }
+  const trusted = assertTrustedIssue(config, issue, repository);
+  return { ...trusted, state: 'OPEN', acceptedRepository: repository, expectedMilestone: config.milestone };
 }
 
 /** Read-only decision shared by check, run and explicit operator acceptance. */
@@ -111,6 +132,7 @@ export function analyzeRecovery(config, issue, dependencies = {}) {
       patch: {
         phase: 'committed', commit: manualCommit, recoveryHead: head,
         reviewedCommit: null, reviewReceipt: null, pushedHead: null, expectedTree: null, commitMessage: null,
+        publicationCheckpoint: null,
         ...holdIssuePublication(issue, head),
         ...(issue.processReportRepair ? { processReportRepair: null } : {}),
         validationExpectedTreeHash: null, validationFailureFingerprint: null, ...clearedFailure,

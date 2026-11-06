@@ -82,7 +82,8 @@ function createLifecycleRepository(branch, files = { 'work.txt': 'implemented\n'
  * GET issue отдаёт состояние, PATCH сливает тело запроса в него, коллекции
  * отвечают пустым списком, POST — пустым объектом.
  */
-function createFakeGh(root, { rejectClose = false, rejectCloseAttempts = 0, rejectReviewUpdate = false } = {}) {
+function createFakeGh(root, { rejectClose = false, rejectCloseAttempts = 0, rejectReviewUpdate = false,
+  githubUnavailable = false } = {}) {
   const directory = path.join(root, 'fake-gh');
   mkdirSync(directory);
   const statePath = path.join(directory, 'issue-state.json');
@@ -113,6 +114,10 @@ function createFakeGh(root, { rejectClose = false, rejectCloseAttempts = 0, reje
     input = readFileSync(0, 'utf8');
   } catch {}
   appendFileSync(callsPath, JSON.stringify({ method, resource, input }) + String.fromCharCode(10), 'utf8');
+  if (${githubUnavailable}) {
+    process.stderr.write('GitHub fixture unavailable (HTTP 503).');
+    process.exit(1);
+  }
   const state = JSON.parse(readFileSync(statePath, 'utf8'));
   if (method === 'PATCH') {
     const patch = JSON.parse(input || '{}');
@@ -632,6 +637,21 @@ test('ремонт Lisa не публикует впервые коммит уж
     assert.equal(store.issue.pendingPublishHead, commit);
     assert.equal(remoteHeads(stand.repository), '');
   });
+});
+
+test('сбой GitHub после принятия issue сохраняет локальный PASS и ожидающий push', async () => {
+  await withLifecycleStand('ralph/lifecycle-offline-publication', passVerdict, async (stand) => {
+    const store = recordingStateStore();
+    setActiveStateStore(store);
+    const config = lifecycleConfig(stand.repository, stand.reviewOutputPath);
+    const complete = () => runAgentOnIssue(config, 'owner/repository', lifecycleIssue(), 'rules');
+
+    await assert.rejects(complete(), { ralphFailureStep: 'push' });
+    assert.equal(store.issue.pendingPublishHead, stand.repository.commit);
+    assert.equal(store.issue.reviewReceipt?.result.verdict, 'pass');
+    assert.deepEqual(agentInvocations(stand.reviewOutputPath), ['review']);
+    assert.equal(remoteHeads(stand.repository), '');
+  }, { githubUnavailable: true });
 });
 
 test('failed validation of a manual commit returns to development before validation and review', async () => {

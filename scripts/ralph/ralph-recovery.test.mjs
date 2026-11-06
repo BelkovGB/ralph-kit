@@ -4,8 +4,27 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'nod
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { analyzeRecovery, applyRecoveryPlan, committedValidationFailurePatch, prepareRecovery } from './ralph-recovery.mjs';
+import { analyzeRecovery, applyRecoveryPlan, committedValidationFailurePatch, prepareRecovery, resumeAcceptedIssue } from './ralph-recovery.mjs';
 import { createStateStore } from './ralph-state-store.mjs';
+
+test('offline recovery binds an accepted snapshot to origin, branch, milestone and issue number', () => {
+  const config = { branch: 'feature', milestone: 'Recovery',
+    approvedIssueSnapshots: { 325: { title: 'Repair', body: 'Frozen contract' } } };
+  const issue = { number: 325, title: 'Repair', body: 'Frozen contract', authorLogin: 'owner',
+    url: 'https://github.com/Owner/Repo/issues/325' };
+  const store = { issue, state: { branch: 'feature', milestone: 'Recovery' } };
+  const dependencies = { localGitHubRepository: () => 'owner/repo' };
+  assert.deepEqual(resumeAcceptedIssue(config, store, dependencies), {
+    ...issue, state: 'OPEN', acceptedRepository: 'owner/repo', expectedMilestone: 'Recovery',
+  });
+  assert.equal(resumeAcceptedIssue({ ...config, approvedIssueSnapshots: {} }, store, dependencies), null);
+  assert.throws(() => resumeAcceptedIssue({ ...config, milestone: 'Different' }, store, dependencies),
+    { code: 'RALPH_RECOVERY_BLOCKED' });
+  assert.throws(() => resumeAcceptedIssue(config, store, { localGitHubRepository: () => 'another/repo' }),
+    { code: 'RALPH_RECOVERY_BLOCKED' });
+  assert.throws(() => resumeAcceptedIssue(config, { ...store, issue: { ...issue, body: 'Unapproved' } }, dependencies),
+    { code: 'RALPH_UNTRUSTED_ISSUE' });
+});
 
 function fixture(t) {
   const root = mkdtempSync(path.join(tmpdir(), 'ralph-recovery-'));

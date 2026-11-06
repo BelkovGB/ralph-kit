@@ -131,6 +131,7 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
         number: issue.number,
         title: issue.title,
         url: issue.url,
+        ...(issue.milestone == null ? {} : { milestone: issue.milestone }),
         body: issue.body ?? '',
         authorLogin: issue.authorLogin ?? null,
         authorAssociation: issue.authorAssociation ?? null,
@@ -149,6 +150,7 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
         commitMessage: null,
       };
       state.issue.phase = 'agent-running';
+      state.issue.publicationCheckpoint = null;
       persist();
       return state.issue;
     },
