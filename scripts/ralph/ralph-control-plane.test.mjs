@@ -15,7 +15,8 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { runAgentOnIssue } from './ralph-loop.mjs';
-import { agentInstructionFiles, controlPlaneSnapshot, loadConfig } from './ralph-config.mjs';
+import { agentInstructionFiles, controlPlaneSnapshot, loadConfig, trustedFileHash } from './ralph-config.mjs';
+import { controlPlaneExcludePathspec, isRalphInfrastructurePath } from './ralph-scope.mjs';
 
 /**
  * Часть тестов здесь пишет в сам репозиторий: журнал одобренных issue и пробный
@@ -598,6 +599,58 @@ test('an AGENTS instruction file added after the snapshot is caught by the set, 
     () => assertTrustedControlFilesUnchanged(snapshotTakenBeforeTheFileAppeared),
     /изменила набор доверенных файлов инструкций/u,
   );
+});
+
+test('an AGENTS override added or changed after the snapshot is reported by name', () => {
+  const directory = temporaryProjectTree({ 'packages/example/page.mjs': 'export {};\n' });
+  const snapshot = () => {
+    const files = agentInstructionFiles(directory);
+    return { agentInstructionFiles: files, trustedControlFileHashes: new Map(files.map((file) => [file, trustedFileHash(file)])) };
+  };
+
+  try {
+    for (const relativePath of ['AGENTS.override.md', 'packages/example/AGENTS.override.md']) {
+      const before = snapshot();
+      const file = path.join(directory, relativePath);
+      writeFileSync(file, '# trusted\n');
+      const trusted = snapshot();
+      assert.ok(trusted.agentInstructionFiles.includes(file));
+      assert.throws(() => assertTrustedControlFilesUnchanged(before, directory), (error) =>
+        error.code === 'RALPH_CONTROL_PLANE_CHANGED' && error.message.includes(path.normalize(relativePath)));
+      assert.doesNotThrow(() => assertTrustedControlFilesUnchanged(trusted, directory));
+      writeFileSync(file, '# modified\n');
+      assert.throws(() => assertTrustedControlFilesUnchanged(trusted, directory), (error) =>
+        error.code === 'RALPH_CONTROL_PLANE_CHANGED' && error.message.includes(path.normalize(relativePath)));
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('AGENTS overrides are control-plane paths in the queue and in the Git inventory', () => {
+  const instructionPaths = ['AGENTS.override.md', 'packages/example/AGENTS.override.md'];
+  if (process.platform === 'win32') instructionPaths.push('packages/windows/Agents.OVERRIDE.md');
+  const productPath = 'packages/example/AGENTS.override.md.txt';
+  const directory = temporaryProjectTree(Object.fromEntries(
+    [...instructionPaths, productPath].map((file) => [file, '# fixture\n']),
+  ));
+  const git = (args) => {
+    const result = spawnSync('git', args, { cwd: directory, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+
+  try {
+    assert.deepEqual(agentInstructionFiles(directory).map((file) =>
+      path.relative(directory, file).replaceAll('\\', '/')), instructionPaths);
+    for (const file of instructionPaths) assert.equal(isRalphInfrastructurePath(`${file}:10`), true, file);
+    assert.equal(isRalphInfrastructurePath(productPath), false);
+    git(['init', '--quiet']);
+    git(['-c', 'core.autocrlf=false', 'add', '-N', '-f', '--', '.']);
+    assert.equal(git(['diff', '--name-only', '--', '.', ...controlPlaneExcludePathspec]), productPath);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test('a file planted in .claude enters the trusted instruction set', () => {

@@ -33,7 +33,7 @@ const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 // Проверка неизменности доверенного control plane
 // -----------------------------------------------------------------------------
 
-export function assertTrustedControlFilesUnchanged(config) {
+export function assertTrustedControlFilesUnchanged(config, root = projectRoot) {
   const changed = (message) => {
     const error = new Error(message);
     error.code = 'RALPH_CONTROL_PLANE_CHANGED';
@@ -43,13 +43,12 @@ export function assertTrustedControlFilesUnchanged(config) {
   // выводить его здесь значит держать правило «что считается инструкцией» в
   // двух местах, и они разойдутся.
   const trustedAgentInstructionFiles = new Set(config.agentInstructionFiles ?? []);
-  const currentAgentInstructionFiles = new Set(agentInstructionFiles());
-  if (
-    trustedAgentInstructionFiles.size !== currentAgentInstructionFiles.size ||
-    [...currentAgentInstructionFiles].some((file) => !trustedAgentInstructionFiles.has(file))
-  ) {
+  const currentAgentInstructionFiles = new Set(agentInstructionFiles(root));
+  const changedInstructions = currentAgentInstructionFiles.symmetricDifference(trustedAgentInstructionFiles);
+  if (changedInstructions.size > 0) {
+    const files = [...changedInstructions].map((file) => path.relative(root, file)).join(', ');
     changed(
-      'AFK-сессия изменила набор доверенных файлов инструкций. ' +
+      `AFK-сессия изменила набор доверенных файлов инструкций (${files}). ` +
         'Изменение отклонено до валидации, commit и push.',
     );
   }

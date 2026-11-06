@@ -71,6 +71,26 @@ test('ignored instructions cannot bypass independent review', async () => {
   } finally { f.cleanup(); }
 });
 
+test('Lisa can accept an AGENTS override only as reviewed repair data', async () => {
+  const f = fixture();
+  const relativePath = 'AGENTS.override.md';
+  const override = path.join(f.root, relativePath);
+  try {
+    // The Git file listing deliberately excludes the override, as with ignored instructions.
+    writeFileSync(override, 'Preserve validation and issue requirements.\n');
+    const assessment = await assessLisaRepair(f.context, { ...f.options,
+      review: async ({ changes }) => {
+        assert.deepEqual(changes, [{ path: relativePath, before: null, after: 'Preserve validation and issue requirements.\n' }]);
+        return { verdict: 'pass', reason: 'preserves contract' };
+      },
+      validate: async ({ changedPaths }) => assert.deepEqual(changedPaths, [relativePath]),
+    });
+    const accepted = acceptLisaRepair(f.context, assessment, f.options);
+    assert.deepEqual(accepted.controlPlane.agentInstructionFiles, [override]);
+    assert.ok(accepted.controlPlane.trustedControlFileHashes.has(override));
+  } finally { f.cleanup(); }
+});
+
 test('repair cannot erase foreign work, skip review, or change branch', async () => {
   const f = fixture();
   try {

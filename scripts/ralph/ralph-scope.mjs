@@ -4,13 +4,23 @@
  * Ralph управляет продуктовым циклом, но его собственная реализация и
  * инструкции настраиваются оператором вручную. Поэтому findings и issues,
  * указывающие на `.agents/**`, `.claude/**`, `scripts/ralph/**` и любые
- * `AGENTS.md` или `CLAUDE.md`, не должны попадать в продуктовую очередь.
+ * файлы инструкций агентов, не должны попадать в продуктовую очередь.
  *
  * Модуль намеренно не импортирует ничего: это делает его пригодным для
  * использования из любого другого модуля Ralph без риска цикла.
  */
 
 export const ralphInfrastructureLabel = 'ralph-infrastructure';
+
+// Codex может читать AGENTS.override.md вместо AGENTS.md. Claude Code читает CLAUDE.md.
+const instructionFileNames = ['AGENTS.md', 'AGENTS.override.md', 'CLAUDE.md'];
+const caseInsensitiveInstructionNames = process.platform === 'win32';
+const instructionFileKeys = new Set(caseInsensitiveInstructionNames
+  ? instructionFileNames.map((name) => name.toLowerCase()) : instructionFileNames);
+
+export function isAgentInstructionFileName(name) {
+  return instructionFileKeys.has(caseInsensitiveInstructionNames ? name.toLowerCase() : name);
+}
 
 export function fail(message) {
   throw new Error(message);
@@ -23,13 +33,8 @@ export function isRalphInfrastructurePath(file) {
     .replace(/^\.\//, '')
     .replace(/:\d+(?::\d+)?$/, '');
 
-  // `AGENTS.md` читает Codex, `CLAUDE.md` — Claude Code; обоими задаётся
-  // поведение будущей сессии, поэтому и защищены они одинаково.
   return (
-    normalized === 'AGENTS.md' ||
-    normalized.endsWith('/AGENTS.md') ||
-    normalized === 'CLAUDE.md' ||
-    normalized.endsWith('/CLAUDE.md') ||
+    isAgentInstructionFileName(normalized.slice(normalized.lastIndexOf('/') + 1)) ||
     normalized === '.agents' ||
     normalized.startsWith('.agents/') ||
     // Claude Code читает из `.claude/**` агентов, скиллы, настройки и хуки.
@@ -49,14 +54,15 @@ export function isRalphInfrastructurePath(file) {
  * перечисления одного и того же расходятся при первом же добавлении каталога, и
  * расхождение будет тихим — diff просто покажет лишнее.
  */
+const instructionPathspecCase = caseInsensitiveInstructionNames ? ',icase' : '';
 export const controlPlaneExcludePathspec = [
   ':(exclude).agents',
   ':(exclude).claude',
   ':(exclude)scripts/ralph',
-  ':(exclude)AGENTS.md',
-  ':(exclude,glob)**/AGENTS.md',
-  ':(exclude)CLAUDE.md',
-  ':(exclude,glob)**/CLAUDE.md',
+  ...instructionFileNames.flatMap((name) => [
+    `:(exclude${instructionPathspecCase})${name}`,
+    `:(exclude,glob${instructionPathspecCase})**/${name}`,
+  ]),
 ];
 
 export function issueLabels(issue) {
@@ -82,7 +88,7 @@ export function isRalphInfrastructureIssue(issue) {
  * milestone.
  *
  * Агенту запрещено править `.agents/**`, `.claude/**`, `scripts/ralph/**` и
- * `AGENTS.md`, и ревью, которое требует именно этого, невыполнимо по
+ * файлы инструкций агентов, и ревью, которое требует именно этого, невыполнимо по
  * построению: следующая сессия вернёт тот же результат, ревью — то же
  * замечание, и цикл повторяет этот круг, пока не кончится бюджет итераций.
  */

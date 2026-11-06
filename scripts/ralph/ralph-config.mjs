@@ -3,7 +3,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { fail } from './ralph-scope.mjs';
+import { fail, isAgentInstructionFileName } from './ralph-scope.mjs';
 import {
   applyGitHubAccount,
   applyRuntimeSettings,
@@ -98,13 +98,6 @@ const ignoredAgentInstructionDirectories = new Set([
  */
 const toolManagedClaudeFiles = new Set(['scheduled_tasks.lock']);
 
-/**
- * Имена файлов инструкций, которые агент читает сам, где бы они ни лежали.
- * `AGENTS.md` читает Codex, `CLAUDE.md` — Claude Code, и оба управляют будущей
- * сессией одинаково, поэтому и защищены одинаково.
- */
-const instructionFileNames = new Set(['AGENTS.md', 'CLAUDE.md']);
-
 export function agentInstructionFiles(directory = projectRoot, root = directory) {
   const files = [];
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
@@ -116,7 +109,7 @@ export function agentInstructionFiles(directory = projectRoot, root = directory)
     }
     // Хеш-карта доверенных файлов структурно не видит добавленный файл, поэтому
     // набор инструкций собирается заново.
-    if (instructionFileNames.has(entry.name) || isInstructionDirectory(directory, root)) {
+    if (isAgentInstructionFileName(entry.name) || isInstructionDirectory(directory, root)) {
       if (!toolManagedClaudeFiles.has(entry.name)) {
         files.push(path.join(directory, entry.name));
       }
