@@ -77,10 +77,12 @@ README перечисляет, что переписать. Ниже — то, �
    pull request Ralph не делает. Имена milestone и веток уникальны, конфиг без
    `phases` отклоняется при загрузке.
 
-5. **Модели.** `developmentModel`, `developmentEffort`, `review.model`,
-   `milestoneReview.model`. Codex поддерживает модели GPT-5.6 Sol, Terra и Luna,
-   а также GPT-5.5, GPT-5.4, GPT-5.4 Mini и GPT-5.3 Codex Spark. Для Codex в
-   конфиге доступны effort minimal/low/medium/high/xhigh/max/ultra; Claude —
+5. **Модели.** `developmentModel`, `supervisor.model`, `review.model`,
+   `milestoneReview.model` принимают `default`: Codex сам выбирает рекомендованную
+   доступную модель, Claude Code — модель по умолчанию аккаунта. Claude Code
+   также принимает алиасы `sonnet`, `opus`, `haiku`; полное имя новой модели
+   можно указать для любой роли. Для Codex в конфиге доступны effort
+   minimal/low/medium/high/xhigh/max/ultra; для Claude Code —
    low/medium/high/xhigh/max. `maxTurns` между
    CLI тоже не переносится числом: Codex считает каждый item, включая
    выполненные команды, Claude — ответы модели.
@@ -255,7 +257,7 @@ Lisa. После её исправления счётчик отказов ре�
 При `supervisor.enabled: true` остановка незавершённой фазы вызывает Lisa.
 Её CLI, модель и усилие задают `supervisor.agentCli`, `supervisor.model` и
 `supervisor.effort`; `supervisor.fast` включает быстрый режим. По умолчанию это
-Codex, `gpt-6-astra`, `low` и выключенный fast.
+Codex, `default`, `low` и выключенный fast.
 Ход её сессии и короткие сообщения видны в карточке прогона GUI и на разделённом
 экране CLI; подробные сообщения помечены `[Lisa]` в `run.log`. История расхода показывает
 вызовы Lisa отдельно от попыток Ralph и ревью milestone.

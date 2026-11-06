@@ -433,7 +433,7 @@ function applyLoopDefaults(config) {
   }
   config.supervisor.enabled ??= false;
   config.supervisor.agentCli ??= 'codex';
-  config.supervisor.model ??= 'gpt-6-astra';
+  config.supervisor.model ??= 'default';
   config.supervisor.effort ??= 'low';
   config.supervisor.fast ??= false;
   config.supervisor.maxInterventions ??= 3;
@@ -474,7 +474,7 @@ function applyLoopDefaults(config) {
         `Допустимы: ${Object.keys(defaultRuntimeSettings).join(', ')}.`,
     );
   }
-  config.developmentModel ??= 'gpt-5.6-terra';
+  config.developmentModel ??= 'default';
   config.developmentEffort ??= 'medium';
   config.developmentFast ??= false;
   // Пусто по умолчанию: без списка prompt задачи не меняется ни на байт.
@@ -558,19 +558,20 @@ function applyValidationAndReviewDefaults(config) {
   config.validationArtifactPaths ??= [];
   config.review ??= {
     enabled: true,
-    model: 'gpt-5.6-terra',
+    model: 'default',
     schemaFile: '.agents/review.schema.json',
     outputFile: '.agents/last-review.json',
   };
-  config.review.model ??= 'gpt-5.6-terra';
+  config.review.model ??= 'default';
   config.review.fast ??= false;
   config.milestoneReview ??= {
     enabled: true,
-    model: 'gpt-5.6-sol',
+    model: 'default',
     maxTurns: config.maxTurns,
     schemaFile: '.agents/review.schema.json',
     outputFile: '.agents/last-milestone-review.json',
   };
+  config.milestoneReview.model ??= 'default';
   config.milestoneReview.maxTurns ??= config.maxTurns;
   config.milestoneReview.fast ??= false;
   config.milestoneReview.maxFindings ??= 10;

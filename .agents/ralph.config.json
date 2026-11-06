@@ -19,7 +19,7 @@
   "supervisor": {
     "enabled": false,
     "agentCli": "codex",
-    "model": "gpt-6-astra",
+    "model": "default",
     "effort": "low",
     "fast": false,
     "maxInterventions": 3,
@@ -38,7 +38,7 @@
     "maxPages": 20,
     "reviewRetryAttempts": 3
   },
-  "developmentModel": "claude-opus-5-5",
+  "developmentModel": "opus",
   "developmentEffort": "medium",
   "developmentFast": false,
   "developmentSkills": [],
@@ -55,7 +55,7 @@
   "validationArtifactPaths": [],
   "review": {
     "enabled": true,
-    "model": "claude-opus-5-5",
+    "model": "opus",
     "effort": "high",
     "fast": false,
     "schemaFile": ".agents/review.schema.json",
@@ -63,7 +63,7 @@
   },
   "milestoneReview": {
     "enabled": true,
-    "model": "claude-opus-5-5",
+    "model": "opus",
     "effort": "max",
     "fast": false,
     "maxTurns": 50,
