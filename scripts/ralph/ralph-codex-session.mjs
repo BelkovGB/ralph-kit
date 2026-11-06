@@ -65,20 +65,9 @@ export function createSandboxedCodexEnvironment(source = process.env, options = 
   return { root: sandbox.root, env: { ...sandbox.env, CODEX_HOME: codexHome } };
 }
 
-// Изолированный CODEX_HOME не содержит пользовательский config.toml, поэтому без
-// явного override каждая роль получает текущий default CLI/модели. Передаём
-// эффективное значение сами, чтобы поведение не менялось вместе с default.
+// Подсказки для пульта. Проверка конфига принимает и другие имена моделей.
 export const codexModels = [
-  'gpt-6-astra',
-  'gpt-6-sol',
-  'gpt-6-luna',
-  'gpt-5.6-sol',
-  'gpt-5.6-terra',
-  'gpt-5.6-luna',
-  'gpt-5.5',
-  'gpt-5.4',
-  'gpt-5.4-mini',
-  'gpt-5.3-codex-spark',
+  'default',
 ];
 
 // Codex Desktop предлагает эти значения усилия. Проверка
@@ -97,6 +86,12 @@ function speedArguments(fast) {
   ];
 }
 
+function modelArguments(model) {
+  // Изолированный CODEX_HOME не содержит пользовательский config.toml.
+  // Без --model Codex выбирает рекомендованную модель из доступных аккаунту.
+  return model === 'default' ? [] : ['--model', model];
+}
+
 export function developmentCodexArguments(config) {
   return [
     'exec',
@@ -113,8 +108,7 @@ export function developmentCodexArguments(config) {
     '--strict-config',
     '-c',
     'default_permissions=":danger-full-access"',
-    '--model',
-    config.developmentModel,
+    ...modelArguments(config.developmentModel),
     ...reasoningEffortArguments(config.developmentEffort),
     ...speedArguments(config.developmentFast),
     '-C',
@@ -141,8 +135,7 @@ export function reviewCodexArguments(role) {
     '--disable',
     'multi_agent',
     '--json',
-    '--model',
-    role.model,
+    ...modelArguments(role.model),
     ...reasoningEffortArguments(role.effort),
     ...speedArguments(role.fast),
     '--output-schema',

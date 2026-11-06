@@ -221,8 +221,8 @@ GitHub читает и то и другое только из репозитор
    **Разработка и ревью** — модели и effort для разработки, ревью issue и
    ревью milestone. Effort — глубина рассуждения модели: выше значение —
    дороже и дольше сессия.
-   Поставляемый конфиг заполнен под `claude`; для `codex` меняются сразу
-   четыре поля, см. [рабочий комплект](#рабочий-комплект-для-codex).
+   Поставляемый конфиг использует алиас `opus` для Claude Code. Для Codex
+   переключите агент и модели, см. [рабочий комплект](#рабочий-комплект-для-codex).
 5. **`.gitignore`.** Проверьте, что исключены все пять путей из файла набора:
    `.agents/last-review.json` и `.agents/last-milestone-review.json` — туда
    Ralph пишет результат ревью; `.agents/.ralph.config.json.*.tmp` — временный
@@ -265,17 +265,33 @@ CLI, а не в прогоне, поэтому ей доступны ваши MC
 
 ## Рабочий комплект для Codex
 
-Поставляемый конфиг заполнен под `claude`. При переходе на Codex смените агент
-и три модели. Значения effort в поставляемом конфиге подходят обоим CLI.
+Поставляемый конфиг использует Claude Code с алиасом `opus`. При переходе на
+Codex смените агент и три модели. Значения effort подходят обоим CLI.
 
 Вместе меняются четыре поля:
 
-| Поле                    | claude            | codex         |
-| ----------------------- | ----------------- | ------------- |
-| `agentCli`              | `claude`          | `codex`       |
-| `developmentModel`      | `claude-opus-5-5` | `gpt-6-sol`   |
-| `review.model`          | `claude-opus-5-5` | `gpt-6-sol`   |
-| `milestoneReview.model` | `claude-opus-5-5` | `gpt-6-astra` |
+| Поле                    | Claude Code | Codex     |
+| ----------------------- | ----------- | --------- |
+| `agentCli`              | `claude`    | `codex`   |
+| `developmentModel`      | `opus`      | `default` |
+| `review.model`          | `opus`      | `default` |
+| `milestoneReview.model` | `opus`      | `default` |
+
+`default` работает во всех четырёх ролях, включая `supervisor.model`. Если
+ключ модели отсутствует, Ralph тоже выбирает `default`. Для Codex это означает
+запуск без `--model`: CLI выбирает рекомендованную модель, доступную аккаунту.
+Ralph использует изолированный `CODEX_HOME`, поэтому пользовательский
+`config.toml` на выбор модели не влияет. Для Claude Code `--model default`
+выбирает модель по умолчанию для аккаунта. Алиасы `sonnet`, `opus` и `haiku`
+выбирают актуальную версию своей линейки для провайдера и установленного CLI.
+`default` не обещает самую новую модель из всех доступных. Во время долгого
+прогона выбор по умолчанию может измениться между сессиями CLI.
+
+Ранее записанные полные имена моделей остаются закреплёнными после обновления
+Kit. Замените их на `default` или алиас Claude Code, если нужен автоматический
+выбор. Для конкретной новой модели впишите её полное имя: Ralph не ограничивает
+список версий. [Модели Codex](https://learn.chatgpt.com/docs/models),
+[алиасы Claude Code](https://code.claude.com/docs/en/model-config).
 
 Полный набор effort задаёт CLI: у Codex — `minimal`, `low`, `medium`, `high`,
 `xhigh`, `max`, `ultra`; у Claude — `low`, `medium`, `high`, `xhigh`, `max`.
@@ -289,6 +305,8 @@ CLI, а не в прогоне, поэтому ей доступны ваши MC
 включают fast отдельно для каждой роли. По умолчанию все выключены. Fast
 ускоряет ответы за больший расход и не меняет effort. Для Claude Code нужен
 поддерживаемый Claude Opus, доступ к fast mode и CLI 2.1.205 или новее.
+Для fast укажите полное поддерживаемое имя Opus: Ralph не может заранее
+проверить, в какую версию превратится алиас `opus` или `default`.
 Неподдерживаемую модель Ralph отклоняет до запуска: Claude Code иначе
 переключил бы её сам. Ralph передаёт настройку каждой сессии явно, поэтому роли
 не наследуют fast из пользовательского конфига CLI. Подробности:
@@ -302,7 +320,7 @@ CLI, а не в прогоне, поэтому ей доступны ваши MC
 умолчанию режим выключен. `supervisor.agentCli`, `supervisor.model`,
 `supervisor.effort` и `supervisor.fast` задают Lisa собственные CLI, модель,
 усилие и скорость независимо от разработки. По умолчанию это Codex,
-`gpt-6-astra`, `low` и выключенный fast. Для работы нужен
+`default`, `low` и выключенный fast. Для работы нужен
 авторизованный CLI выбранного агента.
 В старом конфиге без `supervisor.agentCli` пульт использует Codex по умолчанию
 и показывает соответствующие варианты модели и усилия.
@@ -564,17 +582,15 @@ node scripts/ralph/ralph-loop.mjs --run
 `milestoneReview` незнакомый ключ проходит молча.
 Пропавший ключ останавливает загрузку с именем поля, если умолчания у него нет:
 это `approvedIssueSnapshotsHash`, `enabled`, `schemaFile` и `outputFile` у обеих
-ролей ревью и `milestoneReview.model`. Остальные Ralph подставляет сам:
-`review.model` — `gpt-5.6-terra`, `review.effort` — `medium`,
+ролей ревью. Остальные Ralph подставляет сам:
+`developmentModel`, `supervisor.model`, `review.model` и
+`milestoneReview.model` — `default`, `review.effort` — `medium`,
 `milestoneReview.effort` — `high`,
 четыре поля fast — `false`,
 `milestoneReview.maxTurns` — значение `maxTurns`, `milestoneReview.maxFindings`
 — 10, `milestoneReview.incremental` — `true`, `validationEnvironment` —
 пустой список,
-`githubAccount` — активный аккаунт GitHub CLI. Умолчание `review.model` —
-модель Codex, поэтому в конфиге
-под `claude` пропавший ключ загрузку не остановит, а молча подставит чужую
-модель.
+`githubAccount` — активный аккаунт GitHub CLI.
 
 ## Лицензия
 

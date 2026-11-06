@@ -28,7 +28,7 @@ test('Lisa model and effort choices use the default CLI in an older config', { s
   const fields = normalizeGroups(fieldGroups).flatMap((group) => group.fields);
   const model = fields.find((field) => field.path === 'supervisor.model');
   const effort = fields.find((field) => field.path === 'supervisor.effort');
-  assert.ok(optionList(model).some((option) => option.value === 'gpt-6-astra'));
+  assert.ok(optionList(model).some((option) => option.value === 'default'));
   assert.ok(optionList(effort).some((option) => option.value === 'low'));
 });
 

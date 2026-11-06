@@ -204,11 +204,8 @@ test('Lisa model and effort choices follow her CLI in the control panel', () => 
   const byPath = (path) => fields.find((field) => field.path === path);
   assert.deepEqual(byPath('supervisor.agentCli').options, ['codex', 'claude']);
   assert.equal(byPath('supervisor.model').optionsDependOn, 'supervisor.agentCli');
-  assert.ok(byPath('supervisor.model').options.claude.includes('claude-opus-5-5'));
-  assert.ok(byPath('supervisor.model').options.claude.includes('claude-fable-5-1'));
-  assert.ok(byPath('supervisor.model').options.codex.includes('gpt-6-astra'));
-  assert.ok(byPath('supervisor.model').options.codex.includes('gpt-6-sol'));
-  assert.ok(byPath('supervisor.model').options.codex.includes('gpt-6-luna'));
+  assert.deepEqual(byPath('supervisor.model').options.claude, ['default', 'sonnet', 'opus', 'haiku']);
+  assert.deepEqual(byPath('supervisor.model').options.codex, ['default']);
   assert.equal(byPath('supervisor.effort').optionsDependOn, 'supervisor.agentCli');
   assert.ok(byPath('supervisor.effort').options.claude.includes('max'));
 });

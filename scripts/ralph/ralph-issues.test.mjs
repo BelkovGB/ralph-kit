@@ -867,6 +867,46 @@ test('reasoning effort falls back to medium/medium/high when the config omits it
   });
 });
 
+test('all model roles use CLI defaults when their model keys are absent', () => {
+  const sample = JSON.parse(readFileSync(ralphConfigPath, 'utf8'));
+  const { model: _supervisorModel, ...supervisor } = sample.supervisor;
+  const { model: _reviewModel, ...review } = sample.review;
+  const { model: _milestoneModel, ...milestoneReview } = sample.milestoneReview;
+  withPatchedRalphConfig({ developmentModel: undefined, supervisor, review, milestoneReview }, (config) => {
+    assert.equal(config.developmentModel, 'default');
+    assert.equal(config.supervisor.model, 'default');
+    assert.equal(config.review.model, 'default');
+    assert.equal(config.milestoneReview.model, 'default');
+  });
+});
+
+test('each model role accepts the CLI default or a custom model ID', () => {
+  const sample = JSON.parse(readFileSync(ralphConfigPath, 'utf8'));
+  for (const model of ['default', 'gpt-future-series']) {
+    withPatchedRalphConfig({
+      developmentModel: model,
+      supervisor: { ...sample.supervisor, model },
+      review: { ...sample.review, model },
+      milestoneReview: { ...sample.milestoneReview, model },
+    }, (config) => {
+      assert.equal(config.developmentModel, model);
+      assert.equal(config.supervisor.model, model);
+      assert.equal(config.review.model, model);
+      assert.equal(config.milestoneReview.model, model);
+    });
+  }
+});
+
+test('the control panel offers CLI defaults and Claude family aliases for every model role', () => {
+  const fields = fieldGroups.flatMap((group) => group.fields);
+  for (const rolePath of ['developmentModel', 'supervisor.model', 'review.model', 'milestoneReview.model']) {
+    const field = fields.find(({ path: name }) => name === rolePath);
+    assert.equal(field?.allowCustom, true);
+    assert.equal(field?.options.codex[0], 'default');
+    assert.deepEqual(field?.options.claude.slice(0, 3), ['default', 'sonnet', 'opus']);
+  }
+});
+
 test('each role defaults fast mode to off when its key is absent', () => {
   const sample = JSON.parse(readFileSync(ralphConfigPath, 'utf8'));
   const { fast: _supervisorFast, ...supervisor } = sample.supervisor;

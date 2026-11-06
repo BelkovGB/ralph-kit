@@ -30,7 +30,7 @@
  *                загрузке или подставляется
  *                только вместе со всем родительским объектом. Третий случай —
  *                `enabled`, `schemaFile` и `outputFile` у `review` и
- *                `milestoneReview` плюс `milestoneReview.model`:
+ *                `milestoneReview`:
  *                `applyValidationAndReviewDefaults` в `ralph-config.mjs`
  *                подставляет их только вместе с целым объектом, а удаление
  *                одного такого ключа останавливает прогон. Остальные ключи
@@ -61,15 +61,13 @@ import { codexModels } from './ralph-codex-session.mjs';
 const effortOptions = Object.fromEntries(agentClis.map((cli) => [cli, reasoningEffortsFor(cli)]));
 
 // Имена моделей код списком не ограничивает: `validateAgentRoles` проверяет
-// только безопасность символов. Поэтому у полей модели стоит `allowCustom` —
-// список здесь подсказка, а не запрет, и новая модель вводится руками.
+// только безопасность символов. Пульт предлагает стабильные алиасы, а полное
+// имя новой модели можно ввести через `allowCustom` без обновления Kit.
 const claudeModels = [
-  'claude-opus-5-5',
-  'claude-fable-5-1',
-  'claude-opus-5',
-  'claude-sonnet-5',
-  'claude-fable-5',
-  'claude-haiku-4-5-20251001',
+  'default',
+  'sonnet',
+  'opus',
+  'haiku',
 ];
 
 export const fieldGroups = [
@@ -268,9 +266,9 @@ export const fieldGroups = [
         options: { codex: codexModels, claude: claudeModels },
         optionsDependOn: 'supervisor.agentCli',
         allowCustom: true,
-        hint: 'Список зависит от CLI Lisa. Новое имя модели можно ввести вручную.',
+        hint: 'default выбирает модель по умолчанию CLI. Claude поддерживает алиасы линеек. Полное имя новой модели можно ввести вручную.',
         unit: null,
-        default: 'gpt-6-astra',
+        default: 'default',
       },
       {
         path: 'supervisor.effort',
@@ -288,7 +286,7 @@ export const fieldGroups = [
         section: 'Lisa',
         label: 'Fast Lisa',
         type: 'boolean',
-        hint: 'Ускоряет ответы Lisa за больший расход. Для Claude нужен поддерживаемый Opus и доступ к fast mode.',
+        hint: 'Ускоряет ответы Lisa за больший расход. Для Claude нужно полное поддерживаемое имя Opus и доступ к fast mode.',
         unit: null,
         default: false,
       },
@@ -443,9 +441,9 @@ export const fieldGroups = [
         options: { codex: codexModels, claude: claudeModels },
         optionsDependOn: 'agentCli',
         allowCustom: true,
-        hint: 'Эта модель пишет код по issue. Список зависит от поля «Агент» и ничего не запрещает: новое имя вводят пунктом «Другая…».',
+        hint: 'default выбирает модель по умолчанию CLI. Claude поддерживает алиасы линеек; полное имя новой модели вводят пунктом «Другая…».',
         unit: null,
-        default: 'gpt-5.6-terra',
+        default: 'default',
       },
       {
         path: 'developmentEffort',
@@ -463,7 +461,7 @@ export const fieldGroups = [
         section: 'Разработка',
         label: 'Fast разработки',
         type: 'boolean',
-        hint: 'Ускоряет ответы за больший расход. Для Claude нужен поддерживаемый Opus и доступ к fast mode.',
+        hint: 'Ускоряет ответы за больший расход. Для Claude нужно полное поддерживаемое имя Opus и доступ к fast mode.',
         unit: null,
         default: false,
       },
@@ -512,9 +510,9 @@ export const fieldGroups = [
         options: { codex: codexModels, claude: claudeModels },
         optionsDependOn: 'agentCli',
         allowCustom: true,
-        hint: 'Читает изменения одной issue и ничего не правит: сессия работает только на чтение. Список зависит от поля «Агент», своё имя вводят пунктом «Другая…».',
+        hint: 'Читает изменения одной issue только на чтение. default выбирает модель по умолчанию CLI; полное имя вводят пунктом «Другая…».',
         unit: null,
-        default: 'gpt-5.6-terra',
+        default: 'default',
       },
       {
         path: 'review.effort',
@@ -532,7 +530,7 @@ export const fieldGroups = [
         section: 'Ревью каждой issue',
         label: 'Fast ревью issue',
         type: 'boolean',
-        hint: 'Ускоряет ответы ревьюера за больший расход. Для Claude нужен поддерживаемый Opus.',
+        hint: 'Ускоряет ответы ревьюера за больший расход. Для Claude нужно полное поддерживаемое имя Opus.',
         unit: null,
         default: false,
       },
@@ -593,9 +591,9 @@ export const fieldGroups = [
         optionsDependOn: 'agentCli',
         allowCustom: true,
         hint:
-          'Читает изменения всего milestone разом, поэтому её берут сильнее, чем модель ревью одной issue. Смена модели заставляет следующий круг проверить milestone целиком. Своё имя вводят пунктом «Другая…».',
+          'Читает изменения всего milestone разом. default выбирает модель по умолчанию CLI. Смена значения заставляет следующий круг проверить milestone целиком; полное имя вводят пунктом «Другая…».',
         unit: null,
-        default: null,
+        default: 'default',
       },
       {
         path: 'milestoneReview.effort',
@@ -614,7 +612,7 @@ export const fieldGroups = [
         section: 'Ревью milestone',
         label: 'Fast ревью milestone',
         type: 'boolean',
-        hint: 'Ускоряет ответы ревьюера за больший расход. Для Claude нужен поддерживаемый Opus.',
+        hint: 'Ускоряет ответы ревьюера за больший расход. Для Claude нужно полное поддерживаемое имя Opus.',
         unit: null,
         default: false,
       },

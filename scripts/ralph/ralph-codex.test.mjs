@@ -265,6 +265,29 @@ test('development Codex has unrestricted repository write access', () => {
   assert.ok(!args.includes('--sandbox'));
 });
 
+test('Codex leaves model selection to the CLI for every default role', () => {
+  const development = developmentCodexArguments({
+    developmentModel: 'default', developmentEffort: 'medium', developmentFast: false,
+  });
+  const review = reviewCodexArguments({
+    model: 'default', effort: 'high', fast: false,
+    schemaPath: 'review.schema.json', outputPath: 'last-review.json',
+  });
+  for (const args of [development, review]) {
+    assert.equal(args.includes('--model'), false);
+    assert.equal(args.includes('default'), false);
+  }
+  assert.ok(development.includes('model_reasoning_effort="medium"'));
+  assert.ok(review.includes('model_reasoning_effort="high"'));
+});
+
+test('Codex passes an explicitly selected new model through unchanged', () => {
+  const args = developmentCodexArguments({
+    developmentModel: 'gpt-future-series', developmentEffort: 'medium', developmentFast: false,
+  });
+  assert.equal(args[args.indexOf('--model') + 1], 'gpt-future-series');
+});
+
 test('Codex review sessions stay within one agent', () => {
   const args = reviewCodexArguments({
     model: 'review-model',

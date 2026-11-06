@@ -76,6 +76,16 @@ test('claude arguments always carry --verbose alongside stream-json', () => {
   }
 });
 
+test('Claude accepts runtime default and family aliases with explicit effort', () => {
+  for (const model of ['default', 'sonnet', 'opus']) {
+    const args = developmentClaudeArguments({
+      developmentModel: model, developmentEffort: 'high', developmentFast: false,
+    });
+    assert.equal(args[args.indexOf('--model') + 1], model);
+    assert.equal(args[args.indexOf('--effort') + 1], 'high');
+  }
+});
+
 test('Claude fast mode is selected independently for development and review', () => {
   for (const fast of [false, true]) {
     const development = developmentClaudeArguments({
