@@ -151,7 +151,7 @@ export function normalizeReviewResult(review) {
       ...review,
       verdict: 'fail',
       summary:
-        `Codex returned PASS together with ${review.findings.length} actionable findings. ` +
+        `The reviewer returned PASS together with ${review.findings.length} actionable findings. ` +
         `Ralph treated the result as FAIL. ${review.summary}`,
     };
   }

@@ -89,7 +89,11 @@ test('repair requires passing validation and an explicit independent pass', asyn
   try {
     writeFileSync(path.join(f.root, 'scripts/ralph/ralph-loop.mjs'), 'fixed();\n');
     await assert.rejects(assessLisaRepair(f.context, { ...f.options,
-      review: async () => ({ verdict: 'pass' }), validate: async () => { throw new Error('tests fail'); } }), /tests fail/);
+      review: async () => ({ verdict: 'pass' }),
+      validate: async () => assert.fail('Validation started without a review reason'),
+    }), /ревью.*некорректный результат/u);
+    await assert.rejects(assessLisaRepair(f.context, { ...f.options,
+      review: async () => ({ verdict: 'pass', reason: 'preserves contract' }), validate: async () => { throw new Error('tests fail'); } }), /tests fail/);
     await assert.rejects(assessLisaRepair(f.context, { ...f.options,
       review: async () => ({ verdict: 'human', reason: 'weakened tests' }), validate: async () => {} }), /weakened/);
     assert.equal(readFileSync(path.join(f.root, 'user.txt'), 'utf8'), 'user work\n');
@@ -101,7 +105,7 @@ test('accepted validation cannot keep mutations produced by a formerly mutating 
   try {
     writeFileSync(path.join(f.root, 'scripts/ralph/ralph-loop.mjs'), 'fixed();\n');
     await assert.rejects(assessLisaRepair(f.context, { ...f.options,
-      review: async () => ({ verdict: 'pass' }),
+      review: async () => ({ verdict: 'pass', reason: 'preserves contract' }),
       validate: async () => writeFileSync(path.join(f.root, 'scripts/ralph/ralph-loop.mjs'), 'mutated();\n'),
     }), /проверки изменили дерево/);
   } finally { f.cleanup(); }
@@ -114,7 +118,7 @@ for (const phase of ['committed', 'pushed', 'reviewing', 'closing']) {
       writeFileSync(path.join(f.root, 'scripts/ralph/ralph-loop.mjs'), 'fixed();\n');
       const assessment = await assessLisaRepair(f.context, { ...f.options,
         run: (_name, args) => { assert.ok(['merge-base', 'diff'].includes(args[0])); return { status: 0, stdout: '' }; },
-        review: async () => ({ verdict: 'pass' }), validate: async () => {},
+        review: async () => ({ verdict: 'pass', reason: 'preserves contract' }), validate: async () => {},
       });
       assert.equal(acceptLisaRepair(f.context, assessment, f.options).ralphChanged, true);
       assert.equal(f.state.issue.commit, 'head');

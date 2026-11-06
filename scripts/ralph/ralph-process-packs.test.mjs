@@ -8,7 +8,7 @@ import test from 'node:test';
 
 import { approveConfiguredIssue } from './ralph-issue-contract.mjs';
 import { assertProcessReport } from './ralph-process-packs.mjs';
-import { executableTempDirectory, withFakeCodex, withFakeGh } from './ralph-test-support.mjs';
+import { executableTempDirectory, withFakeClaude, withFakeCodex, withFakeGh } from './ralph-test-support.mjs';
 
 const sourceRoot = fileURLToPath(new URL('../..', import.meta.url));
 const reportPath = 'docs/ralph-reports/issue-13.md';
@@ -84,20 +84,11 @@ if (args.includes('--version') || args.includes('login')) {
 }
 const prompt = readFileSync(0, 'utf8');
 const output = args.indexOf('--output-last-message');
-let message = 'feat: finish the requested task';
+const message = 'feat: finish the requested task';
 if (output !== -1) {
   const file = args[output + 1];
-  const review = file.includes('lisa-review-')
-    ? { verdict: 'pass', reason: 'preserved scope' }
-    : { verdict: 'pass', summary: 'fixture pass', findings: [] };
-  writeFileSync(file, JSON.stringify(review));
-} else if (prompt.includes('Ты Lisa')) {
-  const file = '.agents/ralph.config.json';
-  const config = JSON.parse(readFileSync(file, 'utf8'));
-  const recovery = config.validationScripts[0].includes('--recovered') ? ' --close-recovered' : '';
-  config.validationScripts = ['node check.cjs --recovered' + recovery];
-  writeFileSync(file, JSON.stringify(config));
-  message = JSON.stringify({ verdict: 'resume', reason: 'repaired the fixture command' });
+  if (file.includes('lisa-review-')) throw new Error('Lisa review used the development backend.');
+  writeFileSync(file, JSON.stringify({ verdict: 'pass', summary: 'fixture pass', findings: [] }));
 } else if (prompt.includes('### Режим ui-change')) {
   const current = readFileSync('button.txt', 'utf8');
   writeFileSync('button.txt', current === 'before' ? 'incomplete' : 'ready');
@@ -110,6 +101,42 @@ if (output !== -1) {
   writeFileSync(report, '# Report\n\nThe updated button is ready.\n');
 } else throw new Error('Unexpected role or process.');
 console.log(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: message } }));
+`;
+
+const claude = String.raw`
+import assert from 'node:assert/strict';
+import { readFileSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
+
+const args = process.argv.slice(2);
+const prompt = readFileSync(0, 'utf8');
+const schemaFlag = args.indexOf('--json-schema');
+assert.equal(args[args.indexOf('--model') + 1], 'fixture-lisa-model');
+let result;
+let structured_output;
+if (schemaFlag !== -1) {
+  assert.match(prompt, /Проверь ремонт Lisa независимо/u);
+  assert.match(path.basename(process.cwd()), /^ralph-repair-runtime-/u);
+  assert.equal(args[args.indexOf('--tools') + 1], 'Read,Glob,Grep');
+  assert.ok(args.includes('--strict-mcp-config'));
+  assert.deepEqual(JSON.parse(args[args.indexOf('--mcp-config') + 1]), { mcpServers: {} });
+  const schema = JSON.parse(args[schemaFlag + 1]);
+  assert.deepEqual(schema.required, ['verdict', 'reason']);
+  assert.deepEqual(schema.properties.verdict.enum, ['pass', 'human']);
+  structured_output = { verdict: 'pass', reason: 'preserved scope' };
+  result = 'Repair review completed.';
+} else {
+  assert.match(prompt, /Ты Lisa/u);
+  assert.equal(args.includes('--strict-mcp-config'), false);
+  assert.equal(args.includes('--mcp-config'), false);
+  const file = '.agents/ralph.config.json';
+  const config = JSON.parse(readFileSync(file, 'utf8'));
+  const recovery = config.validationScripts[0].includes('--recovered') ? ' --close-recovered' : '';
+  config.validationScripts = ['node check.cjs --recovered' + recovery];
+  writeFileSync(file, JSON.stringify(config));
+  result = JSON.stringify({ verdict: 'resume', reason: 'repaired the fixture command' });
+}
+console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result, structured_output }));
 `;
 
 function fakeGithub(statePath) {
@@ -164,7 +191,7 @@ console.log(typeof result === 'string' ? result : JSON.stringify(result));
 `;
 }
 
-test('--run verifies UI, retries report scope, and closes after a Lisa repair', async () => {
+test('--run verifies UI, retries report scope, and closes with a separate Lisa backend', async () => {
   const sandbox = mkdtempSync(path.join(executableTempDirectory, 'packs-cli-'));
   const root = path.join(sandbox, 'repo');
   const remote = path.join(sandbox, 'origin.git');
@@ -184,7 +211,7 @@ test('--run verifies UI, retries report scope, and closes after a Lisa repair', 
       approvedIssueSnapshotsFile,
       approvedIssueSnapshotsHash: createHash('sha256').update(ledger).digest('hex'),
       phases: [{ milestone: 'Packs', branch: 'phase' }], maxIterations: 6, maxTestFixAttempts: 2,
-      supervisor: { enabled: true, maxInterventions: 2 },
+      supervisor: { enabled: true, agentCli: 'claude', model: 'fixture-lisa-model', maxInterventions: 2 },
       validationScripts: ['node check.cjs'], browserValidationScripts: ['node browser.cjs'],
       runtime: { networkRetryAttempts: 1 },
     };
@@ -215,7 +242,7 @@ if (scope === 'phase' && !fs.existsSync('docs/ralph-reports/issue-13.md')) proce
     git(root, 'remote', 'add', 'origin', remote);
     git(root, 'push', '--quiet', '-u', 'origin', 'main');
 
-    await withFakeCodex(codex, () => withFakeGh(fakeGithub(statePath), () => {
+    await withFakeCodex(codex, () => withFakeClaude(claude, () => withFakeGh(fakeGithub(statePath), () => {
       const result = spawnSync(process.execPath, ['scripts/ralph/ralph-loop.mjs', '--run', '--ui=plain'], {
         cwd: root, env: { ...process.env, GIT_ALLOW_PROTOCOL: 'file' }, encoding: 'utf8',
         timeout: 180_000, windowsHide: true,
@@ -241,7 +268,7 @@ if (scope === 'phase' && !fs.existsSync('docs/ralph-reports/issue-13.md')) proce
       assert.deepEqual(commits.map((sha) => git(root, 'show', '--format=', '--name-only', sha)), [
         'button.txt', `.agents/ralph.config.json\n${reportPath}`, '.agents/ralph.config.json',
       ]);
-    }));
+    })));
   } finally {
     rmSync(sandbox, { recursive: true, force: true });
   }

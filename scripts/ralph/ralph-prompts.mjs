@@ -2,6 +2,7 @@
  * Prompt для реализации issue и для обоих ревьюеров.
  */
 
+import { agentBackend } from './ralph-agent-backends.mjs';
 import { validationScriptsFor } from './ralph-process-packs.mjs';
 
 function renderTemplate(template, replacements) {
@@ -87,7 +88,7 @@ const toolReviewGuidance =
  * оболочки не получает вовсе, и её подсказка от платформы не зависит.
  */
 export function reviewShellGuidance(config, platform = process.platform) {
-  if (config?.agentCli === 'claude') return toolReviewGuidance;
+  if (agentBackend(config).review.fileAccess === 'read-tools') return toolReviewGuidance;
 
   return platform === 'win32' ? powershellReviewGuidance : posixShellReviewGuidance;
 }
@@ -99,7 +100,9 @@ const shellDocumentationDiscovery = `Discover documentation paths before reading
 const toolDocumentationDiscovery = `Discover documentation paths before reading them: list them with Glob patterns such as \`docs/**/*.md\`, then read only paths confirmed to exist. ${documentationDiscoveryTail}`;
 
 function reviewDocumentationDiscovery(config) {
-  return config?.agentCli === 'claude' ? toolDocumentationDiscovery : shellDocumentationDiscovery;
+  return agentBackend(config).review.fileAccess === 'read-tools'
+    ? toolDocumentationDiscovery
+    : shellDocumentationDiscovery;
 }
 const reviewVerdictContract =
   'Use verdict "fail" when at least one actionable finding exists; otherwise use "pass" with an empty findings array.';

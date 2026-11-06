@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 
-import { existsSync, readFileSync, unlinkSync } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -38,7 +37,6 @@ import {
   controlPlaneSnapshot,
   loadConfig,
   loadRalphRules,
-  parseJson,
   verifyAgentSkills,
 } from './ralph-config.mjs';
 
@@ -313,9 +311,6 @@ async function runIndependentReview(config, repository, issue, commit) {
 
   const reviewedHead = run('git', ['rev-parse', 'HEAD']).stdout;
   const reviewedBranch = run('git', ['branch', '--show-current']).stdout;
-  if (existsSync(config.review.outputPath)) {
-    unlinkSync(config.review.outputPath);
-  }
 
   // Замечания прошлого ревью вынимаются из тела issue в отдельную секцию
   // prompt: внутри тела они приезжают без подписи, вперемешку с критериями
@@ -336,23 +331,17 @@ async function runIndependentReview(config, repository, issue, commit) {
 
   console.log(`\n=== Independent review for issue #${issue.number} ===\n`);
 
-  await runReviewSession(config, config.review, {
+  const reviewLabel = `Review issue #${issue.number}`;
+  const candidate = await runReviewSession(config, config.review, {
     input: reviewPrompt,
     maxTurns: config.maxTurns,
     timeoutMs: config.runtime.agentTimeoutMs,
-    label: `Review issue #${issue.number}`,
+    label: reviewLabel,
   });
 
-  if (!existsSync(config.review.outputPath)) {
-    fail(`Review issue #${issue.number} не создал файл результата.`);
-  }
-
-  let review = parseJson(readFileSync(config.review.outputPath, 'utf8'), config.review.outputPath);
-
-  assertReviewPayloadShape(review, `Review issue #${issue.number}`);
-  const reviewLabel = `Review issue #${issue.number}`;
-  review = applySeverityFloor(
-    scopeReviewToProduct(normalizeReviewResult(review), reviewLabel),
+  assertReviewPayloadShape(candidate, reviewLabel);
+  const review = applySeverityFloor(
+    scopeReviewToProduct(normalizeReviewResult(candidate), reviewLabel),
     config.reviewSeverityFloor,
     reviewLabel,
   );
