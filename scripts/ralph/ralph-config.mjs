@@ -664,6 +664,13 @@ function validateApprovedIssueSnapshots(config) {
 const maxValidationCommandLength = 500;
 const commandControlOperators = /[;&|`]/u;
 
+export function isGitWorktreeMarkerPath(relativePath) {
+  const marker = path.posix.normalize(relativePath.replaceAll('\\', '/')).split('/')[0];
+  return process.platform === 'win32'
+    ? marker.replace(/[. ]+$/u, '').toLowerCase() === '.git'
+    : marker === '.git';
+}
+
 function validateValidationCommands(config) {
   const profiles = config.validationProfiles;
   if (profiles !== undefined && (
@@ -722,7 +729,6 @@ function validateValidationCommands(config) {
         normalized.startsWith('/') ||
         /^[a-zA-Z]:/.test(normalized) ||
         segments.includes('..') ||
-        segments[0] === '.git' ||
         normalized === '.'
       );
     })
@@ -731,6 +737,10 @@ function validateValidationCommands(config) {
       'Поле "validationArtifactPaths" должно быть массивом относительных путей внутри проекта, ' +
         'вне каталога .git.',
     );
+  }
+  const gitArtifact = config.validationArtifactPaths.find(isGitWorktreeMarkerPath);
+  if (gitArtifact !== undefined) {
+    fail(`Поле "validationArtifactPaths": путь ${gitArtifact} принадлежит служебным данным Git.`);
   }
   if (
     !Array.isArray(config.validationEnvironment) ||
