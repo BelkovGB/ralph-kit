@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { captureLisaRepairContext, assessLisaRepair, acceptLisaRepair } from './ralph-lisa-repair.mjs';
+import { captureLisaRepairContext, assessLisaRepair, acceptLisaRepair, lisaRepairTreeHash } from './ralph-lisa-repair.mjs';
 
 function fixture(issueOverrides = {}) {
   const root = mkdtempSync(path.join(tmpdir(), 'ralph-repair-'));
@@ -11,7 +12,8 @@ function fixture(issueOverrides = {}) {
   writeFileSync(path.join(root, 'scripts/ralph/ralph-loop.mjs'), 'broken();\n');
   writeFileSync(path.join(root, 'user.txt'), 'user work\n');
   const state = { runId: 'run', phaseIndex: 0, branch: 'phase', issue: {
-    number: 1, phase: 'validating', body: 'Keep requirements', foreignPaths: ['user.txt'], ...issueOverrides,
+    number: 1, phase: 'validating', body: 'Keep requirements',
+    foreignPaths: ['user.txt'], foreignPathsFormat: 'exact-v1', ...issueOverrides,
   } };
   const config = { supervisor: { maxInterventions: 2 }, trustedControlFileHashes: new Map(), agentInstructionFiles: [] };
   const options = { projectRoot: root, identity: () => ({ branch: 'phase', head: 'head' }),
@@ -44,6 +46,34 @@ test('repair acceptance is tied to reviewed tree and rejects changes after asses
   } finally { f.cleanup(); }
 });
 
+test('Lisa blocks repair assessment before review or validation when legacy ownership is unknown', async () => {
+  const f = fixture({ foreignPathsFormat: undefined });
+  try {
+    await assert.rejects(assessLisaRepair(f.context, {
+      ...f.options,
+      review: async () => assert.fail('Review started without known foreign paths'),
+      validate: async () => assert.fail('Validation started without known foreign paths'),
+    }), { code: 'RALPH_RECOVERY_BLOCKED' });
+  } finally { f.cleanup(); }
+});
+
+test('Lisa hashes changes to the first Git path with a leading space', () => {
+  const f = fixture();
+  const draft = path.join(f.root, ' draft.txt');
+  const run = (command, args, options = {}) => {
+    const stdout = execFileSync(command, args, { cwd: f.root, encoding: 'utf8' });
+    return { status: 0, stdout: options.rawStdout ? stdout : stdout.trim() };
+  };
+  const hash = () => lisaRepairTreeHash({ projectRoot: f.root, run });
+  try {
+    run('git', ['init', '--quiet']);
+    writeFileSync(draft, 'before');
+    const before = hash();
+    writeFileSync(draft, 'after');
+    assert.notEqual(hash(), before);
+  } finally { f.cleanup(); }
+});
+
 test('newly added instructions require independent approval', async () => {
   const f = fixture();
   try {
@@ -68,6 +98,26 @@ test('ignored instructions cannot bypass independent review', async () => {
         return { verdict: 'human', reason: 'unapproved instruction' };
       }, validate: async () => {},
     }), /unapproved instruction/);
+  } finally { f.cleanup(); }
+});
+
+test('Lisa can accept an AGENTS override only as reviewed repair data', async () => {
+  const f = fixture();
+  const relativePath = 'AGENTS.override.md';
+  const override = path.join(f.root, relativePath);
+  try {
+    // The Git file listing deliberately excludes the override, as with ignored instructions.
+    writeFileSync(override, 'Preserve validation and issue requirements.\n');
+    const assessment = await assessLisaRepair(f.context, { ...f.options,
+      review: async ({ changes }) => {
+        assert.deepEqual(changes, [{ path: relativePath, before: null, after: 'Preserve validation and issue requirements.\n' }]);
+        return { verdict: 'pass', reason: 'preserves contract' };
+      },
+      validate: async ({ changedPaths }) => assert.deepEqual(changedPaths, [relativePath]),
+    });
+    const accepted = acceptLisaRepair(f.context, assessment, f.options);
+    assert.deepEqual(accepted.controlPlane.agentInstructionFiles, [override]);
+    assert.ok(accepted.controlPlane.trustedControlFileHashes.has(override));
   } finally { f.cleanup(); }
 });
 

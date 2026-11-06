@@ -10,7 +10,7 @@ import { stripAnsi } from './ralph-failure-summary.mjs';
 
 import { fail } from './ralph-scope.mjs';
 import { credentialFreeEnvironment, run } from './ralph-process-runner.mjs';
-import { agentInstructionFiles, trustedFileHash } from './ralph-config.mjs';
+import { agentInstructionFiles, isGitWorktreeMarkerPath, trustedFileHash } from './ralph-config.mjs';
 import { validationScriptsFor } from './ralph-process-packs.mjs';
 import { activeStateStore } from './ralph-state-store.mjs';
 
@@ -33,7 +33,7 @@ const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 // Проверка неизменности доверенного control plane
 // -----------------------------------------------------------------------------
 
-export function assertTrustedControlFilesUnchanged(config) {
+export function assertTrustedControlFilesUnchanged(config, root = projectRoot) {
   const changed = (message) => {
     const error = new Error(message);
     error.code = 'RALPH_CONTROL_PLANE_CHANGED';
@@ -43,13 +43,12 @@ export function assertTrustedControlFilesUnchanged(config) {
   // выводить его здесь значит держать правило «что считается инструкцией» в
   // двух местах, и они разойдутся.
   const trustedAgentInstructionFiles = new Set(config.agentInstructionFiles ?? []);
-  const currentAgentInstructionFiles = new Set(agentInstructionFiles());
-  if (
-    trustedAgentInstructionFiles.size !== currentAgentInstructionFiles.size ||
-    [...currentAgentInstructionFiles].some((file) => !trustedAgentInstructionFiles.has(file))
-  ) {
+  const currentAgentInstructionFiles = new Set(agentInstructionFiles(root));
+  const changedInstructions = currentAgentInstructionFiles.symmetricDifference(trustedAgentInstructionFiles);
+  if (changedInstructions.size > 0) {
+    const files = [...changedInstructions].map((file) => path.relative(root, file)).join(', ');
     changed(
-      'AFK-сессия изменила набор доверенных файлов инструкций. ' +
+      `AFK-сессия изменила набор доверенных файлов инструкций (${files}). ` +
         'Изменение отклонено до валидации, commit и push.',
     );
   }
@@ -221,8 +220,9 @@ export function hostValidationEnvironment(config, source = process.env, lisaPath
  */
 export function hostWorkingTreeEntries(dependencies = {}) {
   const execute = dependencies.run ?? run;
+  const root = dependencies.projectRoot ?? projectRoot;
   const listPaths = (args) =>
-    execute('git', args)
+    execute('git', args, { rawStdout: true })
       .stdout.split(String.fromCharCode(0))
       .filter(Boolean);
   // Два списка вместо обхода всего проекта: изменённые относительно коммита
@@ -243,9 +243,9 @@ export function hostWorkingTreeEntries(dependencies = {}) {
     ) {
       fail(`Небезопасный путь в выводе git: ${relativePath}`);
     }
-    const filePath = path.join(projectRoot, normalizedPath);
+    const filePath = path.join(root, normalizedPath);
     const stats = lstatSync(filePath, { throwIfNoEntry: false });
-    const key = relativePath.replaceAll('\\', '/');
+    const key = relativePath;
     if (!stats) {
       entries.set(key, 'deleted');
       continue;
@@ -384,9 +384,10 @@ export function runConfiguredScripts(config, scripts, label, options = {}) {
     }
   };
 
+  const workingTreeSnapshot = () => hostWorkingTreeEntries({ run: execute, projectRoot: options.projectRoot });
   try {
     for (const script of preparation) runScript(script, 'preflight');
-    baseline = hostWorkingTreeEntries({ run: execute });
+    baseline = workingTreeSnapshot();
     options.onPrepared?.();
     let connectionRetryUsed = false;
     for (const script of guarded) {
@@ -397,7 +398,7 @@ export function runConfiguredScripts(config, scripts, label, options = {}) {
           throw error;
         }
         // Never retry a test that changed files: the final guard reports the mutation.
-        if (changedTreePaths(baseline, hostWorkingTreeEntries({ run: execute })).length > 0) throw error;
+        if (changedTreePaths(baseline, workingTreeSnapshot()).length > 0) throw error;
         assertTrustedControlFilesUnchanged(config);
         connectionRetryUsed = true;
         connectionFailure = error;
@@ -429,7 +430,7 @@ export function runConfiguredScripts(config, scripts, label, options = {}) {
 
   if (baseline !== null) {
     try {
-      const observed = hostWorkingTreeEntries({ run: execute });
+      const observed = workingTreeSnapshot();
       const mutatedPaths = changedTreePaths(baseline, observed);
       if (mutatedPaths.length > 0) {
         const named = mutatedPaths.slice(0, namedMutatedPathLimit);
@@ -474,6 +475,11 @@ export function runConfiguredScripts(config, scripts, label, options = {}) {
   return { ran: true, scripts: [...preparation, ...guarded], timings };
 }
 
+function containsPath(directory, target) {
+  const relative = path.relative(directory, target);
+  return relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
 /**
  * Артефакты прошлого прогона: отчёты, трассы, покрытие.
  *
@@ -483,38 +489,73 @@ export function runConfiguredScripts(config, scripts, label, options = {}) {
  * не знает, что у него мусор, а что дорогой кеш, и по умолчанию не удаляет
  * ничего.
  *
- * Удаляется только то, чего нет в Git. Отслеживаемый путь — это работа, а не
- * мусор, и его удаление прогон останавливает.
+ * Весь список проверяется до удаления. Отслеживаемые пути и служебные данные
+ * Git останавливают прогон.
  */
 export function removeValidationArtifacts(config, options = {}) {
   const artifactPaths = config?.validationArtifactPaths ?? [];
   if (artifactPaths.length === 0) return [];
   const root = path.resolve(options.projectRoot ?? projectRoot);
   const execute = options.run ?? run;
-  const removed = [];
+  const git = (args) => execute('git', ['-C', root, ...args]).stdout;
+  const reject = (relativePath, reason) =>
+    fail(`Поле "validationArtifactPaths": путь ${relativePath} ${reason}.`);
 
-  for (const relativePath of artifactPaths) {
+  const targets = artifactPaths.map((relativePath) => {
     const target = path.resolve(root, relativePath);
-    const reject = (reason) =>
-      fail(`Поле "validationArtifactPaths": путь ${relativePath} ${reason}.`);
-    if (target === root) reject('указывает на корень проекта');
-    if (!target.startsWith(root + path.sep)) reject('выходит за пределы проекта');
+    if (path.relative(root, target) === '') reject(relativePath, 'указывает на корень проекта');
+    if (!containsPath(root, target)) reject(relativePath, 'выходит за пределы проекта');
     const inside = path.relative(root, target);
-    if (inside.split(path.sep)[0] === '.git') reject('принадлежит служебному каталогу Git');
+    if (isGitWorktreeMarkerPath(inside)) reject(relativePath, 'принадлежит служебным данным Git');
+    return { relativePath, target };
+  });
 
-    const tracked = String(
-      execute('git', ['ls-files', '-z', '--', inside.replaceAll('\\', '/')]).stdout ?? '',
-    ).replaceAll('\0', '');
-    if (tracked !== '') {
+  const lines = git([
+    'rev-parse', '--path-format=absolute', '--git-dir', '--git-common-dir', '--is-inside-work-tree',
+  ]).split(/\r?\n/u);
+  // Последняя строка — флаг. trim() командного раннера не сотрёт пробелы в путях.
+  const gitDirs = lines.slice(0, 2);
+  if (lines.length !== 3 || lines[2] !== 'true' || gitDirs.some((directory) => !path.isAbsolute(directory))) {
+    fail('Поле "validationArtifactPaths": Git не сообщил абсолютные служебные пути.');
+  }
+  const canonicalRoot = realpathSync.native(root);
+  const protectedPaths = [path.join(canonicalRoot, '.git'), ...gitDirs.map((directory) => realpathSync.native(directory))];
+  // На Windows регистр имени в индексе может отличаться от имени на диске.
+  // Префикс --stage сохраняет пробелы первого пути при trim() stdout.
+  const indexedPaths = process.platform === 'win32'
+    ? git(['ls-files', '--stage', '-z']).split('\0').filter(Boolean)
+      .map((entry) => path.join(canonicalRoot, entry.slice(entry.indexOf('\t') + 1)))
+    : null;
+
+  const removable = [];
+  for (const { relativePath, target } of targets) {
+    const exists = existsSync(target);
+    if (exists && lstatSync(target).isSymbolicLink()) reject(relativePath, 'является символической ссылкой');
+    const resolved = exists ? realpathSync.native(target) : target;
+    const inside = exists ? path.relative(canonicalRoot, resolved) : path.relative(root, target);
+    if (inside === '') reject(relativePath, 'указывает на корень проекта');
+    if (exists && !containsPath(canonicalRoot, resolved)) reject(relativePath, 'выходит за пределы проекта');
+    if (exists && protectedPaths.some((protectedPath) =>
+      containsPath(protectedPath, resolved) || containsPath(resolved, protectedPath))) {
+      reject(relativePath, 'принадлежит служебным данным Git или содержит их');
+    }
+
+    const tracked = indexedPaths === null
+      ? Boolean(git(['--literal-pathspecs', 'ls-files', '-z', '--', inside.replaceAll('\\', '/')]))
+      : indexedPaths.some((file) => containsPath(path.join(canonicalRoot, inside), file));
+    if (tracked) {
       reject(
+        relativePath,
         'отслеживается Git. Ralph удаляет только то, чего в Git нет: удаление ' +
           'отслеживаемого файла — потеря работы, а не уборка',
       );
     }
+    if (exists) removable.push({ relativePath, target: resolved });
+  }
 
+  const removed = [];
+  for (const { relativePath, target } of removable) {
     if (!existsSync(target)) continue;
-    // Ссылка ведёт наружу, а её содержимое проверкам не принадлежит.
-    if (lstatSync(target).isSymbolicLink()) reject('является символической ссылкой');
     rmSync(target, { recursive: true, force: true });
     removed.push(relativePath);
   }

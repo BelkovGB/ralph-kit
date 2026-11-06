@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 import { controlPlaneExcludePathspec, fail } from './ralph-scope.mjs';
 import { run, runNetwork } from './ralph-process-runner.mjs';
-import { activeStateStore } from './ralph-state-store.mjs';
+import { activeStateStore, holdIssuePublication } from './ralph-state-store.mjs';
 import { clearedFailure } from './ralph-failure-summary.mjs';
 
 /**
@@ -36,6 +36,24 @@ let pinnedGitHubRemoteUrl = null;
 
 export function resetPinnedGitHubOrigin() {
   pinnedGitHubRemoteUrl = null;
+}
+
+export function localGitHubRepository(config, dependencies = {}) {
+  const execute = dependencies.run ?? run;
+  const pinned = verifyConfiguredGitHubOrigin(config, dependencies);
+  const githubRemote = /^(?:https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@(?:github\.com(?::22)?|ssh\.github\.com:443)\/)([a-z0-9_.-]+)\/([a-z0-9_.-]+?)(?:\.git)?\/?$/iu;
+  const repositoryOf = (url) => githubRemote.exec(url)?.slice(1).join('/').toLowerCase();
+  const fetchUrl = pinned ?? execute('git', ['remote', 'get-url', 'origin'], { allowFailure: true }).stdout;
+  const repository = repositoryOf(fetchUrl);
+  if (!repository) return null;
+
+  const pushUrls = pinned ?? execute('git', ['remote', 'get-url', '--push', '--all', 'origin'], { allowFailure: true }).stdout;
+  if (pushUrls.split(/\r?\n/u).some((url) => repositoryOf(url) !== repository)) {
+    throw Object.assign(new Error('Адрес отправки origin ведёт в другой репозиторий GitHub.'), {
+      code: 'RALPH_RECOVERY_BLOCKED',
+    });
+  }
+  return repository;
 }
 
 export function verifyConfiguredGitHubOrigin(config, dependencies = {}) {
@@ -109,22 +127,26 @@ function reviewDiffExcludePathspec(excludedPaths = []) {
 }
 
 /**
- * Все commit этой issue, новейший первым.
+ * Коммиты этой issue в переданной истории, новейший первым.
  *
- * Оркестратор требует один commit на прогон, а не на issue: после отказа ревью
- * состояние очищается, следующая итерация стартует с нового HEAD и добавляет
- * второй commit с тем же trailer. Номер issue уникален в репозитории, поэтому
- * совпадение trailer однозначно и ограничивать поиск по истории не нужно.
+ * После отказа ревью следующая итерация стартует с нового HEAD и может добавить
+ * коммит с тем же трейлером. Поиск `#57` пропускает допустимые варианты ключа
+ * и разделителя. Точное значение трейлера исключает `#570` и упоминания.
  */
 export function issueCommits(issue, head, execute = run) {
+  const issueTag = `#${issue.number}`;
   const found = execute(
     'git',
-    ['log', '--format=%H', '--fixed-strings', '--grep', commitTrailerForIssue(issue), head],
+    ['log', '-z', '--format=%H%x09%(trailers:key=Ralph-Issue,valueonly,separator=%x1f)',
+      '--fixed-strings', '--grep', issueTag, head],
     { allowFailure: true },
   );
   if (found.status !== 0) return [];
 
-  return found.stdout.split(/\r?\n/).filter((line) => /^[0-9a-f]{40}$/i.test(line));
+  return found.stdout.split('\0').flatMap((record) => {
+    const sha = record.slice(0, 40);
+    return /^[0-9a-f]{40}$/i.test(sha) && record.slice(40) === `\t${issueTag}` ? [sha] : [];
+  });
 }
 
 /**
@@ -132,10 +154,12 @@ export function issueCommits(issue, head, execute = run) {
  * вперёд по чужим файлам» от «ветка ушла вперёд по тем же, что правит агент».
  */
 export function filesChangedBetween(from, to, execute = run) {
-  const changed = execute('git', ['diff', '--name-only', from, to], { allowFailure: true });
+  const changed = execute('git', ['diff', '--name-only', '-z', '--no-renames', from, to], {
+    allowFailure: true, rawStdout: true,
+  });
   if (changed.status !== 0) return null;
 
-  return changed.stdout.split(/\r?\n/).filter(Boolean);
+  return changed.stdout.split('\0').filter(Boolean);
 }
 
 /**
@@ -151,44 +175,49 @@ export function isAncestorCommit(ancestor, descendant, execute = run) {
   );
 }
 
-/**
- * Разбор `git status --porcelain` в записи `{index, worktree, path}`.
- *
- * Формат — `XY <путь>`, где X описывает индекс, Y рабочее дерево, а
- * переименование записано как `старый -> новый`, и нужен последний.
- *
- * Колонки разбираются, а не отбрасываются: от них зависит, надо ли путь вообще
- * стадировать. Файл, удалённый через `git rm`, стоит как `D ` — его нет ни в
- * дереве, ни в индексе, и `git add` по такому пути отвечает `did not match any
- * files` с кодом 128, обрывая прогон на уже сделанной работе.
- *
- * Отрезать ровно три символа нельзя: `run` обрезает пробелы по краям вывода, и
- * первая строка приходит без ведущего пробела статуса, поэтому такой срез съел
- * бы первый символ её пути — `src/app/...` превратился бы в `rc/app/...`.
- */
-export function workingTreeEntries(status) {
-  const entries = new Map();
-  for (const line of String(status ?? '').split(/\r?\n/)) {
-    if (line.trim() === '') continue;
-    // После двух колонок статуса porcelain всегда ставит ровно один пробел.
-    // Если на третьей позиции его нет, значит обрезка съела ведущий пробел
-    // первой строки и колонка индекса пуста.
-    const restored = line[2] === ' ' ? line : ` ${line}`;
-    const filePath = restored.slice(2).trim().split(' -> ').at(-1);
-    if (filePath) {
-      entries.set(filePath, { index: restored[0], worktree: restored[1], path: filePath });
+export function readWorkingTreeEntries(execute = run) {
+  const { stdout } = execute(
+    'git', ['status', '--porcelain=v1', '-z', '--untracked-files=all'], { rawStdout: true },
+  );
+  const records = stdout.split('\0');
+  if (records.pop() !== '') fail('Git status вернул неполный список путей.');
+
+  const entries = [];
+  for (let position = 0; position < records.length; position += 1) {
+    const record = records[position];
+    const [index, worktree] = record;
+    const file = record.slice(3);
+    if (record[2] !== ' ' || !file) fail('Git status вернул некорректную запись пути.');
+
+    const entry = { index, worktree, path: file };
+    if (index === 'R' || index === 'C' || worktree === 'R' || worktree === 'C') {
+      // В формате -z Git записывает новый путь перед исходным.
+      position += 1;
+      entry.originalPath = records[position];
+      if (!entry.originalPath) fail('Git status не сообщил исходный путь переименования или копирования.');
     }
+    entries.push(entry);
   }
-  return [...entries.values()];
+  return entries;
 }
 
-export function workingTreePaths(status) {
-  return workingTreeEntries(status).map((entry) => entry.path);
+export function workingTreeEntryPaths({ path: file, originalPath }) {
+  return originalPath === undefined ? [file] : [file, originalPath];
+}
+
+export function gitPathKey(file) {
+  return process.platform === 'win32' ? file.toLowerCase() : file;
+}
+
+export function stageWorkingTreeEntries(entries, execute = run) {
+  const paths = new Set(entries.filter(({ worktree }) => worktree !== ' ').flatMap((entry) =>
+    entry.worktree === 'R' ? workingTreeEntryPaths(entry) : [entry.path]));
+  if (paths.size > 0) execute('git', ['--literal-pathspecs', 'add', '--all', '--', ...paths]);
 }
 
 /**
- * Полный набор изменений issue одним объектом: список файлов, статистика и
- * ограниченный diff.
+ * Список файлов, статистика и ограниченный diff этой issue. Проверенный
+ * afterHead позволяет передать только новые коммиты.
  *
  * Показываются именно коммиты этой issue, по одному, в хронологическом
  * порядке. Диапазон `first^..last` был бы короче, но он втягивает всё, что
@@ -202,7 +231,12 @@ export function workingTreePaths(status) {
 export function issueChangeInventory(issue, commit, dependencies = {}) {
   const execute = dependencies.run ?? run;
   const excluded = reviewDiffExcludePathspec(dependencies.excludedPaths);
-  const commits = issueCommits(issue, commit, execute);
+  const { afterHead } = dependencies;
+  const newCommits = /^[0-9a-f]{40}$/u.test(afterHead ?? '') && afterHead !== commit &&
+    isAncestorCommit(afterHead, commit, execute)
+    ? issueCommits(issue, `${afterHead}..${commit}`, execute) : [];
+  const incremental = newCommits.length > 0;
+  const commits = incremental ? newCommits : issueCommits(issue, commit, execute);
   // issueCommits отдаёт новейший первым; ревьюеру нужен порядок появления.
   const reviewed = commits.length > 0 ? [...commits].reverse() : [commit];
   const inspect = (flags, pathspecs = []) =>
@@ -215,6 +249,7 @@ export function issueChangeInventory(issue, commit, dependencies = {}) {
   return {
     commit,
     commits: commits.length > 0 ? commits : [commit],
+    ...(incremental ? { afterHead } : {}),
     // Пути разбираются здесь, у источника: `git diff --name-status` печатает
     // статус, табуляцию и путь, а для переименования — два пути, из которых
     // нужен последний.
@@ -334,7 +369,8 @@ export function reconcileStateAfterCrash(config, stateStore = activeStateStore()
       );
     }
     const commit = validateRecoveredCommit(storedIssue, currentHead);
-    stateStore.updateIssue({ phase: 'committed', commit, recoveryHead: commit, pushedHead: null, ...clearedFailure });
+    stateStore.updateIssue({ phase: 'committed', commit, recoveryHead: commit, pushedHead: null,
+      ...holdIssuePublication(storedIssue, commit), ...clearedFailure });
     console.log(`Issue #${storedIssue.number}: распознан commit ${commit} после crash.`);
     return;
   }
@@ -349,7 +385,8 @@ export function reconcileStateAfterCrash(config, stateStore = activeStateStore()
 
   commitStagedChanges(storedIssue.commitMessage, storedIssue, config.runtime.validationTimeoutMs);
   const commit = validateRecoveredCommit(storedIssue, run('git', ['rev-parse', 'HEAD']).stdout);
-  stateStore.updateIssue({ phase: 'committed', commit, recoveryHead: commit, pushedHead: null, ...clearedFailure });
+  stateStore.updateIssue({ phase: 'committed', commit, recoveryHead: commit, pushedHead: null,
+    ...holdIssuePublication(storedIssue, commit), ...clearedFailure });
   console.log(`Issue #${storedIssue.number}: staging завершён commit ${commit} после crash.`);
 }
 
@@ -362,6 +399,7 @@ export function verifyRepository(config, requireClean) {
 
   run('git', ['check-ref-format', '--branch', config.branch]);
   let currentBranch = run('git', ['branch', '--show-current']).stdout;
+  let baseFetched = false;
   const changes = run('git', ['status', '--porcelain']).stdout;
   const currentHead = run('git', ['rev-parse', 'HEAD']).stdout;
   const recoveryAllowed = activeStateStore()?.allowsDirtyRecovery(currentBranch, currentHead);
@@ -415,6 +453,7 @@ export function verifyRepository(config, requireClean) {
         runNetwork('git', ['fetch', ...fetchRemoteBranchArguments(config, config.baseBranch)], {
           echoOutput: true,
         });
+        baseFetched = true;
         run('git', ['show-ref', '--verify', '--quiet', `refs/remotes/origin/${config.baseBranch}`]);
         run('git', ['switch', '-c', config.branch, `origin/${config.baseBranch}`], {
           inherit: true,
@@ -428,7 +467,7 @@ export function verifyRepository(config, requireClean) {
     }
   }
 
-  return { currentBranch, clean: changes === '' };
+  return { currentBranch, clean: changes === '', ...(baseFetched ? { baseFetched } : {}) };
 }
 
 /**
@@ -452,9 +491,11 @@ export function syncPhaseBranchWithBase(config, dependencies = {}) {
   const executeNetwork = dependencies.runNetwork ?? runNetwork;
   const contains = dependencies.isAncestorCommit ?? isAncestorCommit;
 
-  executeNetwork('git', ['fetch', ...fetchRemoteBranchArguments(config, config.baseBranch)], {
-    echoOutput: true,
-  });
+  if (dependencies.fetch !== false) {
+    executeNetwork('git', ['fetch', ...fetchRemoteBranchArguments(config, config.baseBranch)], {
+      echoOutput: true,
+    });
+  }
   const baseRef = `origin/${config.baseBranch}`;
   execute('git', ['show-ref', '--verify', '--quiet', `refs/remotes/${baseRef}`]);
 
@@ -493,13 +534,17 @@ export function syncPhaseBranchWithBase(config, dependencies = {}) {
   return true;
 }
 
-export function verifyBaseHistory(config) {
-  runNetwork('git', ['fetch', ...fetchRemoteBranchArguments(config, config.baseBranch)], {
-    echoOutput: true,
-  });
+export function verifyBaseHistory(config, dependencies = {}) {
+  const execute = dependencies.run ?? run;
+  if (dependencies.fetch !== false) {
+    const executeNetwork = dependencies.runNetwork ?? runNetwork;
+    executeNetwork('git', ['fetch', ...fetchRemoteBranchArguments(config, config.baseBranch)], {
+      echoOutput: true,
+    });
+  }
   const baseRef = `origin/${config.baseBranch}`;
-  run('git', ['show-ref', '--verify', '--quiet', `refs/remotes/${baseRef}`]);
-  const mergeBase = run('git', ['merge-base', 'HEAD', baseRef], {
+  execute('git', ['show-ref', '--verify', '--quiet', `refs/remotes/${baseRef}`]);
+  const mergeBase = execute('git', ['merge-base', 'HEAD', baseRef], {
     allowFailure: true,
   });
   if (mergeBase.status !== 0 || mergeBase.stdout === '') {

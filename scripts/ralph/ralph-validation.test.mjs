@@ -1,7 +1,9 @@
 import { validateIssueWorkingTree } from './ralph-loop.mjs';
 import { prepareConfig } from './ralph-config.mjs';
+import { readWorkingTreeEntries } from './ralph-git.mjs';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -640,17 +642,125 @@ function artifactProject(files = {}) {
   return root;
 }
 
+function artifactGit(root) {
+  return (command, args, options = {}) => {
+    const stdout = execFileSync(command, args, { cwd: root, encoding: 'utf8' });
+    return { status: 0, stdout: options.rawStdout ? stdout : stdout.trim() };
+  };
+}
+
+test('validation detects content changes to an existing untracked path with a leading space', () => {
+  const relative = ' draft.txt';
+  const root = artifactProject({ [relative]: 'original draft\n' });
+  const git = artifactGit(root);
+
+  try {
+    git('git', ['init', '--quiet']);
+    git('git', ['-c', 'user.name=Ralph test', '-c', 'user.email=ralph@example.test',
+      'commit', '--allow-empty', '--quiet', '-m', 'test: baseline']);
+    const resultBefore = git('git', ['status', '--porcelain']).stdout;
+    assert.throws(
+      () => runConfiguredValidation(hostValidationConfig({ preflightScripts: [] }), {
+        projectRoot: root,
+        mkdir() {},
+        run(command, args, options) {
+          if (command === 'git') return git(command, args, options);
+          writeFileSync(path.join(root, relative), 'modified draft\n');
+          return { status: 0, stdout: '', stderr: '' };
+        },
+      }),
+      (error) => error.code === 'RALPH_VALIDATION_MUTATED' && error.message.includes(relative),
+    );
+    assert.equal(git('git', ['status', '--porcelain']).stdout, resultBefore);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('конфиг на Windows отклоняет регистровый вариант .git с указанием пути', {
+  skip: process.platform !== 'win32',
+}, () => {
+  const config = JSON.parse(readFileSync(ralphConfigPath, 'utf8'));
+  config.validationArtifactPaths = ['.GIT/objects'];
+
+  assert.throws(() => prepareConfig(config), /validationArtifactPaths.*\.GIT\/objects/u);
+});
+
+test('на Windows .GIT останавливает уборку до удаления в checkout и linked worktree', {
+  skip: process.platform !== 'win32',
+}, () => {
+  const root = artifactProject({ 'checkout/report.txt': 'report' });
+  const checkout = path.join(root, 'checkout');
+  const linked = path.join(root, 'linked');
+  const run = artifactGit(checkout);
+
+  try {
+    run('git', ['init', '--quiet']);
+    run('git', ['-c', 'user.name=Ralph test', '-c', 'user.email=ralph@example.test',
+      'commit', '--allow-empty', '--quiet', '-m', 'test: create worktree fixture']);
+    run('git', ['worktree', 'add', '--quiet', '--detach', linked]);
+    writeFileSync(path.join(linked, 'report.txt'), 'report');
+
+    for (const worktree of [checkout, linked]) {
+      const gitMarker = path.join(worktree, '.git');
+      const report = path.join(worktree, 'report.txt');
+      const git = artifactGit(worktree);
+      const head = git('git', ['rev-parse', 'HEAD']).stdout;
+
+      assert.throws(
+        () => removeValidationArtifacts(
+          { validationArtifactPaths: ['report.txt', '.GIT'] },
+          { projectRoot: worktree, run: git },
+        ),
+        /validationArtifactPaths.*\.GIT.*Git/u,
+      );
+      assert.equal(readFileSync(report, 'utf8'), 'report');
+      assert.equal(existsSync(gitMarker), true);
+      assert.equal(git('git', ['rev-parse', 'HEAD']).stdout, head);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('артефакт не удаляет отдельный служебный каталог Git или его родителя', () => {
+  const root = artifactProject({ 'report.txt': 'report' });
+  const metadata = path.join(root, 'storage', 'metadata');
+  const run = artifactGit(root);
+
+  try {
+    mkdirSync(path.dirname(metadata));
+    run('git', ['init', '--quiet', '--separate-git-dir', metadata]);
+
+    for (const artifact of ['storage/metadata', 'storage/metadata/objects', 'storage']) {
+      assert.throws(
+        () => removeValidationArtifacts(
+          { validationArtifactPaths: ['report.txt', artifact] },
+          { projectRoot: root, run },
+        ),
+        /validationArtifactPaths.*Git/u,
+      );
+    }
+    assert.equal(readFileSync(path.join(root, 'report.txt'), 'utf8'), 'report');
+    assert.equal(existsSync(path.join(metadata, 'HEAD')), true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('артефакты прошлых проверок удаляются перед прогоном', () => {
   const root = artifactProject({
     'apps/web/output/report/index.html': '<html></html>',
     'apps/web/output/trace.zip': 'zip',
     'apps/web/src/page.tsx': 'code',
   });
+  const run = artifactGit(root);
 
   try {
+    run('git', ['init', '--quiet']);
     const removed = removeValidationArtifacts(
       { validationArtifactPaths: ['apps/web/output', 'apps/web/missing'] },
-      { projectRoot: root, run: () => ({ status: 0, stdout: '', stderr: '' }) },
+      { projectRoot: root, run },
     );
 
     assert.deepEqual(removed, ['apps/web/output']);
@@ -664,20 +774,48 @@ test('артефакты прошлых проверок удаляются пе
 
 test('отслеживаемый путь Ralph не удаляет, а останавливает прогон', () => {
   const root = artifactProject({ 'docs/plan.md': 'план' });
+  const run = artifactGit(root);
 
   try {
+    run('git', ['init', '--quiet']);
+    run('git', ['add', '--', 'docs/plan.md']);
     assert.throws(
       () =>
         removeValidationArtifacts(
           { validationArtifactPaths: ['docs'] },
-          {
-            projectRoot: root,
-            run: () => ({ status: 0, stdout: 'docs/plan.md\0', stderr: '' }),
-          },
+          { projectRoot: root, run },
         ),
       /validationArtifactPaths.*docs.*Git/su,
     );
     assert.equal(existsSync(path.join(root, 'docs', 'plan.md')), true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('на Windows уборка сохраняет отслеживаемый путь после смены регистра', {
+  skip: process.platform !== 'win32',
+}, () => {
+  const root = artifactProject({ ' Report.txt': 'report', 'Results/check.txt': 'check' });
+  const run = artifactGit(root);
+
+  try {
+    run('git', ['init', '--quiet']);
+    run('git', ['add', '--', ' Report.txt', 'Results/check.txt']);
+    const intermediate = path.join(root, 'intermediate');
+    for (const [before, after] of [[' Report.txt', ' report.txt'], ['Results', 'results']]) {
+      renameSync(path.join(root, before), intermediate);
+      renameSync(intermediate, path.join(root, after));
+      for (const artifact of [before, after]) {
+        assert.throws(
+          () => removeValidationArtifacts(
+            { validationArtifactPaths: [artifact] }, { projectRoot: root, run },
+          ),
+          /validationArtifactPaths.*отслеживается Git/u,
+        );
+        assert.equal(existsSync(path.join(root, after)), true);
+      }
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -710,9 +848,11 @@ test('уборка идёт до preflight, а не после него', () => 
   // Preflight создаёт то, что нужно проверкам: генерация кода и миграции. Убор
   // после него снёс бы собственную подготовку прогона.
   const root = artifactProject({ 'output/old-report.html': 'прошлый прогон' });
+  const git = artifactGit(root);
   const order = [];
 
   try {
+    git('git', ['init', '--quiet']);
     runConfiguredValidation(
       hostValidationConfig({
         validationArtifactPaths: ['output'],
@@ -722,7 +862,9 @@ test('уборка идёт до preflight, а не после него', () => 
       {
         projectRoot: root,
         run: (command, args) => {
-          if (command === 'git') return { status: 0, stdout: '', stderr: '' };
+          if (command === 'git') {
+            return args[0] === '-C' ? git(command, args) : { status: 0, stdout: '', stderr: '' };
+          }
           order.push(args.at(-1));
           if (args.at(-1) === 'generate') {
             mkdirSync(path.join(root, 'output'), { recursive: true });
@@ -757,11 +899,13 @@ test('prepared callback observes generated files before guarded validation', () 
 
 
 test('issue staging includes generated files and preserves foreign paths', () => {
-  let status = ' M source.js';
+  let status = [{ index: ' ', worktree: 'M', path: 'source.js' }];
   const entries = validateIssueWorkingTree({}, new Set(['operator.txt']), {
-    workingTreeStatus: () => status,
+    readWorkingTreeEntries: () => status,
     runConfiguredValidation: (_config, options) => {
-      status = ' M source.js\n M generated.html\n?? generated-new.html\n M operator.txt';
+      status = [...status, { index: ' ', worktree: 'M', path: 'generated.html' },
+        { index: '?', worktree: '?', path: 'generated-new.html' },
+        { index: ' ', worktree: 'M', path: 'operator.txt' }];
       options.onPrepared();
     },
   });
@@ -769,14 +913,42 @@ test('issue staging includes generated files and preserves foreign paths', () =>
 });
 
 test('issue staging rejects mutations after preparation', () => {
-  let status = ' M source.js';
+  let status = [{ index: ' ', worktree: 'M', path: 'source.js' }];
   assert.throws(() => validateIssueWorkingTree({}, new Set(), {
-    workingTreeStatus: () => status,
+    readWorkingTreeEntries: () => status,
     runConfiguredValidation: (_config, options) => {
       options.onPrepared();
-      status += '\n?? test-created.txt';
+      status = [...status, { index: '?', worktree: '?', path: 'test-created.txt' }];
     },
   }), /Validation changed/);
+});
+
+test('issue staging blocks a foreign rename staged by preflight and preserves its index', () => {
+  const source = ' operator файл.txt';
+  const destination = 'renamed operator файл.txt';
+  const root = artifactProject({ [source]: 'operator work\n' });
+  const git = artifactGit(root);
+  let preparedIndex;
+
+  try {
+    git('git', ['init', '--quiet']);
+    git('git', ['add', '--', source]);
+    git('git', ['-c', 'user.name=Ralph test', '-c', 'user.email=ralph@example.test',
+      'commit', '--quiet', '-m', 'test: baseline']);
+    const foreign = process.platform === 'win32' ? source.toUpperCase() : source;
+    assert.throws(() => validateIssueWorkingTree({}, new Set([foreign]), {
+      readWorkingTreeEntries: () => readWorkingTreeEntries(git),
+      runConfiguredValidation: (_config, options) => {
+        git('git', ['mv', '--', source, destination]);
+        preparedIndex = git('git', ['write-tree']).stdout;
+        options.onPrepared();
+      },
+    }), /В индексе есть чужие изменения/u);
+    assert.equal(git('git', ['write-tree']).stdout, preparedIndex);
+    assert.equal(git('git', ['show', `:${destination}`]).stdout, 'operator work');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('committed recovery retries a connection failure once before escalation', () => {

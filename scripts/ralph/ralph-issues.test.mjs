@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import {
   existsSync,
   mkdirSync,
@@ -42,13 +42,15 @@ import {
   issueChangeInventory,
   linkedCommitForIssue,
   pushBranchAndVerify,
+  readWorkingTreeEntries,
   resetPinnedGitHubOrigin,
+  stageWorkingTreeEntries,
   syncPhaseBranchWithBase,
   verifyConfiguredGitHubOrigin,
-  workingTreeEntries,
-  workingTreePaths,
 } from './ralph-git.mjs';
 import {
+  approveConfiguredIssue,
+  assertTrustedIssue,
   issueBodyWithReviewContext,
   issueBodyWithoutRalphMetadata,
   issueCompletionState,
@@ -74,7 +76,9 @@ import {
   verifyGitHubAuthentication,
   verifyRepositoryWriteAccess,
 } from './ralph-github-client.mjs';
-import { ralphConfigPath, withPatchedRalphConfig } from './ralph-test-support.mjs';
+import { buildIndependentReviewPrompt } from './ralph-prompts.mjs';
+import { createStateStore } from './ralph-state-store.mjs';
+import { approvedLedgerFixture, ralphConfigPath, temporaryProjectTree, withPatchedRalphConfig } from './ralph-test-support.mjs';
 
 test('finding fingerprint is stable for Unicode titles and changes with location', () => {
   const pullRequest = { number: 61 };
@@ -270,11 +274,10 @@ test('a branch that moved on is judged by ancestry, not by an exact HEAD match',
 });
 
 test('the moved-branch check tells apart untouched files from contested ones', () => {
-  const run = (_name, args) => {
-    if (args[0] === 'diff' && args[1] === '--name-only') {
-      return { status: 0, stdout: 'scripts/ralph/ralph-loop.mjs\nAGENTS.md' };
-    }
-    return { status: 1, stdout: '' };
+  const run = (_name, args, options) => {
+    assert.deepEqual(args, ['diff', '--name-only', '-z', '--no-renames', 'old', 'new']);
+    assert.equal(options.rawStdout, true);
+    return { status: 0, stdout: 'scripts/ralph/ralph-loop.mjs\0AGENTS.md\0' };
   };
 
   // Оператор правил control plane, агент правит спеку: пересечения нет.
@@ -322,7 +325,7 @@ function inventoryRunner(commits) {
   const calls = [];
   const run = (_name, args) => {
     calls.push(args.join(' '));
-    if (args[0] === 'log') return { status: 0, stdout: commits.join('\n') };
+    if (args[0] === 'log') return { status: 0, stdout: commits.map((sha) => `${sha}\t#57`).join('\0') };
     if (args[0] === 'rev-parse') return { status: 0, stdout: 'd'.repeat(40) };
     if (args.includes('--name-status')) return { stdout: 'M\tsrc/items.ts' };
     if (args.includes('--stat')) return { stdout: ' src/items.ts | 4 +++-' };
@@ -371,6 +374,61 @@ test('a second iteration shows the issue commits only, not the range between the
     3,
     'ожидались три вызова show с обоими commit',
   );
+});
+
+test('the reviewed HEAD selects only new commits of this issue before truncating the patch', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'ralph-incremental-inventory-'));
+  const git = (args) => execFileSync('git', [
+    '-c', 'user.name=Ralph test', '-c', 'user.email=ralph@example.test', '-c', 'core.autocrlf=false', ...args,
+  ], { cwd: root, encoding: 'utf8' }).trim();
+  const run = (_name, args, { allowFailure = false } = {}) => {
+    try { return { status: 0, stdout: git(args) }; }
+    catch (error) {
+      if (!allowFailure) throw error;
+      return { status: error.status, stdout: error.stdout?.trim() ?? '' };
+    }
+  };
+  const commit = (file, content, message, trailer) => {
+    writeFileSync(path.join(root, file), content);
+    git(['add', '--', file]);
+    git(['commit', '--quiet', '-m', message, '-m', trailer]);
+    return git(['rev-parse', 'HEAD']);
+  };
+
+  try {
+    git(['init', '--quiet']);
+    const afterHead = commit('old.txt', 'already reviewed line\n'.repeat(4000), 'Large first change', 'Ralph-Issue: #57');
+    const unrelated = git(['commit-tree', git(['rev-parse', 'HEAD^{tree}']), '-m', 'Independent root']);
+    commit('other.txt', 'other issue payload\n', 'Another issue', 'Ralph-Issue: #570');
+    commit('near-match.txt', 'not an issue trailer\n', 'Unrelated change', 'Ralph-Issue: #57\textra');
+    const head = commit('fix.txt', 'exact new fix\n', 'Fix review finding', 'ralph-issue:#57');
+    assert.equal(git(['show', '-s', '--format=%(trailers:key=Ralph-Issue,valueonly)', head]), '#57');
+    const issue = { number: 57 };
+
+    const incremental = issueChangeInventory(issue, head, { afterHead, run });
+    assert.equal(incremental.afterHead, afterHead);
+    assert.deepEqual(incremental.commits, [head]);
+    assert.deepEqual(incremental.paths, ['fix.txt']);
+    assert.equal(incremental.truncated, false);
+    assert.match(incremental.diff, /\+exact new fix/u);
+    assert.doesNotMatch(incremental.diff, /already reviewed|other issue payload/u);
+    const prompt = buildIndependentReviewPrompt({ agentCli: 'claude' }, issue, head, {
+      changes: incremental,
+      previousReview: { commit: incremental.afterHead, newCommits: incremental.commits },
+      previousFindings: '- Missing guard in the original implementation.',
+    });
+    assert.match(prompt, /\+exact new fix/u);
+    assert.match(prompt, /Missing guard in the original implementation/u);
+    assert.doesNotMatch(prompt, /\+already reviewed line|\+other issue payload/u);
+
+    const fallback = issueChangeInventory(issue, head, { afterHead: unrelated, run });
+    assert.equal(fallback.afterHead, undefined);
+    assert.deepEqual(fallback.commits, [head, afterHead]);
+    assert.deepEqual(fallback.paths, ['old.txt', 'fix.txt']);
+    assert.equal(fallback.truncated, true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('a completion marker left by an older Ralph is read and then stripped', () => {
@@ -1024,44 +1082,65 @@ test('a top-level field the code does not read is rejected, not ignored', () => 
   );
 });
 
-// Сумму журнала печатают сообщения об остановке, когда эталона нет или он не
-// совпал. Тест считает её от журнала этой копии набора: журнал у каждого проекта
-// свой, а константа здесь повторяла бы значение из `.agents/ralph.config.json`
-// и разошлась бы с ним у любого, кто внёс в журнал запись.
-function currentLedgerHash() {
-  const ledgerPath = loadConfig().approvedIssueSnapshotsPath;
-  return createHash('sha256').update(readFileSync(ledgerPath)).digest('hex');
-}
+test('автоодобрение без журнала сохраняет доверенный снимок между запусками', () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'ralph-approval-state-'));
+  const statePath = path.join(directory, 'state.json');
+  const issue = { number: 7, title: 'Approved', body: 'Original criteria', authorLogin: 'owner' };
+  const noLedger = {
+    autoApproveConfiguredIssues: undefined,
+    approvedIssueSnapshotsFile: undefined,
+    approvedIssueSnapshotsHash: undefined,
+    trustedIssueAuthors: [],
+  };
+  const openStore = (config) => createStateStore(
+    { ...config, branch: 'ralph/phase', milestone: 'Fixture phase' }, '--run', statePath,
+  );
 
-test('the approved ledger checksum is taken from the operator config, not from the code', () => {
+  try {
+    withPatchedRalphConfig(noLedger, (config) => {
+      assert.deepEqual(config.approvedIssueSnapshots, {});
+      assert.equal(config.approvedIssueSnapshotsPath, undefined);
+      const store = openStore(config);
+      assert.throws(
+        () => approveConfiguredIssue(config, { ...issue, authorLogin: 'stranger' }, 'owner/repo', store),
+        /is not trusted/u,
+      );
+      approveConfiguredIssue(config, issue, 'owner/repo', store);
+      assert.equal(assertTrustedIssue(config, issue, 'owner/repo').body, issue.body);
+    });
+    withPatchedRalphConfig(noLedger, (config) => {
+      const store = openStore(config);
+      Object.assign(config.approvedIssueSnapshots, store.approvedIssueSnapshots);
+      const changed = { ...issue, body: 'Unapproved criteria' };
+      approveConfiguredIssue(config, changed, 'owner/repo', store);
+      assert.throws(() => assertTrustedIssue(config, changed, 'owner/repo'), /immutable snapshot/u);
+    });
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('the approved ledger checksum is taken from the operator config, not from the code', (t) => {
   // Эталон лежит в конфиге, потому что обновление набора перезаписывает
   // `scripts/ralph/**` целиком, а конфиг не трогает. Поэтому тест меняет журнал
   // и эталон вместе: сумма из конфига обязана разрешить прогон на содержимом,
   // которого код набора не знает.
-  const ledgerPath = loadConfig().approvedIssueSnapshotsPath;
-  const originalLedger = readFileSync(ledgerPath, 'utf8');
   const approved = { 7: { title: 'Approved', body: 'Approved body.' } };
-  const ledger = `${JSON.stringify(approved, null, 2)}\n`;
-
-  try {
-    writeFileSync(ledgerPath, ledger, 'utf8');
-    const hash = createHash('sha256').update(readFileSync(ledgerPath)).digest('hex');
-    withPatchedRalphConfig({ approvedIssueSnapshotsHash: hash }, (config) => {
-      assert.equal(config.approvedIssueSnapshotsHash, hash);
-      assert.deepEqual(config.approvedIssueSnapshots, approved);
-    });
-  } finally {
-    writeFileSync(ledgerPath, originalLedger, 'utf8');
-  }
+  const ledger = approvedLedgerFixture(t, `${JSON.stringify(approved, null, 2)}\n`);
+  withPatchedRalphConfig(ledger.fields, (config) => {
+    assert.equal(config.approvedIssueSnapshotsHash, ledger.fields.approvedIssueSnapshotsHash);
+    assert.deepEqual(config.approvedIssueSnapshots, approved);
+  });
 });
 
-test('a checksum that does not match the ledger stops the load', () => {
+test('a checksum that does not match the ledger stops the load', (t) => {
   // Журнал здесь целый, а эталон чужой: подделкой может быть и он, поэтому
   // расхождение останавливает прогон с любой стороны.
-  const ledgerHash = currentLedgerHash();
+  const ledger = approvedLedgerFixture(t);
+  const ledgerHash = ledger.fields.approvedIssueSnapshotsHash;
   assert.throws(
     () =>
-      withPatchedRalphConfig({ approvedIssueSnapshotsHash: '0'.repeat(64) }, () => {
+      withPatchedRalphConfig({ ...ledger.fields, approvedIssueSnapshotsHash: '0'.repeat(64) }, () => {
         throw new Error('loadConfig should have failed');
       }),
     (error) => {
@@ -1074,13 +1153,14 @@ test('a checksum that does not match the ledger stops the load', () => {
   );
 });
 
-test('a missing checksum key stops the load and says what to write', () => {
+test('a missing checksum for an explicit ledger stops the load and says what to write', (t) => {
   // Ключа нет — Ralph не сверит журнал ни с чем, и молчаливое умолчание здесь
   // означало бы, что автономная сессия одобряет себе задачи сама.
-  const ledgerHash = currentLedgerHash();
+  const ledger = approvedLedgerFixture(t);
+  const ledgerHash = ledger.fields.approvedIssueSnapshotsHash;
   assert.throws(
     () =>
-      withPatchedRalphConfig({ approvedIssueSnapshotsHash: undefined }, () => {
+      withPatchedRalphConfig({ ...ledger.fields, approvedIssueSnapshotsHash: undefined }, () => {
         throw new Error('loadConfig should have failed');
       }),
     (error) => {
@@ -1091,13 +1171,14 @@ test('a missing checksum key stops the load and says what to write', () => {
   );
 });
 
-test('a checksum in the wrong shape stops the load before it is compared', () => {
+test('a checksum in the wrong shape stops the load before it is compared', (t) => {
   // Обрезанная или набранная заглавными сумма никогда не совпадёт с посчитанной,
   // и «не совпадает» увело бы оператора проверять журнал вместо своей опечатки.
-  for (const value of ['ABC', currentLedgerHash().toUpperCase(), 42]) {
+  const ledger = approvedLedgerFixture(t);
+  for (const value of ['ABC', ledger.fields.approvedIssueSnapshotsHash.toUpperCase(), 42]) {
     assert.throws(
       () =>
-        withPatchedRalphConfig({ approvedIssueSnapshotsHash: value }, () => {
+        withPatchedRalphConfig({ ...ledger.fields, approvedIssueSnapshotsHash: value }, () => {
           throw new Error('loadConfig should have failed');
         }),
       /должно содержать SHA-256: 64 знака шестнадцатеричной записи в нижнем регистре/u,
@@ -1105,12 +1186,13 @@ test('a checksum in the wrong shape stops the load before it is compared', () =>
   }
 });
 
-test('a checksum pasted with spaces around it still matches the ledger', () => {
+test('a checksum pasted with spaces around it still matches the ledger', (t) => {
   // Сумму копируют из сообщения об остановке, и терминал приносит её вместе с
   // переводом строки. Без обрезки человек получил бы претензию к форме значения
   // вместо расхождения, которого нет.
-  const hash = currentLedgerHash();
-  withPatchedRalphConfig({ approvedIssueSnapshotsHash: `  ${hash}\n` }, (config) => {
+  const ledger = approvedLedgerFixture(t);
+  const hash = ledger.fields.approvedIssueSnapshotsHash;
+  withPatchedRalphConfig({ ...ledger.fields, approvedIssueSnapshotsHash: `  ${hash}\n` }, (config) => {
     assert.equal(config.approvedIssueSnapshotsHash, hash);
   });
 });
@@ -1125,7 +1207,7 @@ test('the console marks the fields the config cannot do without', () => {
       if (field.required === true) marked.add(field.path);
     }
   }
-  assert.deepEqual(marked, new Set(['prompt', 'phases', 'approvedIssueSnapshotsHash']));
+  assert.deepEqual(marked, new Set(['prompt', 'phases']));
 });
 
 test('умолчание не убирает артефакты проверок', () => {
@@ -1606,22 +1688,51 @@ test('после отказа ревью база следующей сесси�
   );
 });
 
-test('разбор git status переживает обрезку пробелов и переименование', () => {
-  // `run` обрезает пробелы по краям вывода, поэтому первая строка приходит без
-  // ведущего пробела статуса: срез на три символа съел бы первый символ её пути.
-  const raw = ' M src/app/items/item-form.ts\n M e2e/example.spec.ts\n';
+test('машинный статус Git сохраняет пробелы, Unicode, обе стороны rename и колонки', () => {
+  const source = 'old файл.txt';
+  const destination = ' renamed файл.txt';
+  const modified = '  leading space.txt';
+  const untracked = 'untracked/ещё файл.txt';
+  const deleted = 'staged removal.txt';
+  const literal = 'literal [x].txt';
+  const unrelated = 'literal x.txt';
+  const root = temporaryProjectTree({ [source]: 'rename me\n', [modified]: 'before\n', [deleted]: 'remove me\n' });
+  const git = (args) => execFileSync('git', args, { cwd: root, encoding: 'utf8' });
 
-  assert.deepEqual(workingTreePaths(raw), workingTreePaths(raw.trim()));
-  assert.deepEqual(workingTreePaths(raw.trim()), [
-    'src/app/items/item-form.ts',
-    'e2e/example.spec.ts',
-  ]);
+  git(['init', '--quiet']);
+  git(['add', '--', source, modified, deleted]);
+  git(['-c', 'user.name=Ralph test', '-c', 'user.email=ralph@example.test', 'commit', '--quiet', '-m', 'test: fixture']);
+  git(['mv', '--', source, destination]);
+  git(['rm', '--', deleted]);
+  writeFileSync(path.join(root, destination), 'modified after staging rename\n');
+  writeFileSync(path.join(root, modified), 'after\n');
+  mkdirSync(path.join(root, 'untracked'));
+  writeFileSync(path.join(root, untracked), 'draft\n');
+  writeFileSync(path.join(root, literal), 'exact path\n');
+  writeFileSync(path.join(root, unrelated), 'operator file\n');
 
-  // Непрослеженные файлы и переименования: из `R old -> new` нужен новый путь.
-  assert.deepEqual(workingTreePaths('?? design/example.pen\nR  a.ts -> b.ts'), [
-    'design/example.pen',
-    'b.ts',
-  ]);
+  const entries = readWorkingTreeEntries((command, args, options) => {
+    assert.equal(command, 'git');
+    assert.equal(options.rawStdout, true);
+    return { status: 0, stdout: git(args) };
+  });
+  assert.deepEqual(new Map(entries.map((entry) => [entry.path, entry])), new Map([
+    [modified, { index: ' ', worktree: 'M', path: modified }],
+    [destination, { index: 'R', worktree: 'M', path: destination, originalPath: source }],
+    [deleted, { index: 'D', worktree: ' ', path: deleted }],
+    [untracked, { index: '?', worktree: '?', path: untracked }],
+    [literal, { index: '?', worktree: '?', path: literal }],
+    [unrelated, { index: '?', worktree: '?', path: unrelated }],
+  ]));
+  stageWorkingTreeEntries(entries.filter(({ path: file }) => file !== unrelated), (_command, args) => git(args));
+  assert.match(git(['show', `:${destination}`]), /modified after staging rename/u);
+  assert.deepEqual(
+    new Set(git(['diff', '--cached', '--name-only', '-z', '--no-renames']).split('\0').filter(Boolean)),
+    new Set([source, destination, modified, untracked, deleted, literal]),
+  );
+  git(['-c', 'user.name=Ralph test', '-c', 'user.email=ralph@example.test', 'commit', '--quiet', '-m', 'test: staged paths']);
+  assert.match(git(['show', `HEAD:${destination}`]), /modified after staging rename/u);
+  assert.equal(git(['status', '--porcelain=v1', '-z']), `?? ${unrelated}\0`);
 });
 
 test('пределы повторов разведены по цене одной попытки', () => {
@@ -1932,36 +2043,6 @@ The pull request remains draft so a human can make the final merge decision.`;
     milestonePassReviewIsClean(passBody('\n- **P1 — дефект** (a.ts:1)\n  текст\n'), marker),
     false,
   );
-});
-
-test('уже застадированное удаление не попадает в git add', () => {
-  // `git rm` убирает файл и из дерева, и из индекса. Путь остаётся в porcelain
-  // как `D `, но `git add` по нему отвечает `did not match any files` и роняет
-  // прогон кодом 128.
-  const status = [
-    ' M src/items/items.controller.ts',
-    'D  src/items/services/item-uploader.service.ts',
-    '?? src/items/services/item-uploader-renamed.service.ts',
-  ].join('\n');
-
-  const entries = workingTreeEntries(status.trim());
-  assert.deepEqual(
-    entries.map((entry) => `${entry.index}${entry.worktree}`),
-    [' M', 'D ', '??'],
-  );
-
-  // Стадировать нужно только изменённое в дереве; удаление уже в индексе и в
-  // коммит попадёт само.
-  assert.deepEqual(
-    entries.filter((entry) => entry.worktree !== ' ').map((entry) => entry.path),
-    [
-      'src/items/items.controller.ts',
-      'src/items/services/item-uploader-renamed.service.ts',
-    ],
-  );
-
-  // Список путей задачи при этом полный: удалённый файл — тоже её изменение.
-  assert.equal(workingTreePaths(status.trim()).length, 3);
 });
 
 /**

@@ -1,12 +1,31 @@
 import { run } from './ralph-process-runner.mjs';
-import { isRalphInfrastructurePath } from './ralph-scope.mjs';
+import { holdIssuePublication, issueForeignPaths } from './ralph-state-store.mjs';
+import { isRalphInfrastructureGitPath } from './ralph-scope.mjs';
 import { clearedFailure } from './ralph-failure-summary.mjs';
-import { filesChangedBetween, isAncestorCommit, validateRecoveredCommit, verifyRepository, workingTreePaths } from './ralph-git.mjs';
+import { assertTrustedIssue } from './ralph-issue-contract.mjs';
+import { publicIssueIdentity } from './ralph-github-client.mjs';
+import {
+  filesChangedBetween, gitPathKey, isAncestorCommit, localGitHubRepository, readWorkingTreeEntries,
+  validateRecoveredCommit, verifyRepository, workingTreeEntryPaths,
+} from './ralph-git.mjs';
 
 export const committedRecoveryPhases = ['committed', 'pushed', 'reviewing', 'closing'];
 const workingPhases = new Set([
   'agent-running', 'working-tree', 'validating', 'validation-mutated', 'validation-diagnostic',
 ]);
+
+export function savedIssueReview(issue, head) {
+  if (!issue || !head) return null;
+  if (issue.reviewReceipt) {
+    return issue.reviewReceipt.head === head ? issue.reviewReceipt.result : null;
+  }
+  // Legacy state kept the issue commit and the published HEAD separately.
+  // Only a closing state with both values equal proves this exact HEAD passed.
+  if (issue.phase === 'closing' && issue.reviewedCommit === head && issue.pushedHead === head) {
+    return { verdict: 'pass', summary: 'Review passed on a previous run; the reviewed commit is unchanged.', findings: [] };
+  }
+  return null;
+}
 
 /** A failed revalidation needs a new fix on top of the preserved commit. */
 export function committedValidationFailurePatch(issue, error) {
@@ -17,7 +36,9 @@ export function committedValidationFailurePatch(issue, error) {
     phase: 'working-tree',
     startingCommit: issue.recoveryHead ?? issue.pushedHead ?? issue.commit,
     foreignPaths: [],
-    commit: null, recoveryHead: null, pushedHead: null, reviewedCommit: null,
+    commit: null, recoveryHead: null, pushedHead: null, reviewedCommit: null, reviewReceipt: null,
+    publicationCheckpoint: null,
+    ...holdIssuePublication(issue),
     expectedTree: null, commitMessage: null,
     validationExpectedTreeHash: null, validationFailureFingerprint: null,
     validationFixAttempts: (issue.validationFixAttempts ?? 0) + 1,
@@ -36,6 +57,24 @@ export function hasAcceptedLisaIssueRepair(state, issue = state?.issue) {
 
 function blocked(message) {
   throw Object.assign(new Error(message), { code: 'RALPH_RECOVERY_BLOCKED' });
+}
+
+export function resumeAcceptedIssue(config, stateStore, dependencies = {}) {
+  const issue = stateStore?.issue;
+  if (!issue || !config.approvedIssueSnapshots?.[issue.number]) return null;
+  if (stateStore.state?.branch !== config.branch || stateStore.state?.milestone !== config.milestone) {
+    blocked(`Issue #${issue.number}: ветка или milestone не совпали с сохранённой задачей.`);
+  }
+  const repository = (dependencies.localGitHubRepository ?? localGitHubRepository)(config, dependencies);
+  if (!repository) return null;
+
+  const target = publicIssueIdentity(issue.url);
+  if (!target) return null;
+  if (target.repository !== repository || target.number !== issue.number) {
+    blocked(`Issue #${issue.number}: сохранённая задача не соответствует локальному origin.`);
+  }
+  const trusted = assertTrustedIssue(config, issue, repository);
+  return { ...trusted, state: 'OPEN', acceptedRepository: repository, expectedMilestone: config.milestone };
 }
 
 /** Read-only decision shared by check, run and explicit operator acceptance. */
@@ -72,9 +111,8 @@ export function analyzeRecovery(config, issue, dependencies = {}) {
       blocked('Ручной коммит не содержит продолжения сохранённой задачи.');
     }
     if (issue.phase === 'review-failed') {
-      const changed = git('diff', '--name-only', '--no-renames', issue.startingCommit, manualCommit)
-        .split(/\r?\n/).filter(Boolean);
-      if (!changed.some((file) => !isRalphInfrastructurePath(file))) {
+      const changed = filesChangedBetween(issue.startingCommit, manualCommit, execute);
+      if (!changed?.some((file) => !isRalphInfrastructureGitPath(file))) {
         blocked('Ручной коммит не содержит исправления после отклонённого ревью.');
       }
     }
@@ -84,8 +122,9 @@ export function analyzeRecovery(config, issue, dependencies = {}) {
     for (const commit of commits) {
       const parents = git('show', '-s', '--format=%P', commit).split(' ');
       if (parents.length !== 1) blocked('Ручное принятие не поддерживает слияния; требуется разбор истории.');
-      const paths = git('diff-tree', '--no-commit-id', '--name-only', '--no-renames', '-r', commit).split(/\r?\n/).filter(Boolean);
-      if (paths.every(isRalphInfrastructurePath)) continue;
+      const paths = execute('git', ['diff-tree', '--no-commit-id', '--name-only', '-z', '--no-renames', '-r', commit],
+        { rawStdout: true }).stdout.split('\0').filter(Boolean);
+      if (paths.every(isRalphInfrastructureGitPath)) continue;
       const trailer = git('show', '-s', '--format=%(trailers:key=Ralph-Issue,valueonly)', commit);
       if (trailer !== `#${issue.number}` || !isAncestorCommit(commit, manualCommit, execute)) {
         blocked(`После сохранённой базы найден посторонний продуктовый коммит ${commit}.`);
@@ -95,16 +134,13 @@ export function analyzeRecovery(config, issue, dependencies = {}) {
       kind: 'accept-manual', head,
       patch: {
         phase: 'committed', commit: manualCommit, recoveryHead: head,
-        reviewedCommit: null, pushedHead: null, expectedTree: null, commitMessage: null,
+        reviewedCommit: null, reviewReceipt: null, pushedHead: null, expectedTree: null, commitMessage: null,
+        publicationCheckpoint: null,
+        ...holdIssuePublication(issue, head),
         ...(issue.processReportRepair ? { processReportRepair: null } : {}),
         validationExpectedTreeHash: null, validationFailureFingerprint: null, ...clearedFailure,
       },
     };
-  }
-  if (issue.phase === 'validation-mutated') {
-    if (!issue.validationExpectedTreeHash || dependencies.hostWorkingTreeHash?.() !== issue.validationExpectedTreeHash) {
-      blocked(`Issue #${issue.number}: восстановите точное дерево до изменения host-проверкой.`);
-    }
   }
   if (committedRecoveryPhases.includes(issue.phase)) {
     if (status !== '') blocked(`Issue #${issue.number}: committed recovery требует чистое рабочее дерево.`);
@@ -113,6 +149,12 @@ export function analyzeRecovery(config, issue, dependencies = {}) {
       blocked(`Issue #${issue.number}: HEAD изменился после сохранённого коммита или ревью; требуется явное принятие и новая проверка.`);
     }
     return ready;
+  }
+  issueForeignPaths(issue);
+  if (issue.phase === 'validation-mutated') {
+    if (!issue.validationExpectedTreeHash || dependencies.hostWorkingTreeHash?.() !== issue.validationExpectedTreeHash) {
+      blocked(`Issue #${issue.number}: восстановите точное дерево до изменения host-проверкой.`);
+    }
   }
   if (issue.phase === 'staging' && issue.expectedTree && head !== issue.startingCommit) {
     if (status !== '') blocked('После staging найдены новый HEAD и незакоммиченные изменения.');
@@ -129,9 +171,9 @@ export function analyzeRecovery(config, issue, dependencies = {}) {
       return { kind: 'advance', head, patch: { startingCommit: head } };
     }
     if (workingPhases.has(phase) && status !== '') {
-      const dirty = new Set(workingTreePaths(status));
+      const dirty = new Set(readWorkingTreeEntries(execute).flatMap(workingTreeEntryPaths).map(gitPathKey));
       const moved = filesChangedBetween(issue.startingCommit, head, execute);
-      if (moved !== null && moved.every((file) => !dirty.has(file))) {
+      if (moved !== null && moved.every((file) => !dirty.has(gitPathKey(file)))) {
         return { kind: 'advance', head, patch: { startingCommit: head } };
       }
     }

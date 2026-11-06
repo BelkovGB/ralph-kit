@@ -241,7 +241,22 @@ export function withPatchedRalphConfig(patch, assertConfig) {
   for (const [field, value] of Object.entries(candidate)) {
     if (value === undefined) delete candidate[field];
   }
-  assertConfig(prepareConfig(candidate));
+  return assertConfig(prepareConfig(candidate));
+}
+
+export function approvedLedgerFixture(testContext, content = '{}\n') {
+  const projectRoot = path.dirname(path.dirname(ralphConfigPath));
+  const directory = mkdtempSync(path.join(projectRoot, 'ralph-ledger-fixture-'));
+  const file = path.join(directory, 'approved-issues.json');
+  testContext.after(() => rmSync(directory, { recursive: true, force: true }));
+  writeFileSync(file, content, 'utf8');
+  return {
+    file,
+    fields: {
+      approvedIssueSnapshotsFile: path.relative(projectRoot, file),
+      approvedIssueSnapshotsHash: trustedFileHash(file),
+    },
+  };
 }
 
 let cachedControlPlane = null;

@@ -148,7 +148,9 @@ function issueChangeHeading(changes) {
       ? `across the ${commits.length} commits of this issue (${commits.join(', ')})`
       : `in commit ${changes.commit}`;
 
-  return `Changes ${range}. This is the complete set of changes made for this issue.`;
+  return changes.afterHead
+    ? `New issue changes ${range} since reviewed HEAD ${changes.afterHead}.`
+    : `Changes ${range}. This is the complete set of changes made for this issue.`;
 }
 
 // Ревьюер, которому не сказали, что проверки уже прошли, тратит шаги на их
@@ -207,6 +209,9 @@ export function buildIndependentReviewPrompt(config, issue, commit, context = {}
     ? `\n\nIssue process (${pack.kind}). ${pack.review}` +
       (pack.reportPath ? ` The deliverable is ${pack.reportPath}.` : '')
     : '';
+  const auditScope = context.changes?.afterHead
+    ? 'Audit every newly changed file and each affected requirement: correctness, edge cases, regressions, security, and test coverage.'
+    : auditInstruction;
 
   return `Review the current branch state at HEAD as the implementation of GitHub issue #${issue.number}: ${issue.title}. Commit ${commit} is the claimed implementation commit; verify that the current HEAD still satisfies the issue and has not regressed it.
 
@@ -217,7 +222,7 @@ ${automatedReviewGuidance(context.changes)}
 
 Complete the entire audit before deciding the verdict. Do not stop after the first problem. Return every distinct, actionable finding you can substantiate in this single response, without duplicates and without inventing findings to fill a quota.
 
-${auditInstruction}
+${auditScope}
 
 ${reviewShellGuidance(config)}
 

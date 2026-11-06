@@ -3,7 +3,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { fail } from './ralph-scope.mjs';
+import { fail, isAgentInstructionFileName } from './ralph-scope.mjs';
 import {
   applyGitHubAccount,
   applyRuntimeSettings,
@@ -98,13 +98,6 @@ const ignoredAgentInstructionDirectories = new Set([
  */
 const toolManagedClaudeFiles = new Set(['scheduled_tasks.lock']);
 
-/**
- * Имена файлов инструкций, которые агент читает сам, где бы они ни лежали.
- * `AGENTS.md` читает Codex, `CLAUDE.md` — Claude Code, и оба управляют будущей
- * сессией одинаково, поэтому и защищены одинаково.
- */
-const instructionFileNames = new Set(['AGENTS.md', 'CLAUDE.md']);
-
 export function agentInstructionFiles(directory = projectRoot, root = directory) {
   const files = [];
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
@@ -116,7 +109,7 @@ export function agentInstructionFiles(directory = projectRoot, root = directory)
     }
     // Хеш-карта доверенных файлов структурно не видит добавленный файл, поэтому
     // набор инструкций собирается заново.
-    if (instructionFileNames.has(entry.name) || isInstructionDirectory(directory, root)) {
+    if (isAgentInstructionFileName(entry.name) || isInstructionDirectory(directory, root)) {
       if (!toolManagedClaudeFiles.has(entry.name)) {
         files.push(path.join(directory, entry.name));
       }
@@ -484,7 +477,6 @@ function applyLoopDefaults(config) {
   config.rulesFile ??= '.agents/ralph-rules.md';
   config.autoApproveConfiguredIssues ??= true;
   config.trustedIssueAuthors ??= [];
-  config.approvedIssueSnapshotsFile ??= 'scripts/ralph/approved-issues.json';
 }
 
 // Форма эталонной суммы: 64 знака шестнадцатеричной записи в нижнем регистре.
@@ -500,6 +492,13 @@ const approvedIssueSnapshotsHashPattern = /^[0-9a-f]{64}$/u;
  * обновление вместе с журналом проекта.
  */
 function readApprovedIssueSnapshots(config) {
+  if (config.autoApproveConfiguredIssues === true &&
+      config.approvedIssueSnapshotsFile === undefined && config.approvedIssueSnapshotsHash === undefined) {
+    config.approvedIssueSnapshots = {};
+    return;
+  }
+
+  config.approvedIssueSnapshotsFile ??= 'scripts/ralph/approved-issues.json';
   const approvedIssueSnapshotsPath = resolveProjectFile(
     config.approvedIssueSnapshotsFile,
     'approvedIssueSnapshotsFile',
@@ -664,6 +663,13 @@ function validateApprovedIssueSnapshots(config) {
 const maxValidationCommandLength = 500;
 const commandControlOperators = /[;&|`]/u;
 
+export function isGitWorktreeMarkerPath(relativePath) {
+  const marker = path.posix.normalize(relativePath.replaceAll('\\', '/')).split('/')[0];
+  return process.platform === 'win32'
+    ? marker.replace(/[. ]+$/u, '').toLowerCase() === '.git'
+    : marker === '.git';
+}
+
 function validateValidationCommands(config) {
   const profiles = config.validationProfiles;
   if (profiles !== undefined && (
@@ -722,7 +728,6 @@ function validateValidationCommands(config) {
         normalized.startsWith('/') ||
         /^[a-zA-Z]:/.test(normalized) ||
         segments.includes('..') ||
-        segments[0] === '.git' ||
         normalized === '.'
       );
     })
@@ -731,6 +736,10 @@ function validateValidationCommands(config) {
       'Поле "validationArtifactPaths" должно быть массивом относительных путей внутри проекта, ' +
         'вне каталога .git.',
     );
+  }
+  const gitArtifact = config.validationArtifactPaths.find(isGitWorktreeMarkerPath);
+  if (gitArtifact !== undefined) {
+    fail(`Поле "validationArtifactPaths": путь ${gitArtifact} принадлежит служебным данным Git.`);
   }
   if (
     !Array.isArray(config.validationEnvironment) ||
@@ -1008,7 +1017,7 @@ function collectTrustedControlFileHashes(config) {
   const trustedControlFiles = [
     configPath,
     config.rulesPath,
-    config.approvedIssueSnapshotsPath,
+    ...(config.approvedIssueSnapshotsPath ? [config.approvedIssueSnapshotsPath] : []),
     // Модули перечислены поимённо, а не сканированием каталога: сканирование
     // приняло бы в доверенный набор любой подложенный файл. Тест требует, чтобы
     // каждый .mjs из scripts/ralph был в этом списке.

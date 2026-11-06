@@ -54,12 +54,17 @@ export function verifyGitHubAuthentication(config, dependencies = {}) {
  * на push ветки или закрытии issue — то есть после того, как агент отработал,
  * а commit уже создан.
  */
-export function verifyRepositoryWriteAccess(repository, dependencies = {}) {
+export function repositoryPermissions(repository, dependencies = {}) {
   const execute = dependencies.runNetwork ?? runNetwork;
-  const permissions = parseJson(
+  return parseJson(
     execute('gh', ['api', `repos/${repository}`, '--jq', '.permissions']).stdout,
     `gh api repos/${repository}`,
   );
+}
+
+export function verifyRepositoryWriteAccess(repository, dependencies = {}) {
+  const execute = dependencies.runNetwork ?? runNetwork;
+  const permissions = repositoryPermissions(repository, dependencies);
   if (permissions?.push === true) return permissions;
 
   const login = execute('gh', ['api', 'user', '--jq', '.login'], { allowFailure: true }).stdout;
@@ -98,23 +103,24 @@ export function githubPagedArray(repository, resource, fields, source, dependenc
   );
 }
 
-export function verifyMilestone(repository, title) {
+export function verifyMilestones(repository, titles, dependencies = {}) {
   const milestones = githubPagedArray(
     repository,
     'milestones',
     [['state', 'all']],
     'GitHub milestones API',
+    dependencies,
   );
-  const matches = milestones.filter((milestone) => milestone.title === title);
-
-  if (matches.length === 0) {
-    fail(`Milestone с точным названием "${title}" не найден в ${repository}.`);
-  }
-  if (matches.length > 1) {
-    fail(`В ${repository} найдено несколько milestones с названием "${title}".`);
-  }
-
-  return matches[0];
+  return titles.map((title) => {
+    const matches = milestones.filter((milestone) => milestone.title === title);
+    if (matches.length === 0) {
+      fail(`Milestone с точным названием "${title}" не найден в ${repository}.`);
+    }
+    if (matches.length > 1) {
+      fail(`В ${repository} найдено несколько milestones с названием "${title}".`);
+    }
+    return matches[0];
+  });
 }
 
 export function openIssues(repository, milestone) {
@@ -173,11 +179,17 @@ export function refreshIssue(repository, issueNumber) {
     // Номер milestone отличает вынутую из фазы задачу от закрытой: обе пропадают
     // из списка фазы, но вынутая остаётся открытой.
     milestone: issue.milestone?.number ?? null,
+    milestoneTitle: issue.milestone?.title ?? null,
     updatedAt: issue.updated_at,
     authorLogin: issue.user?.login ?? null,
     authorAssociation: issue.author_association ?? null,
     labels: issue.labels ?? [],
   };
+}
+
+export function publicIssueIdentity(url) {
+  const target = /^https:\/\/github\.com\/([a-z0-9_.-]+\/[a-z0-9_.-]+)\/issues\/(\d+)\/?$/iu.exec(url ?? '');
+  return target ? { repository: target[1].toLowerCase(), number: Number(target[2]) } : null;
 }
 
 export function patchIssue(repository, issueNumber, values, { retry = true } = {}) {

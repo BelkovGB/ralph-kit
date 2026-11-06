@@ -24,7 +24,7 @@ function fixture(t, phase = 'review-failed') {
   const head = run('git', ['rev-parse', 'HEAD']).stdout;
   const issue = { number: 12, phase, startingCommit: head, commit: head,
     recoveryHead: head, reviewedCommit: head, pushedHead: head, expectedTree: 'old',
-    reviewFixAttempts: 2, validationFixAttempts: 1, foreignPaths: ['unrelated.txt'],
+    reviewFixAttempts: 2, validationFixAttempts: 1, foreignPaths: ['unrelated.txt'], foreignPathsFormat: 'exact-v1',
     reviewFindings: 'A regression scenario is missing' };
   const store = { issue, updateIssue(patch) { Object.assign(issue, patch); } };
   return { root, run, head, issue, store, config: { branch: 'main' },
@@ -66,6 +66,18 @@ test('clean committed recovery keeps validated commit evidence', (t) => {
   const before = structuredClone(f.issue);
   supervisor.prepareLisaResume(f.config, f.store, f.before, { run: f.run });
   assert.deepEqual(f.issue, before);
+});
+
+test('Lisa invalidates review without losing an unpublished commit', (t) => {
+  const f = fixture(t, 'reviewing');
+  f.issue.pushedHead = 'previously-published';
+  f.issue.pendingPublishHead = f.head;
+  f.issue.reviewReceipt = { head: f.head, result: { verdict: 'pass', summary: 'Reviewed', findings: [] } };
+  f.edit();
+  supervisor.prepareLisaResume(f.config, f.store, f.before, { run: f.run });
+  assert.equal(f.issue.reviewReceipt, null);
+  assert.equal(f.issue.pendingPublishHead, f.head);
+  assert.equal(f.issue.lastPublishedHead, 'previously-published');
 });
 
 test('iteration-limit after review failure resumes through real recovery with Lisa edits', async (t) => {

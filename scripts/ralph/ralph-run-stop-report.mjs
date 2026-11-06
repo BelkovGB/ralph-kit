@@ -103,6 +103,7 @@ function renderReport({ runId, startedAt, stoppedAt, durationMs, phase, limits, 
 - Последний выполненный шаг — ${known(step, steps)}. Выполненное ревью может вернуть FAIL.
 - Проверенный коммит задачи — ${id(lastReview?.commit, sha)}
 - Подтверждённый HEAD ветки при отправке коммита — ${id(lastReview?.pushedHead, sha)}
+- Локальный HEAD, ожидающий публикации — ${id(issue?.pendingPublishHead, sha)}
 - Задачи оставлены открытыми при парковке.
 - PR по данным фазы — ${count(pullRequest) === missing ? missing : `#${pullRequest}`}. HEAD PR — ${id(phase.pullRequestHead, sha)}
 - Действие владельца — разобрать оставшиеся замечания в задачах и проверить сохранённое состояние перед повторным запуском.

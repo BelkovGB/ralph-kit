@@ -82,6 +82,7 @@ test('real --run reports both review parks and Lisa restart in one safe file', a
     git(root, 'config', 'commit.gpgsign', 'false');
     git(root, 'add', '.');
     git(root, 'commit', '--quiet', '-m', 'fixture');
+    const base = git(root, 'rev-parse', 'HEAD');
     git(workspace, 'init', '--quiet', '--template=', '--bare', remote);
     git(root, 'switch', '--quiet', '-c', branch);
     git(root, 'remote', 'add', 'origin', remote);
@@ -121,7 +122,13 @@ test('real --run reports both review parks and Lisa restart in one safe file', a
       const state = JSON.parse(readFileSync(statePath, 'utf8'));
       assert.equal(state.status, 'active');
       assert.equal(state.lisaRepair.status, 'needs-human');
-      assert.equal(git(remote, 'rev-parse', 'refs/heads/' + branch), state.issue.reviewedCommit);
+      const localHead = git(root, 'rev-parse', 'HEAD');
+      assert.notEqual(localHead, base);
+      assert.equal(git(remote, 'rev-parse', 'refs/heads/' + branch), base);
+      assert.equal(state.issue.reviewedCommit, localHead);
+      assert.equal(state.issue.reviewReceipt.head, localHead);
+      assert.equal(state.issue.reviewReceipt.result.verdict, 'fail');
+      assert.equal(state.issue.pendingPublishHead, localHead);
 
       const names = readdirSync(reports);
       assert.equal(names.length, 1);
@@ -139,6 +146,8 @@ test('real --run reports both review parks and Lisa restart in one safe file', a
       assert.ok(report.includes('Шаг отказа — `review-failed`. Восстановление шага подтверждено — нет'));
       assert.ok(report.includes('Вызовы Lisa за этот запуск — 1. Из бюджета фазы — 1 из 1'));
       assert.ok(report.includes('Отказы тестов по отложенным задачам за запуск — 1.'));
+      assert.ok(report.includes('Подтверждённый HEAD ветки при отправке коммита — нет данных'));
+      assert.ok(report.includes(`Локальный HEAD, ожидающий публикации — \`${localHead}\``));
       assert.match(report, /Длительность — \d+ мс/u);
       assert.doesNotMatch(report, /PRIVATE_|ghp_TEST_SECRET|private\.example\.test|product\.mjs|owner\/repo/u);
       assert.ok(!report.includes(workspace));
@@ -154,6 +163,7 @@ test('real --run reports both review parks and Lisa restart in one safe file', a
       assert.equal(retry.status, 1, retry.stdout + retry.stderr);
       const resumedState = JSON.parse(readFileSync(statePath, 'utf8'));
       assert.equal(resumedState.runId, state.runId);
+      assert.equal(git(remote, 'rev-parse', 'refs/heads/' + branch), base);
       assert.equal(readdirSync(reports).length, 2);
       assert.equal(readFileSync(reportPath, 'utf8'), report);
       const resumedReportPath = guiState().stopReportPath;

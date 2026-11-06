@@ -344,7 +344,8 @@ test('вердикт PASS переживает падение на закрыт�
     setActiveStateStore(store);
 
     // Фаза после PASS: тот же commit повторно ревьюить незачем.
-    store.updateIssue({ phase: 'closing', commit: 'b'.repeat(40), reviewedCommit: 'b'.repeat(40) });
+    store.updateIssue({ phase: 'closing', commit: 'b'.repeat(40), reviewedCommit: 'b'.repeat(40),
+      pushedHead: 'b'.repeat(40) });
     assert.equal(reviewAlreadyPassed(issue, 'b'.repeat(40)), true);
 
     // Другой commit — другое дерево, вердикт к нему не относится.
@@ -356,6 +357,18 @@ test('вердикт PASS переживает падение на закрыт�
     // закрыл бы issue, которую ревью отклонило.
     store.updateIssue({ phase: 'review-failed' });
     assert.equal(reviewAlreadyPassed(issue, 'b'.repeat(40)), false);
+
+    // Старый формат не доказывает вердикт, если был проверен потомок commit.
+    store.updateIssue({ phase: 'closing', pushedHead: 'c'.repeat(40) });
+    assert.equal(reviewAlreadyPassed(issue, 'b'.repeat(40)), false);
+    assert.equal(reviewAlreadyPassed(issue, 'c'.repeat(40)), false);
+
+    store.updateIssue({ phase: 'pushed', reviewReceipt: { head: 'c'.repeat(40),
+      result: { verdict: 'pass', summary: 'Verified HEAD', findings: [] } } });
+    const restored = createStateStore(config, '--run', statePath);
+    setActiveStateStore(restored);
+    assert.equal(reviewAlreadyPassed(issue, 'b'.repeat(40)), false);
+    assert.equal(reviewAlreadyPassed(issue, 'c'.repeat(40)), true);
   } finally {
     setActiveStateStore(null);
     rmSync(directory, { recursive: true, force: true });

@@ -145,7 +145,8 @@ test('a repeat review is told what the previous one already cleared', () => {
     {
       changes: {
         commit: 'd'.repeat(40),
-        commits: ['d'.repeat(40), 'e'.repeat(40)],
+        commits: ['d'.repeat(40)],
+        afterHead: 'e'.repeat(40),
         paths: ['e2e/example.spec.ts'],
         stat: ' 1 file changed',
         nameStatus: 'M\te2e/example.spec.ts',
@@ -158,6 +159,9 @@ test('a repeat review is told what the previous one already cleared', () => {
 
   assert.match(prompt, new RegExp(`previous review audited commit ${'e'.repeat(40)} in full`));
   assert.match(prompt, new RegExp(`added commit ${'d'.repeat(40)}`));
+  assert.match(prompt, /New issue changes/u);
+  assert.match(prompt, /Audit every newly changed file and each affected requirement/u);
+  assert.doesNotMatch(prompt, /complete set of changes made for this issue/u);
   assert.match(prompt, /Do not re-audit unchanged code that the previous review already cleared/);
 });
 

@@ -10,10 +10,10 @@ import { loadConfig } from './ralph-config.mjs';
 import { repairStepPassed } from './ralph-lifecycle.mjs';
 import { readLiveStatus, resetLiveStatus, subscribeLiveStatus } from './ralph-live-status.mjs';
 import { setActiveStateStore } from './ralph-state-store.mjs';
-import { withFakeCodex, withFakeGh } from './ralph-test-support.mjs';
+import { withFakeClaude, withFakeCodex, withFakeGh } from './ralph-test-support.mjs';
 
 /**
- * Жизненный цикл issue целиком, in-process: commit найден → push → ревью →
+ * Жизненный цикл issue целиком, in-process: commit найден → ревью → push →
  * закрытие. До этих тестов путь после валидации не проверялся ничем — по нему
  * можно было пройти только настоящим прогоном с настоящим GitHub.
  *
@@ -41,6 +41,10 @@ function git(cwd, args, env = {}) {
     throw new Error(result.stderr || result.stdout || `git ${args.join(' ')} -> ${result.status}`);
   }
   return result.stdout.trim();
+}
+
+function remoteHeads(repository) {
+  return git(repository.workTree, [`--git-dir=${repository.origin}`, 'for-each-ref', '--format=%(objectname)', 'refs/heads']);
 }
 
 /** Одноразовый репозиторий с базовым коммитом, trailer-коммитом и bare origin. */
@@ -78,14 +82,16 @@ function createLifecycleRepository(branch, files = { 'work.txt': 'implemented\n'
  * GET issue отдаёт состояние, PATCH сливает тело запроса в него, коллекции
  * отвечают пустым списком, POST — пустым объектом.
  */
-function createFakeGh(root, { rejectClose = false } = {}) {
+function createFakeGh(root, { rejectClose = false, rejectCloseAttempts = 0, rejectReviewUpdate = false,
+  githubUnavailable = false } = {}) {
   const directory = path.join(root, 'fake-gh');
   mkdirSync(directory);
   const statePath = path.join(directory, 'issue-state.json');
   const callsPath = path.join(directory, 'calls.jsonl');
   writeFileSync(
     statePath,
-    JSON.stringify({ number: issueNumber, title: issueTitle, body: issueBody, state: 'open' }),
+    JSON.stringify({ number: issueNumber, title: issueTitle, body: issueBody, state: 'open',
+      user: { login: 'trusted-author' }, milestone: { number: 7 } }),
     'utf8',
   );
   writeFileSync(callsPath, '', 'utf8');
@@ -108,11 +114,21 @@ function createFakeGh(root, { rejectClose = false } = {}) {
     input = readFileSync(0, 'utf8');
   } catch {}
   appendFileSync(callsPath, JSON.stringify({ method, resource, input }) + String.fromCharCode(10), 'utf8');
+  if (${githubUnavailable}) {
+    process.stderr.write('GitHub fixture unavailable (HTTP 503).');
+    process.exit(1);
+  }
   const state = JSON.parse(readFileSync(statePath, 'utf8'));
   if (method === 'PATCH') {
     const patch = JSON.parse(input || '{}');
-    if (${rejectClose} && patch.state === 'closed') {
+    const closeAttempts = readFileSync(callsPath, 'utf8').split(String.fromCharCode(10)).filter(Boolean)
+      .map(JSON.parse).filter((call) => call.method === 'PATCH' && JSON.parse(call.input || '{}').state === 'closed').length;
+    if (patch.state === 'closed' && (${rejectClose} || closeAttempts <= ${rejectCloseAttempts})) {
       process.stderr.write('Fixture issue cannot be closed.');
+      process.exit(1);
+    }
+    if (${rejectReviewUpdate} && typeof patch.body === 'string') {
+      process.stderr.write('Fixture review findings cannot be published.');
       process.exit(1);
     }
     Object.assign(state, patch);
@@ -135,6 +151,8 @@ function createFakeGh(root, { rejectClose = false } = {}) {
         .filter(Boolean)
         .map((line) => JSON.parse(line)),
     issueState: () => JSON.parse(readFileSync(statePath, 'utf8')),
+    setIssue: (patch) => writeFileSync(statePath,
+      JSON.stringify({ ...JSON.parse(readFileSync(statePath, 'utf8')), ...patch }), 'utf8'),
   };
 }
 
@@ -180,22 +198,27 @@ function recordingStateStore(initialIssue = null) {
  * результата в аргументах: пишет туда вердикт и подтверждает сообщением.
  * Сессия разработки печатает ALREADY_FIXED: правка уже в HEAD.
  */
-function codexSource(reviewOutputPath, verdictJson, repository, { moveRemoteHead = false } = {}) {
-  const updateRef = moveRemoteHead ? [
-    `--git-dir=${repository.origin}`, 'update-ref', `refs/heads/${repository.branch}`, `${repository.commit}^`,
-  ] : null;
+function reviewerSource(reviewOutputPath, verdictJson, repository, agentCli) {
   return `
-import { execFileSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 const reviewOutputPath = ${JSON.stringify(reviewOutputPath)};
-const updateRef = ${JSON.stringify(updateRef)};
-appendFileSync(reviewOutputPath + '.invocations', process.argv.includes(reviewOutputPath) ? 'review\\n' : 'development\\n', 'utf8');
+const isClaude = ${agentCli === 'claude'};
+const isReview = process.argv.includes(isClaude ? '--json-schema' : reviewOutputPath);
+appendFileSync(reviewOutputPath + '.invocations', isReview ? 'review\\n' : 'development\\n', 'utf8');
 const message = (text) =>
   process.stdout.write(JSON.stringify({ type: 'item.completed', item: { id: 'final', type: 'agent_message', text } }) + '\\n');
-if (process.argv.includes(reviewOutputPath)) {
-  writeFileSync(reviewOutputPath, ${JSON.stringify(verdictJson)}, 'utf8');
-  if (updateRef) execFileSync('git', updateRef, { windowsHide: true });
-  message('Review recorded.');
+if (isReview) {
+  writeFileSync(reviewOutputPath + '.review-prompt', readFileSync(0, 'utf8'), 'utf8');
+  const remote = spawnSync('git', ${JSON.stringify([`--git-dir=${repository.origin}`, 'rev-parse', '--verify', `refs/heads/${repository.branch}`])}, { encoding: 'utf8', windowsHide: true });
+  writeFileSync(reviewOutputPath + '.remote-at-review', remote.status === 0 ? remote.stdout.trim() : '', 'utf8');
+  if (isClaude) {
+    process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_error: false,
+      result: 'Review recorded.', structured_output: JSON.parse(${JSON.stringify(verdictJson)}) }) + '\\n');
+  } else {
+    writeFileSync(reviewOutputPath, ${JSON.stringify(verdictJson)}, 'utf8');
+    message('Review recorded.');
+  }
 } else {
   writeFileSync(reviewOutputPath + '.development-prompt', readFileSync(0, 'utf8'), 'utf8');
   message('ALREADY_FIXED: ${repository.commit}');
@@ -231,12 +254,19 @@ function lifecycleIssue(url = `https://example.test/issues/${issueNumber}`) {
     updatedAt: '2020-01-01T00:00:00Z',
     authorLogin: 'trusted-author',
     authorAssociation: 'OWNER',
+    milestone: 7,
   };
 }
 
 async function withLifecycleStand(branch, verdictJson, operation, options = {}) {
   const repository = createLifecycleRepository(branch, options.files);
   repository.branch = branch;
+  if (options.moveRemoteHead) {
+    const origin = repository.origin.replaceAll('\\', '/');
+    writeFileSync(path.join(repository.origin, 'hooks', 'post-receive'),
+      `#!/bin/sh\ngit --git-dir="${origin}" update-ref refs/heads/${branch} ${repository.commit}^\n`,
+      { encoding: 'utf8', mode: 0o755 });
+  }
   const gh = createFakeGh(repository.root, options);
   const reviewOutputPath = path.join(repository.root, 'review-result.json');
   const savedEnv = {
@@ -247,11 +277,12 @@ async function withLifecycleStand(branch, verdictJson, operation, options = {}) 
     if (savedEnv[name] === undefined) delete process.env[name];
     else process.env[name] = savedEnv[name];
   };
+  const withFakeAgent = options.agentCli === 'claude' ? withFakeClaude : withFakeCodex;
 
   try {
     await withFakeGh(gh.logicBody, async () => {
-      await withFakeCodex(
-        codexSource(reviewOutputPath, verdictJson, repository, options),
+      await withFakeAgent(
+        reviewerSource(reviewOutputPath, verdictJson, repository, options.agentCli),
         async () => {
           process.env.GIT_DIR = path.join(repository.workTree, '.git');
           process.env.GIT_WORK_TREE = repository.workTree;
@@ -270,7 +301,7 @@ async function withLifecycleStand(branch, verdictJson, operation, options = {}) 
   }
 }
 
-function codexInvocations(reviewOutputPath) {
+function agentInvocations(reviewOutputPath) {
   try {
     return readFileSync(`${reviewOutputPath}.invocations`, 'utf8').split('\n').filter(Boolean);
   } catch {
@@ -293,39 +324,43 @@ const failVerdict = JSON.stringify({
   ],
 });
 
-test('счастливый путь: найденный commit доходит до push, ревью и закрытия issue', async () => {
-  await withLifecycleStand('ralph/lifecycle-pass', passVerdict, async (stand) => {
-    const store = recordingStateStore();
-    setActiveStateStore(store);
-    const config = lifecycleConfig(stand.repository, stand.reviewOutputPath);
+for (const agentCli of ['codex', 'claude']) {
+  test(`локальное ревью предшествует push и закрытию issue (${agentCli})`, async () => {
+    await withLifecycleStand('ralph/lifecycle-pass', passVerdict, async (stand) => {
+      const store = recordingStateStore();
+      setActiveStateStore(store);
+      const config = lifecycleConfig(stand.repository, stand.reviewOutputPath);
+      config.agentCli = agentCli;
 
-    const result = await runAgentOnIssue(config, 'owner/repository', lifecycleIssue(), 'rules');
+      const result = await runAgentOnIssue(config, 'owner/repository', lifecycleIssue(), 'rules');
 
-    assert.equal(result.completed, true);
-    assert.equal(result.commit, stand.repository.commit);
-    assert.equal(result.review.verdict, 'pass');
+      assert.equal(result.completed, true);
+      assert.equal(result.commit, stand.repository.commit);
+      assert.equal(result.review.verdict, 'pass');
 
-    // Ветка дошла до origin ровно тем commit, который прошёл ревью.
-    const pushed = git(stand.repository.workTree, [
-      'ls-remote',
-      '--heads',
-      'origin',
-      'refs/heads/ralph/lifecycle-pass',
-    ]);
-    assert.equal(pushed.split(/\s+/)[0], stand.repository.commit);
+      // Ветка дошла до origin ровно тем commit, который прошёл ревью.
+      const pushed = git(stand.repository.workTree, [
+        'ls-remote',
+        '--heads',
+        'origin',
+        'refs/heads/ralph/lifecycle-pass',
+      ]);
+      assert.equal(pushed.split(/\s+/)[0], stand.repository.commit);
+      assert.equal(readFileSync(`${stand.reviewOutputPath}.remote-at-review`, 'utf8'), '');
 
-    // Сессия агента не запускалась: trailer-коммит уже содержал работу.
-    assert.deepEqual(codexInvocations(stand.reviewOutputPath), ['review']);
+      // Сессия агента не запускалась: trailer-коммит уже содержал работу.
+      assert.deepEqual(agentInvocations(stand.reviewOutputPath), ['review']);
 
-    // Issue закрыта как выполненная, и до того порядок фаз дошёл до закрытия.
-    assert.equal(stand.gh.issueState().state, 'closed');
-    const patches = stand.gh.calls().filter((call) => call.method === 'PATCH');
-    assert.equal(patches.length, 1);
-    assert.match(patches[0].input, /"state":"closed"/);
-    assert.deepEqual(store.record.phases, ['validating', 'pushed', 'reviewing', 'closing']);
-    assert.equal(store.issue, null);
+      // Issue закрыта как выполненная, и до того порядок фаз дошёл до закрытия.
+      assert.equal(stand.gh.issueState().state, 'closed');
+      const patches = stand.gh.calls().filter((call) => call.method === 'PATCH');
+      assert.equal(patches.length, 1);
+      assert.match(patches[0].input, /"state":"closed"/);
+      assert.deepEqual(store.record.phases, ['validating', 'reviewing', 'closing']);
+      assert.equal(store.issue, null);
+    }, { agentCli });
   });
-});
+}
 
 test('PASS подтверждает восстановление после отказа ревью до сбоя закрытия задачи', async () => {
   await withLifecycleStand('ralph/lifecycle-close-failed', passVerdict, async (stand) => {
@@ -408,7 +443,7 @@ test('a declared UI issue cannot push or close without configured browser checks
     });
     assert.equal(git(stand.repository.workTree, ['ls-remote', '--heads', 'origin']), '');
     assert.equal(stand.gh.issueState().state, 'open');
-    assert.deepEqual(codexInvocations(stand.reviewOutputPath), []);
+    assert.deepEqual(agentInvocations(stand.reviewOutputPath), []);
   });
 });
 
@@ -440,15 +475,16 @@ test('a report-only issue closes after its report is published and reviewed', as
     const config = lifecycleConfig(stand.repository, stand.reviewOutputPath);
     const issue = { ...lifecycleIssue(), body: '<!-- ralph-process: review -->\nReview this branch.' };
     config.approvedIssueSnapshots[issueNumber].body = issue.body;
+    stand.gh.setIssue({ body: issue.body });
     const result = await runAgentOnIssue(config, 'owner/repository', issue, 'rules');
     assert.equal(result.completed, true);
     assert.equal(stand.gh.issueState().state, 'closed');
-    assert.deepEqual(codexInvocations(stand.reviewOutputPath), ['review']);
+    assert.deepEqual(agentInvocations(stand.reviewOutputPath), ['review']);
     assert.equal(git(stand.repository.workTree, ['show', `${result.commit}:${reportPath}`]), '# Findings');
   }, { files: { [reportPath]: '# Findings\n' } });
 });
 
-test('отказ ревью возвращает issue агенту, повторный отказ паркует её', async () => {
+test('отказ ревью оставляет коммит локально и сохраняет задачу при исчерпании попыток', async () => {
   await withLifecycleStand('ralph/lifecycle-fail', failVerdict, async (stand) => {
     const store = recordingStateStore();
     setActiveStateStore(store);
@@ -469,24 +505,51 @@ test('отказ ревью возвращает issue агенту, повто�
       .find((call) => /Broken invariant/.test(call.input));
     assert.notEqual(bodyPatch, undefined);
     assert.equal(stand.gh.issueState().state, 'open');
+    assert.equal(git(stand.repository.workTree, ['ls-remote', '--heads', 'origin']), '');
 
-    // Второй заход: сессия чинит поверх HEAD, ревью отклоняет снова — и issue
-    // паркуется, освобождая бюджет прогона остальным задачам.
+    // Сессия исправления вернула прежний SHA. Повторное ревью не нужно, но
+    // попытка исчерпана и публикация ветки ждёт исправления.
     const second = await runAgentOnIssue(config, 'owner/repository', lifecycleIssue(), 'rules');
 
     assert.equal(second.completed, false);
     assert.equal(second.parked, true);
-    assert.equal(store.issue, null);
-    assert.deepEqual(codexInvocations(stand.reviewOutputPath), [
+    assert.equal(second.publicationBlocked, true);
+    assert.equal(store.issue.phase, 'review-failed');
+    assert.deepEqual(agentInvocations(stand.reviewOutputPath), [
       'review',
       'development',
-      'review',
     ]);
     assert.match(
       readFileSync(`${stand.reviewOutputPath}.development-prompt`, 'utf8'),
       /Broken invariant/u,
     );
   });
+});
+
+test('повторное ревью передаёт короткое исправление после проверенного HEAD', async () => {
+  await withLifecycleStand('ralph/lifecycle-incremental', failVerdict, async (stand) => {
+    const workTree = stand.repository.workTree;
+    const afterHead = stand.repository.commit;
+    writeFileSync(path.join(workTree, 'fix.txt'), 'exact lifecycle fix\n');
+    git(workTree, ['add', '--', 'fix.txt']);
+    git(workTree, ['commit', '--quiet', '-m', 'fix: resolve the finding', '-m', `Ralph-Issue: #${issueNumber}`]);
+    const head = git(workTree, ['rev-parse', 'HEAD']);
+    const store = recordingStateStore({
+      number: issueNumber, title: issueTitle, body: issueBody,
+      startingCommit: afterHead, foreignPaths: [], phase: 'committed', commit: head, recoveryHead: head,
+      reviewReceipt: { head: afterHead, result: JSON.parse(failVerdict) },
+      reviewFindings: 'Guard required by the previous review',
+    });
+    setActiveStateStore(store);
+    const config = lifecycleConfig(stand.repository, stand.reviewOutputPath);
+
+    const result = await runAgentOnIssue(config, 'owner/repository', lifecycleIssue(), 'rules');
+    assert.equal(result.review.verdict, 'fail');
+    const prompt = readFileSync(`${stand.reviewOutputPath}.review-prompt`, 'utf8');
+    assert.match(prompt, /\+exact lifecycle fix/u);
+    assert.match(prompt, /Guard required by the previous review/u);
+    assert.doesNotMatch(prompt, /\+already reviewed line|The diff above is truncated/u);
+  }, { files: { 'work.txt': 'already reviewed line\n'.repeat(4000) } });
 });
 
 test('пройденное на прошлом прогоне ревью не повторяется: issue закрывается сразу', async () => {
@@ -501,20 +564,121 @@ test('пройденное на прошлом прогоне ревью не п
       phase: 'closing',
       commit: stand.repository.commit,
       reviewedCommit: stand.repository.commit,
+      pushedHead: stand.repository.commit,
       validationFixAttempts: 0,
     });
     setActiveStateStore(store);
     const config = lifecycleConfig(stand.repository, stand.reviewOutputPath);
+
+    git(stand.repository.workTree, ['push', 'origin', 'HEAD']);
 
     const result = await runAgentOnIssue(config, 'owner/repository', lifecycleIssue(), 'rules');
 
     assert.equal(result.completed, true);
     assert.match(result.review.summary, /previous run/);
     // Ни одной сессии агента: ни разработки, ни повторного ревью.
-    assert.deepEqual(codexInvocations(stand.reviewOutputPath), []);
+    assert.deepEqual(agentInvocations(stand.reviewOutputPath), []);
     assert.equal(stand.gh.issueState().state, 'closed');
     assert.equal(store.issue, null);
   });
+});
+
+test('после двух отказов закрытия сохранённый PASS используется до успешного закрытия', async () => {
+  await withLifecycleStand('ralph/lifecycle-close-twice', passVerdict, async (stand) => {
+    const store = recordingStateStore();
+    setActiveStateStore(store);
+    const config = lifecycleConfig(stand.repository, stand.reviewOutputPath);
+    const complete = () => runAgentOnIssue(config, 'owner/repository', lifecycleIssue(), 'rules');
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await assert.rejects(complete(), { ralphFailureStep: 'close' });
+      assert.equal(store.issue.reviewReceipt?.head, stand.repository.commit);
+      assert.equal(store.issue.reviewReceipt?.result.verdict, 'pass');
+    }
+    assert.equal((await complete()).completed, true);
+    assert.deepEqual(agentInvocations(stand.reviewOutputPath), ['review']);
+    assert.equal(stand.gh.issueState().state, 'closed');
+  }, { rejectCloseAttempts: 2 });
+});
+
+test('FAIL сохраняет замечания при отказе GitHub обновить тело issue', async () => {
+  await withLifecycleStand('ralph/lifecycle-review-update-failed', failVerdict, async (stand) => {
+    const store = recordingStateStore();
+    setActiveStateStore(store);
+    const config = lifecycleConfig(stand.repository, stand.reviewOutputPath);
+    const complete = () => runAgentOnIssue(config, 'owner/repository', lifecycleIssue(), 'rules');
+
+    await assert.rejects(complete(), { code: 'RALPH_COMMAND_FAILED' });
+    assert.equal(store.issue.phase, 'review-failed');
+    assert.equal(store.issue.reviewReceipt?.result.verdict, 'fail');
+    assert.match(store.issue.reviewFindings, /Broken invariant/u);
+    assert.equal(remoteHeads(stand.repository), '');
+  }, { rejectReviewUpdate: true });
+});
+
+test('смена условий issue после локального ревью сохраняет PASS и останавливает push', async () => {
+  await withLifecycleStand('ralph/lifecycle-changed-issue', passVerdict, async (stand) => {
+    const store = recordingStateStore();
+    setActiveStateStore(store);
+    const config = lifecycleConfig(stand.repository, stand.reviewOutputPath);
+    stand.gh.setIssue({ body: 'Different requirements.' });
+
+    await assert.rejects(runAgentOnIssue(config, 'owner/repository', lifecycleIssue(), 'rules'), {
+      code: 'RALPH_UNTRUSTED_ISSUE',
+    });
+    assert.equal(store.issue.reviewReceipt?.head, stand.repository.commit);
+    assert.equal(store.issue.reviewReceipt?.result.verdict, 'pass');
+    assert.equal(remoteHeads(stand.repository), '');
+  });
+});
+
+test('служебная метка issue после локального ревью останавливает push', async () => {
+  await withLifecycleStand('ralph/lifecycle-infrastructure-issue', passVerdict, async (stand) => {
+    const store = recordingStateStore();
+    setActiveStateStore(store);
+    const config = lifecycleConfig(stand.repository, stand.reviewOutputPath);
+    stand.gh.setIssue({ labels: [{ name: 'ralph-infrastructure' }] });
+
+    await assert.rejects(runAgentOnIssue(config, 'owner/repository', lifecycleIssue(), 'rules'), {
+      code: 'RALPH_UNTRUSTED_ISSUE',
+    });
+    assert.equal(store.issue.pendingPublishHead, stand.repository.commit);
+    assert.equal(remoteHeads(stand.repository), '');
+  });
+});
+
+test('ремонт Lisa не публикует впервые коммит уже закрытой issue', async () => {
+  await withLifecycleStand('ralph/lifecycle-unpublished-closed-repair', passVerdict, async (stand) => {
+    const commit = stand.repository.commit;
+    const store = recordingStateStore({ ...lifecycleIssue(), startingCommit: commit, phase: 'committed',
+      commit, recoveryHead: commit, lisaRepairId: 'repair' });
+    store.state.lisaRepair = { repairId: 'repair', runId: store.state.runId,
+      phaseIndex: store.state.phaseIndex, issueNumber, status: 'resuming', acceptedTreeHash: 'verified' };
+    setActiveStateStore(store);
+    const config = lifecycleConfig(stand.repository, stand.reviewOutputPath);
+    stand.gh.setIssue({ state: 'closed' });
+
+    await assert.rejects(runAgentOnIssue(config, 'owner/repository', lifecycleIssue(), 'rules'), {
+      code: 'RALPH_UNTRUSTED_ISSUE',
+    });
+    assert.equal(store.issue.pendingPublishHead, commit);
+    assert.equal(remoteHeads(stand.repository), '');
+  });
+});
+
+test('сбой GitHub после принятия issue сохраняет локальный PASS и ожидающий push', async () => {
+  await withLifecycleStand('ralph/lifecycle-offline-publication', passVerdict, async (stand) => {
+    const store = recordingStateStore();
+    setActiveStateStore(store);
+    const config = lifecycleConfig(stand.repository, stand.reviewOutputPath);
+    const complete = () => runAgentOnIssue(config, 'owner/repository', lifecycleIssue(), 'rules');
+
+    await assert.rejects(complete(), { ralphFailureStep: 'push' });
+    assert.equal(store.issue.pendingPublishHead, stand.repository.commit);
+    assert.equal(store.issue.reviewReceipt?.result.verdict, 'pass');
+    assert.deepEqual(agentInvocations(stand.reviewOutputPath), ['review']);
+    assert.equal(remoteHeads(stand.repository), '');
+  }, { githubUnavailable: true });
 });
 
 test('failed validation of a manual commit returns to development before validation and review', async () => {
@@ -555,12 +719,12 @@ test('failed validation of a manual commit returns to development before validat
       runAgentOnIssue(config, 'owner/repository', lifecycleIssue(), 'rules'),
       (error) => {
         assert.equal(error.code, 'RALPH_VALIDATION_FAILED');
-        assert.deepEqual(codexInvocations(stand.reviewOutputPath), ['validation'], error.message);
+        assert.deepEqual(agentInvocations(stand.reviewOutputPath), ['validation'], error.message);
         return true;
       },
     );
 
-    assert.deepEqual(codexInvocations(stand.reviewOutputPath), ['validation']);
+    assert.deepEqual(agentInvocations(stand.reviewOutputPath), ['validation']);
     assert.equal(stand.gh.issueState().state, 'open');
     assert.equal(stand.gh.calls().some((call) => call.method === 'PATCH'), false);
     assert.equal(store.issue.phase, 'working-tree');
@@ -577,7 +741,7 @@ test('failed validation of a manual commit returns to development before validat
     assert.equal(result.completed, true);
     assert.equal(result.commit, stand.repository.commit);
     assert.equal(result.review.verdict, 'pass');
-    assert.deepEqual(codexInvocations(stand.reviewOutputPath), [
+    assert.deepEqual(agentInvocations(stand.reviewOutputPath), [
       'validation',
       'development',
       'validation',

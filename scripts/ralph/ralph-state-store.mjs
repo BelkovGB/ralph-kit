@@ -33,6 +33,18 @@ export function activeStateStore() {
   return currentStateStore;
 }
 
+const exactForeignPathsFormat = 'exact-v1';
+
+export function issueForeignPaths(issue) {
+  const paths = issue?.foreignPaths ?? [];
+  if (paths.length > 0 && issue.foreignPathsFormat !== exactForeignPathsFormat) {
+    const error = new Error(`Issue #${issue.number}. Сохранён неоднозначный список чужих путей. Проверьте рабочее дерево и индекс вручную.`);
+    error.code = 'RALPH_RECOVERY_BLOCKED';
+    throw error;
+  }
+  return paths;
+}
+
 export function createStateStore(config, selectedMode, statePath = runtimeStatePath, options = {}) {
   let state = readJsonFile(statePath, null);
   const configuredPhaseIndex = config.phaseIndex ?? 0;
@@ -131,21 +143,27 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
         number: issue.number,
         title: issue.title,
         url: issue.url,
+        ...(issue.milestone == null ? {} : { milestone: issue.milestone }),
         body: issue.body ?? '',
         authorLogin: issue.authorLogin ?? null,
         authorAssociation: issue.authorAssociation ?? null,
         startingCommit,
         foreignPaths: [...foreignPaths],
+        foreignPathsFormat: exactForeignPathsFormat,
         phase: 'agent-running',
         validationFixAttempts: 0,
         lastFailure: null,
         lastFailureSummary: null,
         commit: null,
         pushedHead: null,
+        pendingPublishHead: null,
+        lastPublishedHead: null,
+        reviewReceipt: null,
         expectedTree: null,
         commitMessage: null,
       };
       state.issue.phase = 'agent-running';
+      state.issue.publicationCheckpoint = null;
       persist();
       return state.issue;
     },
@@ -275,4 +293,14 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
       removeFileIfExists(statePath);
     },
   };
+}
+
+export function unpublishedIssueHead(issue) {
+  const head = issue?.recoveryHead ?? issue?.commit;
+  return issue?.pendingPublishHead ?? (issue?.commit && head !== issue.pushedHead ? head : null);
+}
+
+// Preserve publication evidence when resetting the local validation or repair stage.
+export function holdIssuePublication(issue, pendingPublishHead = unpublishedIssueHead(issue)) {
+  return { pendingPublishHead, lastPublishedHead: issue?.pushedHead ?? issue?.lastPublishedHead ?? null };
 }

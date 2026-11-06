@@ -14,21 +14,19 @@ test('inactive CLI diagnoses missing tools without enabling the loop', () => {
   const source = fileURLToPath(new URL('../..', import.meta.url));
   try {
     cpSync(path.join(source, 'scripts/ralph'), path.join(root, 'scripts/ralph'), { recursive: true });
+    const defaultLedger = path.join(root, 'scripts/ralph/approved-issues.json');
+    rmSync(defaultLedger, { force: true });
     mkdirSync(path.join(root, '.agents'));
     mkdirSync(path.join(root, 'docs'));
     writeFileSync(path.join(root, '.agents/RALPH.md'), 'Fixture operator guide.\n');
     // The installed project's paths, skills and account must not affect this fixture.
-    const ledger = '{}\n';
     writeFileSync(path.join(root, 'docs/rules.md'), 'Fixture rules.\n');
-    writeFileSync(path.join(root, 'docs/approved.json'), ledger);
     const configPath = path.join(root, '.agents/ralph.config.json');
     const config = {
       active: false,
       phases: [{ milestone: 'Fixture phase', branch: 'ralph/fixture' }],
       prompt: 'Implement issue #{issue_number}: {issue_title}',
       rulesFile: 'docs/rules.md',
-      approvedIssueSnapshotsFile: 'docs/approved.json',
-      approvedIssueSnapshotsHash: createHash('sha256').update(ledger).digest('hex'),
       review: { enabled: false, model: 'fixture-model' },
       milestoneReview: { enabled: false, model: 'fixture-model' },
     };
@@ -54,6 +52,28 @@ test('inactive CLI diagnoses missing tools without enabling the loop', () => {
       assert.match(result.stdout, /active=false/u);
     }
     assert.equal(readFileSync(configPath, 'utf8'), before);
+
+    writeFileSync(configPath, JSON.stringify({ ...config, autoApproveConfiguredIssues: false }));
+    const manual = cli('--check');
+    assert.equal(manual.error, undefined);
+    assert.equal(manual.status, 1, manual.stdout + manual.stderr);
+    assert.match(manual.stderr, /Журнал одобренных issues не найден/u);
+
+    const ledger = '{}\n';
+    writeFileSync(defaultLedger, ledger);
+    writeFileSync(configPath, JSON.stringify({ ...config,
+      approvedIssueSnapshotsHash: createHash('sha256').update(ledger).digest('hex'),
+    }));
+    const legacy = cli('--check');
+    assert.equal(legacy.error, undefined);
+    assert.equal(legacy.status, 1, legacy.stdout + legacy.stderr);
+    assert.match(legacy.stderr, /git/u);
+
+    writeFileSync(configPath, JSON.stringify({ ...config, approvedIssueSnapshotsHash: '0'.repeat(64) }));
+    const wrongLegacyHash = cli('--check');
+    assert.equal(wrongLegacyHash.error, undefined);
+    assert.equal(wrongLegacyHash.status, 1, wrongLegacyHash.stdout + wrongLegacyHash.stderr);
+    assert.match(wrongLegacyHash.stderr, /не совпадает с защищённым контрольным SHA-256/u);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

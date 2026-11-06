@@ -476,9 +476,10 @@ function runObservedCommand(name, args, options, timeoutMs, startedAt) {
   }
   logCommand(`Команда ${name} завершена за ${Date.now() - startedAt} ms.`);
 
+  const stdout = result.stdout ?? '';
   return {
     status: result.status,
-    stdout: result.stdout?.trim() ?? '',
+    stdout: options.rawStdout ? stdout : stdout.trim(),
     stderr: result.stderr?.trim() ?? '',
   };
 }
