@@ -59,7 +59,8 @@ test('real --run reports both review parks and Lisa restart in one safe file', a
   const entry = path.join(root, 'scripts/ralph/ralph-loop.mjs');
   const reports = path.join(runtime, 'run-stop-reports');
   const launch = () => spawnSync(process.execPath, [entry, '--run', '--ui=plain'], {
-    cwd: root, encoding: 'utf8', timeout: 90_000, windowsHide: true,
+    // The fixture runs several real Git operations through two review stops.
+    cwd: root, encoding: 'utf8', timeout: 180_000, windowsHide: true,
   });
 
   try {

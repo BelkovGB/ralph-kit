@@ -1031,6 +1031,7 @@ function collectTrustedControlFileHashes(config) {
     path.join(scriptDirectory, 'ralph-issue-contract.mjs'),
     path.join(scriptDirectory, 'ralph-loop.mjs'),
     path.join(scriptDirectory, 'ralph-milestone-review.mjs'),
+    path.join(scriptDirectory, 'ralph-pr-review-codex.mjs'),
     path.join(scriptDirectory, 'ralph-pr-review.mjs'),
     path.join(scriptDirectory, 'ralph-process-packs.mjs'),
     path.join(scriptDirectory, 'ralph-process-runner.mjs'),
