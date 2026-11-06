@@ -334,6 +334,7 @@ const configFields = new Set([
   'approvedIssueSnapshotsHash',
   'autoApproveConfiguredIssues',
   'baseBranch',
+  'browserValidationScripts',
   'developmentEffort',
   'developmentFast',
   'developmentModel',
@@ -553,6 +554,7 @@ function applyValidationAndReviewDefaults(config) {
   // угаданное умолчание молча проверяло бы не то.
   config.preflightScripts ??= [];
   config.validationScripts ??= [];
+  if (config.browserValidationScripts === undefined) config.browserValidationScripts = [];
   // Артефакты прошлых проверок, которые Ralph убирает перед прогоном. Пусто по
   // умолчанию: набор не знает, что в чужом проекте мусор, а что дорогой кеш.
   config.validationArtifactPaths ??= [];
@@ -672,13 +674,14 @@ function validateValidationCommands(config) {
   )) {
     fail('Поле "validationProfiles" должно содержать непустые массивы issue, phase и baseSync.');
   }
-  if (!Array.isArray(config.preflightScripts) || !Array.isArray(config.validationScripts)) {
-    fail('Поля "preflightScripts" и "validationScripts" должны быть массивами команд.');
+  if (!Array.isArray(config.preflightScripts) || !Array.isArray(config.validationScripts) ||
+      !Array.isArray(config.browserValidationScripts)) {
+    fail('Поля "preflightScripts", "validationScripts" и "browserValidationScripts" должны быть массивами команд.');
   }
   const profileCommands = profiles
     ? [...profiles.issue, ...profiles.phase, ...profiles.baseSync]
     : [];
-  const allCommands = [...config.preflightScripts, ...config.validationScripts, ...profileCommands];
+  const allCommands = [...config.preflightScripts, ...config.validationScripts, ...profileCommands, ...config.browserValidationScripts];
   // Команда выполняется оболочкой как есть. От подстановки произвольной команды
   // защищает control plane: автономный агент не может изменить конфиг. Цепочки
   // запрещены отдельно, потому что Windows PowerShell и cmd возвращают код
@@ -696,8 +699,7 @@ function validateValidationCommands(config) {
     )
   ) {
     fail(
-      'Команды preflightScripts, validationScripts и validationProfiles должны быть непустыми однострочными ' +
-        `команд оболочки не длиннее ${maxValidationCommandLength} символов.`,
+      `Каждая команда проверки или подготовки должна занимать одну строку длиной от 1 до ${maxValidationCommandLength} символов.`,
     );
   }
   if (
@@ -1029,6 +1031,7 @@ function collectTrustedControlFileHashes(config) {
     path.join(scriptDirectory, 'ralph-issue-contract.mjs'),
     path.join(scriptDirectory, 'ralph-loop.mjs'),
     path.join(scriptDirectory, 'ralph-milestone-review.mjs'),
+    path.join(scriptDirectory, 'ralph-process-packs.mjs'),
     path.join(scriptDirectory, 'ralph-process-runner.mjs'),
     path.join(scriptDirectory, 'ralph-prompts.mjs'),
     path.join(scriptDirectory, 'ralph-run-metrics.mjs'),

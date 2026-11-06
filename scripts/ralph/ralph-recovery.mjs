@@ -96,6 +96,7 @@ export function analyzeRecovery(config, issue, dependencies = {}) {
       patch: {
         phase: 'committed', commit: manualCommit, recoveryHead: head,
         reviewedCommit: null, pushedHead: null, expectedTree: null, commitMessage: null,
+        ...(issue.processReportRepair ? { processReportRepair: null } : {}),
         validationExpectedTreeHash: null, validationFailureFingerprint: null, ...clearedFailure,
       },
     };

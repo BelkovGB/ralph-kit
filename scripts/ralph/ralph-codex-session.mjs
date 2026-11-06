@@ -282,7 +282,11 @@ export const codexBackend = {
   reasoningEfforts,
   createSandboxedEnvironment: createSandboxedCodexEnvironment,
   developmentArguments: developmentCodexArguments,
-  reviewArguments: reviewCodexArguments,
+  review: {
+    fileAccess: 'read-only-shell',
+    resultChannel: 'file',
+    arguments: reviewCodexArguments,
+  },
   verifyAuthentication: verifyCodexAuthentication,
   readEvent: readCodexEvent,
   exitFailure(result, stderr, label) {

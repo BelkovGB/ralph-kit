@@ -11,6 +11,7 @@ import { stripAnsi } from './ralph-failure-summary.mjs';
 import { fail } from './ralph-scope.mjs';
 import { credentialFreeEnvironment, run } from './ralph-process-runner.mjs';
 import { agentInstructionFiles, trustedFileHash } from './ralph-config.mjs';
+import { validationScriptsFor } from './ralph-process-packs.mjs';
 import { activeStateStore } from './ralph-state-store.mjs';
 
 /**
@@ -544,11 +545,11 @@ export function runConfiguredValidation(config, options = {}) {
   )) {
     fail('Выборочная проверка требует scope и полный SHA базового коммита.');
   }
+  const scripts = validationScriptsFor(config, options.scope, options.issueNumber);
   // Уборка идёт до preflight: он готовит то, что нужно проверкам, и уборка
   // после него снесла бы собственную подготовку прогона.
   removeValidationArtifacts(config, options);
   // Preflight выполняется первым в том же окружении, что и остальные команды
   // текущей проверки.
-  const scripts = config.validationProfiles?.[options.scope] ?? config.validationScripts;
   return runConfiguredScripts(config, scripts, 'Validation', options);
 }

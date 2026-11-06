@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, unlinkSync } from 'node:fs';
 
 import {
   applySeverityFloor,
@@ -295,25 +294,15 @@ export async function runMilestoneReview(config, repository, milestone, pullRequ
         }
         const reviewedHead = run('git', ['rev-parse', 'HEAD']).stdout;
         const reviewedBranch = run('git', ['branch', '--show-current']).stdout;
-        if (existsSync(config.milestoneReview.outputPath)) {
-          unlinkSync(config.milestoneReview.outputPath);
-        }
 
-        await runReviewSession(config, config.milestoneReview, {
+        const reviewLabel = `Milestone review PR #${pullRequest.number}`;
+        const candidate = await runReviewSession(config, config.milestoneReview, {
           input: reviewPrompt,
           maxTurns: config.milestoneReview.maxTurns,
           timeoutMs: config.runtime.agentTimeoutMs,
-          label: `Milestone review PR #${pullRequest.number}`,
+          label: reviewLabel,
         });
-        if (!existsSync(config.milestoneReview.outputPath)) {
-          fail(`Milestone review PR #${pullRequest.number} не создал файл результата.`);
-        }
-
-        const candidate = parseJson(
-          readFileSync(config.milestoneReview.outputPath, 'utf8'),
-          config.milestoneReview.outputPath,
-        );
-        assertReviewPayloadShape(candidate, `Milestone review PR #${pullRequest.number}`);
+        assertReviewPayloadShape(candidate, reviewLabel);
         const normalized = normalizeReviewResult(candidate);
         const changed = run('git', ['status', '--porcelain']).stdout !== '';
         const headChanged = run('git', ['rev-parse', 'HEAD']).stdout !== reviewedHead;

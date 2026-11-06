@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 
@@ -155,6 +155,11 @@ export function reviewClaudeArguments(role) {
     // после ревью: она работает одинаково для обоих CLI.
     '--tools',
     'Read,Glob,Grep',
+    // --tools ограничивает встроенные инструменты. Пустая конфигурация
+    // исключает подключение MCP-серверов проекта к ревью.
+    '--strict-mcp-config',
+    '--mcp-config',
+    '{"mcpServers":{}}',
     '--json-schema',
     inlineSchema(role.schemaPath),
   ];
@@ -353,7 +358,13 @@ function readClaudeEvent(line) {
   // шагов, стоит дороже успешной, и именно её цену нужно видеть.
   const telemetry = claudeTelemetry(event);
   if (!event.is_error) {
-    return { agentMessage: resultText || undefined, telemetry };
+    return {
+      agentMessage: resultText || undefined,
+      telemetry,
+      structuredOutput: event.subtype === 'success' && event.is_error === false
+        ? event.structured_output
+        : undefined,
+    };
   }
 
   // Единственное место, где виден отказ: код завершения остаётся нулевым и при
@@ -426,15 +437,14 @@ export const claudeBackend = {
   reasoningEfforts,
   createSandboxedEnvironment: createSandboxedClaudeEnvironment,
   developmentArguments: developmentClaudeArguments,
-  reviewArguments: reviewClaudeArguments,
+  review: {
+    fileAccess: 'read-tools',
+    resultChannel: 'structured-event',
+    arguments: reviewClaudeArguments,
+  },
   verifyAuthentication: verifyClaudeAuthentication,
   readEvent: readClaudeEvent,
   exitFailure: genericExitFailure,
-  // Файлового флага для итогового сообщения у CLI нет, поэтому контракт
-  // ревьюеров — «результат лежит в outputPath» — выполняет сам backend.
-  writeReviewOutput(role, session) {
-    writeFileSync(role.outputPath, session.lastAgentMessage ?? '', 'utf8');
-  },
 };
 
 export async function runClaudeWithTurnLimit(args, options) {

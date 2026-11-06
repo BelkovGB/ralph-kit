@@ -7,6 +7,7 @@ import { terminateProcessTreeByPid } from './ralph-runtime.mjs';
 export const humanOnlyFailureCodes = new Set([
   'RALPH_AGENT_AUTH', 'RALPH_AGENT_WRITE_ACCESS', 'RALPH_UNTRUSTED_ISSUE',
   'RALPH_CONTROL_PLANE_CHANGED', 'RALPH_RECOVERY_BLOCKED', 'RALPH_NEEDS_HUMAN',
+  'RALPH_PROCESS_CONFIG', 'RALPH_PROCESS_EVIDENCE',
 ]);
 
 export function ralphRunOutcome(result, error = null) {

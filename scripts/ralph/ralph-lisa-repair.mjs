@@ -13,7 +13,11 @@ import { prepareLisaRepairConfig } from './ralph-repair-policy.mjs';
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const contexts = new WeakMap();
 const assessments = new WeakMap();
-const protectedModules = new Set(['ralph-lifecycle.mjs', 'ralph-lifecycle-host.mjs', 'ralph-lisa-repair.mjs', 'ralph-repair-policy.mjs']);
+const repairReviewVerdicts = ['pass', 'human'];
+const protectedModules = new Set([
+  'ralph-lifecycle.mjs', 'ralph-lifecycle-host.mjs', 'ralph-lisa-repair.mjs',
+  'ralph-process-packs.mjs', 'ralph-repair-policy.mjs',
+]);
 const beforeCommit = new Set(['agent-running', 'working-tree', 'validating', 'validation-mutated', 'validation-diagnostic', 'review-failed']);
 const digest = (value) => createHash('sha256').update(value).digest('hex');
 
@@ -176,7 +180,12 @@ export async function assessLisaRepair(context, options = {}) {
     content: saved.baseline.get(path.relative(saved.root, file).replaceAll('\\', '/'))?.content?.toString('utf8'),
   }));
   const review = await options.review({ context, policy: structuredClone(saved.config), state: structuredClone(saved.state), changes, originalInstructions });
-  if (review?.verdict !== 'pass') throw new Error(`Lisa: ремонт не принят: ${review?.reason ?? 'нет вердикта ревью'}.`);
+  if (!repairReviewVerdicts.includes(review?.verdict) ||
+    typeof review.reason !== 'string' || review.reason.trim() === '' ||
+    Object.keys(review).some((key) => key !== 'verdict' && key !== 'reason')) {
+    throw new Error('Lisa: ремонт не принят. Независимое ревью вернуло некорректный результат.');
+  }
+  if (review.verdict === 'human') throw new Error(`Lisa: ремонт не принят: ${review.reason}.`);
   checkedContext(context, options);
   if (treeHash(tree(saved.root, treeOptions)) !== treeHash(after)) throw new Error('Lisa: ревью изменило дерево ремонта.');
   if (!options.validate) throw new Error('Lisa: проверки ремонта обязательны.');
@@ -223,7 +232,7 @@ export function createTrustedRepairRuntime(directory = path.dirname(fileURLToPat
   const schemaPath = path.join(root, 'repair-review.schema.json');
   const schema = JSON.stringify({ type: 'object', additionalProperties: false,
     required: ['verdict', 'reason'], properties: {
-      verdict: { type: 'string', enum: ['pass', 'human'] }, reason: { type: 'string', minLength: 1 },
+      verdict: { type: 'string', enum: repairReviewVerdicts }, reason: { type: 'string', minLength: 1 },
     } });
   writeFileSync(schemaPath, schema);
   hashes.set('repair-review.schema.json', digest(schema));

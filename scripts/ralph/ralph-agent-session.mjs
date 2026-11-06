@@ -137,7 +137,8 @@ export function addUsage(total, usage) {
  * - `createSandboxedEnvironment(source, options)` — песочница с учётными данными;
  * - `readEvent(line)` — разбор одной строки stdout. Возвращает `null`, если
  *   строка не разобрана (её печатают как есть), иначе объект с полями
- *   `stepId`, `log`, `agentMessage`, `error`, `telemetry`, `toolResults`;
+ *   `stepId`, `log`, `agentMessage`, `error`, `telemetry`, `toolResults`.
+ *   `structuredOutput` передаёт результат завершения сессии отдельно от текста;
  * - `exitFailure(result, stderr)` — Error по коду завершения, если backend
  *   умеет распознать причину точнее общего сообщения.
  *
@@ -189,6 +190,7 @@ async function runObservedAgentSession(backend, args, options, sessionStartedMs)
   let stderr = '';
   let stdoutBuffer = '';
   let lastAgentMessage = '';
+  let structuredOutput;
   // Счётчик шагов текущей сессии агента.
   let turns = 0;
   let limitReached = false;
@@ -271,6 +273,7 @@ async function runObservedAgentSession(backend, args, options, sessionStartedMs)
     markAgentActivity();
 
     if (event.agentMessage) lastAgentMessage = event.agentMessage;
+    if (Object.hasOwn(event, 'structuredOutput')) structuredOutput = event.structuredOutput;
     if (event.error) streamError ??= event.error;
     if (event.telemetry) backendTelemetry = event.telemetry;
     if (event.toolResults) toolResults += event.toolResults;
@@ -437,7 +440,7 @@ async function runObservedAgentSession(backend, args, options, sessionStartedMs)
   }
 
   console.log(`${options.label}: использовано шагов ${turns}/${options.maxTurns}.`);
-  return { turns, lastAgentMessage, telemetry: sessionTelemetry() };
+  return { turns, lastAgentMessage, structuredOutput, telemetry: sessionTelemetry() };
 }
 
 export function genericExitFailure(result, stderr, label) {

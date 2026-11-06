@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -231,7 +231,7 @@ test('a closed quota window is reported instead of being swallowed', () => {
   assert.equal(closed.stepId, undefined);
 });
 
-test('the claude review role gets a read-only tool set and an inline schema', () => {
+test('the Claude review role gets read-only tools, isolated MCP, and an inline schema', () => {
   const args = reviewClaudeArguments({
     model: 'claude-opus-5',
     effort: 'high',
@@ -240,6 +240,8 @@ test('the claude review role gets a read-only tool set and an inline schema', ()
   });
 
   assert.equal(args[args.indexOf('--tools') + 1], 'Read,Glob,Grep');
+  assert.ok(args.includes('--strict-mcp-config'));
+  assert.deepEqual(JSON.parse(args[args.indexOf('--mcp-config') + 1]), { mcpServers: {} });
   // Флага --output-schema с путём у CLI нет: схема передаётся строкой.
   assert.equal(args.includes('--output-schema'), false);
   assert.deepEqual(JSON.parse(args[args.indexOf('--json-schema') + 1]), schemaWithoutDialect());
@@ -607,7 +609,7 @@ test("Ralph's own step limit stops a claude session that ignores it", async () =
   );
 });
 
-test('a claude review writes its verdict to the outputPath the orchestrator reads', async () => {
+test('a Claude review uses native structured output and writes the verdict artifact', async () => {
   const directory = mkdtempSync(path.join(tmpdir(), 'ralph-claude-review-'));
   const outputPath = path.join(directory, 'review.json');
   const verdict = { verdict: 'pass', summary: 'Looks fine.', findings: [] };
@@ -620,20 +622,24 @@ test('a claude review writes its verdict to the outputPath the orchestrator read
           type: 'result',
           subtype: 'success',
           is_error: false,
-          result: JSON.stringify(verdict),
+          result: 'Review completed.',
+          structured_output: verdict,
         },
       ]),
       async ({ receivedArguments }) => {
-        await runReviewSession(
+        const review = await runReviewSession(
           { agentCli: 'claude' },
           { model: 'claude-opus-5', effort: 'high', schemaPath, outputPath },
           { input: 'review', maxTurns: 10, timeoutMs: 60_000, label: 'Claude review' },
         );
+        assert.deepEqual(review, verdict);
 
         // Схема должна дойти до процесса целиком. На Windows аргументы проходят
         // через cmd.exe, который обрезает командную строку на первом переводе
         // строки: pretty-printed схема дошла бы как «{», и ревью падало бы всегда.
         const received = receivedArguments();
+        assert.ok(received.includes('--strict-mcp-config'));
+        assert.deepEqual(JSON.parse(received[received.indexOf('--mcp-config') + 1]), { mcpServers: {} });
         const schemaArgument = received[received.indexOf('--json-schema') + 1];
         assert.deepEqual(JSON.parse(schemaArgument), schemaWithoutDialect());
         assert.equal(received.at(-1), schemaArgument);
@@ -646,31 +652,50 @@ test('a claude review writes its verdict to the outputPath the orchestrator read
   }
 });
 
-test('the codex backend keeps writing its own review output file', () => {
-  // Codex пишет файл сам флагом --output-last-message, поэтому backend не
-  // должен его перезаписывать: иначе схема-валидированный вывод затёрся бы
-  // последним текстовым сообщением.
-  assert.equal(claudeBackend.writeReviewOutput === undefined, false);
-  assert.equal(agentBackend({ agentCli: 'codex' }).writeReviewOutput, undefined);
-
-  const args = agentBackend({ agentCli: 'codex' }).reviewArguments({
-    model: 'gpt-5.6-terra',
-    effort: 'medium',
-    schemaPath: 'schema.json',
-    outputPath: 'out.json',
-  });
-  assert.equal(args[args.indexOf('--output-last-message') + 1], 'out.json');
-  assert.equal(args[args.indexOf('--output-schema') + 1], 'schema.json');
+test('a Claude review rejects a text-only result even when it looks like a verdict', async () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'ralph-claude-text-only-'));
+  const outputPath = path.join(directory, 'review.json');
+  const text = JSON.stringify({ verdict: 'pass', summary: 'Unstructured verdict.', findings: [] });
+  try {
+    writeFileSync(outputPath, text);
+    await withFakeClaude(
+      claudeStreamScript([
+        assistantEvent('msg-1', text),
+        { type: 'result', subtype: 'success', is_error: false, result: text },
+      ]),
+      async () => {
+        await assert.rejects(runReviewSession(
+          { agentCli: 'claude' },
+          { model: 'fixture-review-model', effort: 'high', schemaPath, outputPath },
+          { input: 'review', maxTurns: 10, timeoutMs: 60_000, label: 'Claude review' },
+        ), /структурированный результат/u);
+      },
+    );
+    assert.equal(existsSync(outputPath), false);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
-test('the fake-claude output file stays a valid review payload path', () => {
+test('a Claude review fails if the artifact cannot be written', async () => {
   const directory = mkdtempSync(path.join(tmpdir(), 'ralph-claude-write-'));
   const outputPath = path.join(directory, 'nested', 'review.json');
 
   try {
-    writeFileSync(path.join(directory, 'marker'), 'x', 'utf8');
-    assert.throws(() =>
-      claudeBackend.writeReviewOutput({ outputPath }, { lastAgentMessage: '{}' }),
+    await withFakeClaude(
+      claudeStreamScript([{
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        structured_output: { verdict: 'pass', summary: 'Done.', findings: [] },
+      }]),
+      async () => {
+        await assert.rejects(runReviewSession(
+          { agentCli: 'claude' },
+          { model: 'fixture-review-model', effort: 'high', schemaPath, outputPath },
+          { input: 'review', maxTurns: 10, timeoutMs: 60_000, label: 'Claude review' },
+        ), { code: 'ENOENT' });
+      },
     );
   } finally {
     rmSync(directory, { recursive: true, force: true });

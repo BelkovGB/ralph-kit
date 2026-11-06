@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { fail, isRalphInfrastructureIssue } from './ralph-scope.mjs';
 import { activeStateStore } from './ralph-state-store.mjs';
 import { issueDetails, patchIssue } from './ralph-github-client.mjs';
+import { resolveIssueProcess } from './ralph-process-packs.mjs';
 
 /**
  * Договор Ralph с issue: что считается доверенным содержимым и какие маркеры
@@ -61,6 +62,7 @@ export function approveConfiguredIssue(
     title: issue.title,
     body: issueBodyWithoutRalphMetadata(issue),
   };
+  resolveIssueProcess(config, issue.number, snapshot.body);
   const approvedSnapshot =
     stateStore?.approveIssueSnapshot(issue.number, snapshot, replace) ?? snapshot;
   config.approvedIssueSnapshots[key] = approvedSnapshot;
@@ -149,7 +151,7 @@ export function normalizeReviewResult(review) {
       ...review,
       verdict: 'fail',
       summary:
-        `Codex returned PASS together with ${review.findings.length} actionable findings. ` +
+        `The reviewer returned PASS together with ${review.findings.length} actionable findings. ` +
         `Ralph treated the result as FAIL. ${review.summary}`,
     };
   }

@@ -616,14 +616,19 @@ export function pushBranchAndVerify(config, dependencies = {}) {
   const executeNetwork = dependencies.runNetwork ?? runNetwork;
   const verify = dependencies.verifyPushedHead ?? verifyPushedHead;
   const localHead = execute('git', ['rev-parse', 'HEAD']).stdout;
+  const expectedHead = dependencies.expectedHead;
+  if (expectedHead && localHead !== expectedHead) {
+    fail(`HEAD изменился после проверки фазы: проверен ${expectedHead}, сейчас ${localHead}.`);
+  }
+  const target = `refs/heads/${config.branch}`;
   const pushArguments =
     config.githubAccount == null
-      ? ['push', '--set-upstream', 'origin', config.branch]
+      ? ['push', '--set-upstream', 'origin', expectedHead ? `${expectedHead}:${target}` : config.branch]
       : [
           'push',
           '--no-verify',
           networkRemote(config),
-          `HEAD:refs/heads/${config.branch}`,
+          `${expectedHead ?? 'HEAD'}:${target}`,
         ];
   try {
     executeNetwork('git', pushArguments, {
