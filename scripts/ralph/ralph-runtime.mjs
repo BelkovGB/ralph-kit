@@ -341,10 +341,14 @@ function readJsonFile(filePath, fallback = null) {
 }
 
 function writeJsonAtomic(filePath, value) {
+  writeTextAtomic(filePath, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+function writeTextAtomic(filePath, text) {
   mkdirSync(path.dirname(filePath), { recursive: true });
   const temporaryPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
   try {
-    writeFileSync(temporaryPath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+    writeFileSync(temporaryPath, text, 'utf8');
     renameSync(temporaryPath, filePath);
   } catch (error) {
     removeFileIfExists(temporaryPath);
@@ -427,4 +431,5 @@ export {
   terminateProcessTreeByPid,
   waitSync,
   writeJsonAtomic,
+  writeTextAtomic,
 };
