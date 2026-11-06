@@ -76,6 +76,7 @@ import {
   verifyGitHubAuthentication,
   verifyRepositoryWriteAccess,
 } from './ralph-github-client.mjs';
+import { buildIndependentReviewPrompt } from './ralph-prompts.mjs';
 import { createStateStore } from './ralph-state-store.mjs';
 import { approvedLedgerFixture, ralphConfigPath, temporaryProjectTree, withPatchedRalphConfig } from './ralph-test-support.mjs';
 
@@ -324,7 +325,7 @@ function inventoryRunner(commits) {
   const calls = [];
   const run = (_name, args) => {
     calls.push(args.join(' '));
-    if (args[0] === 'log') return { status: 0, stdout: commits.join('\n') };
+    if (args[0] === 'log') return { status: 0, stdout: commits.map((sha) => `${sha}\t#57`).join('\0') };
     if (args[0] === 'rev-parse') return { status: 0, stdout: 'd'.repeat(40) };
     if (args.includes('--name-status')) return { stdout: 'M\tsrc/items.ts' };
     if (args.includes('--stat')) return { stdout: ' src/items.ts | 4 +++-' };
@@ -373,6 +374,61 @@ test('a second iteration shows the issue commits only, not the range between the
     3,
     'ожидались три вызова show с обоими commit',
   );
+});
+
+test('the reviewed HEAD selects only new commits of this issue before truncating the patch', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'ralph-incremental-inventory-'));
+  const git = (args) => execFileSync('git', [
+    '-c', 'user.name=Ralph test', '-c', 'user.email=ralph@example.test', '-c', 'core.autocrlf=false', ...args,
+  ], { cwd: root, encoding: 'utf8' }).trim();
+  const run = (_name, args, { allowFailure = false } = {}) => {
+    try { return { status: 0, stdout: git(args) }; }
+    catch (error) {
+      if (!allowFailure) throw error;
+      return { status: error.status, stdout: error.stdout?.trim() ?? '' };
+    }
+  };
+  const commit = (file, content, message, trailer) => {
+    writeFileSync(path.join(root, file), content);
+    git(['add', '--', file]);
+    git(['commit', '--quiet', '-m', message, '-m', trailer]);
+    return git(['rev-parse', 'HEAD']);
+  };
+
+  try {
+    git(['init', '--quiet']);
+    const afterHead = commit('old.txt', 'already reviewed line\n'.repeat(4000), 'Large first change', 'Ralph-Issue: #57');
+    const unrelated = git(['commit-tree', git(['rev-parse', 'HEAD^{tree}']), '-m', 'Independent root']);
+    commit('other.txt', 'other issue payload\n', 'Another issue', 'Ralph-Issue: #570');
+    commit('near-match.txt', 'not an issue trailer\n', 'Unrelated change', 'Ralph-Issue: #57\textra');
+    const head = commit('fix.txt', 'exact new fix\n', 'Fix review finding', 'ralph-issue:#57');
+    assert.equal(git(['show', '-s', '--format=%(trailers:key=Ralph-Issue,valueonly)', head]), '#57');
+    const issue = { number: 57 };
+
+    const incremental = issueChangeInventory(issue, head, { afterHead, run });
+    assert.equal(incremental.afterHead, afterHead);
+    assert.deepEqual(incremental.commits, [head]);
+    assert.deepEqual(incremental.paths, ['fix.txt']);
+    assert.equal(incremental.truncated, false);
+    assert.match(incremental.diff, /\+exact new fix/u);
+    assert.doesNotMatch(incremental.diff, /already reviewed|other issue payload/u);
+    const prompt = buildIndependentReviewPrompt({ agentCli: 'claude' }, issue, head, {
+      changes: incremental,
+      previousReview: { commit: incremental.afterHead, newCommits: incremental.commits },
+      previousFindings: '- Missing guard in the original implementation.',
+    });
+    assert.match(prompt, /\+exact new fix/u);
+    assert.match(prompt, /Missing guard in the original implementation/u);
+    assert.doesNotMatch(prompt, /\+already reviewed line|\+other issue payload/u);
+
+    const fallback = issueChangeInventory(issue, head, { afterHead: unrelated, run });
+    assert.equal(fallback.afterHead, undefined);
+    assert.deepEqual(fallback.commits, [head, afterHead]);
+    assert.deepEqual(fallback.paths, ['old.txt', 'fix.txt']);
+    assert.equal(fallback.truncated, true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('a completion marker left by an older Ralph is read and then stripped', () => {

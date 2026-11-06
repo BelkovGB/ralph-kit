@@ -127,22 +127,26 @@ function reviewDiffExcludePathspec(excludedPaths = []) {
 }
 
 /**
- * Все commit этой issue, новейший первым.
+ * Коммиты этой issue в переданной истории, новейший первым.
  *
- * Оркестратор требует один commit на прогон, а не на issue: после отказа ревью
- * состояние очищается, следующая итерация стартует с нового HEAD и добавляет
- * второй commit с тем же trailer. Номер issue уникален в репозитории, поэтому
- * совпадение trailer однозначно и ограничивать поиск по истории не нужно.
+ * После отказа ревью следующая итерация стартует с нового HEAD и может добавить
+ * коммит с тем же трейлером. Поиск `#57` пропускает допустимые варианты ключа
+ * и разделителя. Точное значение трейлера исключает `#570` и упоминания.
  */
 export function issueCommits(issue, head, execute = run) {
+  const issueTag = `#${issue.number}`;
   const found = execute(
     'git',
-    ['log', '--format=%H', '--fixed-strings', '--grep', commitTrailerForIssue(issue), head],
+    ['log', '-z', '--format=%H%x09%(trailers:key=Ralph-Issue,valueonly,separator=%x1f)',
+      '--fixed-strings', '--grep', issueTag, head],
     { allowFailure: true },
   );
   if (found.status !== 0) return [];
 
-  return found.stdout.split(/\r?\n/).filter((line) => /^[0-9a-f]{40}$/i.test(line));
+  return found.stdout.split('\0').flatMap((record) => {
+    const sha = record.slice(0, 40);
+    return /^[0-9a-f]{40}$/i.test(sha) && record.slice(40) === `\t${issueTag}` ? [sha] : [];
+  });
 }
 
 /**
@@ -212,8 +216,8 @@ export function stageWorkingTreeEntries(entries, execute = run) {
 }
 
 /**
- * Полный набор изменений issue одним объектом: список файлов, статистика и
- * ограниченный diff.
+ * Список файлов, статистика и ограниченный diff этой issue. Проверенный
+ * afterHead позволяет передать только новые коммиты.
  *
  * Показываются именно коммиты этой issue, по одному, в хронологическом
  * порядке. Диапазон `first^..last` был бы короче, но он втягивает всё, что
@@ -227,7 +231,12 @@ export function stageWorkingTreeEntries(entries, execute = run) {
 export function issueChangeInventory(issue, commit, dependencies = {}) {
   const execute = dependencies.run ?? run;
   const excluded = reviewDiffExcludePathspec(dependencies.excludedPaths);
-  const commits = issueCommits(issue, commit, execute);
+  const { afterHead } = dependencies;
+  const newCommits = /^[0-9a-f]{40}$/u.test(afterHead ?? '') && afterHead !== commit &&
+    isAncestorCommit(afterHead, commit, execute)
+    ? issueCommits(issue, `${afterHead}..${commit}`, execute) : [];
+  const incremental = newCommits.length > 0;
+  const commits = incremental ? newCommits : issueCommits(issue, commit, execute);
   // issueCommits отдаёт новейший первым; ревьюеру нужен порядок появления.
   const reviewed = commits.length > 0 ? [...commits].reverse() : [commit];
   const inspect = (flags, pathspecs = []) =>
@@ -240,6 +249,7 @@ export function issueChangeInventory(issue, commit, dependencies = {}) {
   return {
     commit,
     commits: commits.length > 0 ? commits : [commit],
+    ...(incremental ? { afterHead } : {}),
     // Пути разбираются здесь, у источника: `git diff --name-status` печатает
     // статус, табуляцию и путь, а для переименования — два пути, из которых
     // нужен последний.

@@ -286,27 +286,6 @@ function verifyTools(config) {
 // Локальное ревью commit одной issue отдельной сессией агента
 // -----------------------------------------------------------------------------
 
-/**
- * Коммит, уже проверенный прошлым ревью целиком, и то, что добавилось после.
- *
- * Возвращает null на первом ревью issue и на повторном ревью того же самого
- * коммита: в обоих случаях сокращать нечего.
- */
-function previouslyAuditedCommit(changes, commit) {
-  const reviewedCommit = activeStateStore()?.issue?.reviewedCommit;
-  if (!reviewedCommit || reviewedCommit === commit) return null;
-  if (!isAncestorCommit(reviewedCommit, commit)) return null;
-
-  return {
-    commit: reviewedCommit,
-    // Проверенными считаются только те коммиты issue, что были достижимы из
-    // уже отревьюенного: остальные добавились после и требуют полного разбора.
-    newCommits: (changes?.commits ?? []).filter(
-      (candidate) => !isAncestorCommit(candidate, reviewedCommit),
-    ),
-  };
-}
-
 async function runIndependentReview(config, issue, commit, expectedHead) {
   const reviewedHead = run('git', ['rev-parse', 'HEAD']).stdout;
   const reviewedBranch = run('git', ['branch', '--show-current']).stdout;
@@ -317,7 +296,11 @@ async function runIndependentReview(config, issue, commit, expectedHead) {
   // Замечания прошлого ревью вынимаются из тела issue в отдельную секцию
   // prompt: внутри тела они приезжают без подписи, вперемешку с критериями
   // готовности, и требованию «проверь их закрытие» опереться не на что.
+  const saved = activeStateStore()?.issue;
+  const previous = saved?.number === issue.number ? saved : null;
+  const receipt = previous?.reviewReceipt;
   const inventory = issueChangeInventory(issue, commit, {
+    afterHead: ['pass', 'fail'].includes(receipt?.result?.verdict) ? receipt.head : undefined,
     excludedPaths: config.reviewDiffExcludedPaths,
   });
   const reviewPrompt = buildIndependentReviewPrompt(
@@ -326,8 +309,8 @@ async function runIndependentReview(config, issue, commit, expectedHead) {
     commit,
     {
       changes: inventory,
-      previousFindings: activeStateStore()?.issue?.reviewFindings ?? null,
-      previousReview: previouslyAuditedCommit(inventory, commit),
+      previousFindings: previous?.reviewFindings ?? null,
+      previousReview: inventory.afterHead ? { commit: inventory.afterHead, newCommits: inventory.commits } : null,
     },
   );
 

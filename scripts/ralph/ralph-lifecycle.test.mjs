@@ -209,6 +209,7 @@ appendFileSync(reviewOutputPath + '.invocations', isReview ? 'review\\n' : 'deve
 const message = (text) =>
   process.stdout.write(JSON.stringify({ type: 'item.completed', item: { id: 'final', type: 'agent_message', text } }) + '\\n');
 if (isReview) {
+  writeFileSync(reviewOutputPath + '.review-prompt', readFileSync(0, 'utf8'), 'utf8');
   const remote = spawnSync('git', ${JSON.stringify([`--git-dir=${repository.origin}`, 'rev-parse', '--verify', `refs/heads/${repository.branch}`])}, { encoding: 'utf8', windowsHide: true });
   writeFileSync(reviewOutputPath + '.remote-at-review', remote.status === 0 ? remote.stdout.trim() : '', 'utf8');
   if (isClaude) {
@@ -523,6 +524,32 @@ test('отказ ревью оставляет коммит локально и 
       /Broken invariant/u,
     );
   });
+});
+
+test('повторное ревью передаёт короткое исправление после проверенного HEAD', async () => {
+  await withLifecycleStand('ralph/lifecycle-incremental', failVerdict, async (stand) => {
+    const workTree = stand.repository.workTree;
+    const afterHead = stand.repository.commit;
+    writeFileSync(path.join(workTree, 'fix.txt'), 'exact lifecycle fix\n');
+    git(workTree, ['add', '--', 'fix.txt']);
+    git(workTree, ['commit', '--quiet', '-m', 'fix: resolve the finding', '-m', `Ralph-Issue: #${issueNumber}`]);
+    const head = git(workTree, ['rev-parse', 'HEAD']);
+    const store = recordingStateStore({
+      number: issueNumber, title: issueTitle, body: issueBody,
+      startingCommit: afterHead, foreignPaths: [], phase: 'committed', commit: head, recoveryHead: head,
+      reviewReceipt: { head: afterHead, result: JSON.parse(failVerdict) },
+      reviewFindings: 'Guard required by the previous review',
+    });
+    setActiveStateStore(store);
+    const config = lifecycleConfig(stand.repository, stand.reviewOutputPath);
+
+    const result = await runAgentOnIssue(config, 'owner/repository', lifecycleIssue(), 'rules');
+    assert.equal(result.review.verdict, 'fail');
+    const prompt = readFileSync(`${stand.reviewOutputPath}.review-prompt`, 'utf8');
+    assert.match(prompt, /\+exact lifecycle fix/u);
+    assert.match(prompt, /Guard required by the previous review/u);
+    assert.doesNotMatch(prompt, /\+already reviewed line|The diff above is truncated/u);
+  }, { files: { 'work.txt': 'already reviewed line\n'.repeat(4000) } });
 });
 
 test('пройденное на прошлом прогоне ревью не повторяется: issue закрывается сразу', async () => {
