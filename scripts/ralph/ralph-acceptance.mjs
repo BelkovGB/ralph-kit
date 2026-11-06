@@ -114,7 +114,7 @@ export function parseCases(text, file, moduleName) {
   return cases;
 }
 
-export function parseRun(text, file) {
+function parseRunReport(text, file, reportScopeMismatch = false) {
   const lines = text.split(/\r?\n/u);
   const heading = lines.findIndex((line) => /^## Результаты\s*$/u.test(line));
   if (heading === -1) throw acceptanceError(`${file}: нет раздела «## Результаты».`);
@@ -139,15 +139,44 @@ export function parseRun(text, file) {
     }
     seen.add(result.id);
   }
-  if (lines.some((line) => /^Вердикт:\s*принято\.?\s*$/u.test(line)) && results.some(({ status }) => status !== 'PASS')) {
+  const scopeWarnings = runScopeWarnings(lines, file, results);
+  // При расхождении списка status записывает фактический вердикт, чтобы
+  // прежняя сводка с ошибочным «принято» не осталась на диске.
+  if ((!reportScopeMismatch || scopeWarnings.length === 0) &&
+      lines.some((line) => /^Вердикт:\s*принято\.?\s*$/u.test(line)) &&
+      results.some(({ status }) => status !== 'PASS')) {
     throw acceptanceError(`${file}: вердикт «принято» требует PASS у всех кейсов таблицы результатов.`);
   }
-  return results;
+  return { results, scopeWarnings };
 }
 
-function runVerdict(results) {
+export function parseRun(text, file) {
+  return parseRunReport(text, file).results;
+}
+
+function runScopeWarnings(lines, file, results) {
+  const label = '**Кейсы**';
+  const header = lines.slice(0, lines.findIndex((line) => line.startsWith('## ')));
+  const fields = header.filter((line) => line.startsWith(label));
+  if (fields.length === 0) return [];
+
+  const ids = fields[0].slice(label.length).split(',').map((id) => id.trim());
+  const expected = new Set(ids.filter((id) => caseIdPattern.test(id)));
+  const actual = new Set(results.map(({ id }) => id));
+  const missing = [...expected].filter((id) => !actual.has(id));
+  const extra = [...actual].filter((id) => !expected.has(id));
+  const warnings = [];
+  if (fields.length !== 1 || expected.size !== ids.length) {
+    warnings.push(`${file}: ожидается одно поле «Кейсы» с уникальными ID через запятую.`);
+  }
+  if (missing.length > 0) warnings.push(`${file}: нет результатов для назначенных кейсов ${missing.join(', ')}.`);
+  if (extra.length > 0) warnings.push(`${file}: есть результаты для неназначенных кейсов ${extra.join(', ')}.`);
+  return warnings;
+}
+
+function runVerdict(results, scopeMismatch) {
   if (results.some(({ status }) => status === 'FAIL')) return 'не принято';
-  if (results.some(({ status }) => status === 'BLOCKED' || status === 'SKIPPED')) return 'не завершено';
+  if (scopeMismatch || results.some(({ status }) => status === 'BLOCKED' || status === 'SKIPPED')) return 'не завершено';
   return 'принято';
 }
 
@@ -203,7 +232,7 @@ function compareRunNames(a, b) {
   return left.repeat - right.repeat;
 }
 
-export function readAcceptance(directory, files = diskFiles, root = projectRoot) {
+export function readAcceptance(directory, files = diskFiles, root = projectRoot, { reportScopeMismatch = false } = {}) {
   const modulesFile = joinPath(directory, 'modules.md');
   if (!files.exists(modulesFile)) {
     throw acceptanceError(`Нет реестра модулей: ожидался ${modulesFile}. Его ведёт проект, формат — в scripts/ralph/README.md.`);
@@ -227,7 +256,10 @@ export function readAcceptance(directory, files = diskFiles, root = projectRoot)
     .readDirectory(runsDirectory)
     .filter((name) => name.endsWith('.md'))
     .sort(compareRunNames)
-    .map((name) => ({ name, results: parseRun(files.readFile(joinPath(runsDirectory, name)), joinPath('runs', name)) }));
+    .map((name) => {
+      const text = files.readFile(joinPath(runsDirectory, name));
+      return { name, ...parseRunReport(text, joinPath('runs', name), reportScopeMismatch) };
+    });
   return { directory, modules, runs };
 }
 
@@ -272,7 +304,11 @@ export function buildStatus(acceptance) {
         };
       }),
   }));
-  const runs = acceptance.runs.map(({ name, results }) => ({ name, verdict: runVerdict(results) }));
+  const runs = acceptance.runs.map((runFile) => {
+    const scopeWarnings = runFile.scopeWarnings ?? [];
+    warnings.push(...scopeWarnings);
+    return { name: runFile.name, verdict: runVerdict(runFile.results, scopeWarnings.length > 0), scopeWarnings };
+  });
   return { counts, modules, warnings, runs };
 }
 
@@ -353,6 +389,10 @@ export function renderStatus(status) {
   if (status.runs.length > 0) {
     lines.push('', '## Вердикты по таблицам прогонов', '', '| Прогон | Вердикт |', '| ------ | ------- |');
     for (const runFile of status.runs) lines.push(`| runs/${runFile.name} | ${runFile.verdict} |`);
+  }
+  const scopeWarnings = status.runs.flatMap((runFile) => runFile.scopeWarnings ?? []);
+  if (scopeWarnings.length > 0) {
+    lines.push('', '## Расхождения в списках кейсов', '', ...scopeWarnings.map((warning) => `- ${warning}`));
   }
   for (const module of status.modules) {
     lines.push('', `## ${module.name} — ${module.casesFile}`, '');
@@ -443,7 +483,7 @@ export async function main(argv = process.argv.slice(2), dependencies = {}) {
     readFile: (file) => readFileSync(path.join(root, file), 'utf8'),
     readDirectory: (file) => (existsSync(path.join(root, file)) ? readdirSync(path.join(root, file)) : []),
   };
-  const acceptance = readAcceptance(directory, files, root);
+  const acceptance = readAcceptance(directory, files, root, { reportScopeMismatch: command === 'status' });
   if (command === 'status') {
     const status = buildStatus(acceptance);
     for (const warning of status.warnings) warn(`ВНИМАНИЕ: ${warning}`);
@@ -452,7 +492,10 @@ export async function main(argv = process.argv.slice(2), dependencies = {}) {
     const { counts } = status;
     log(`Кейсов ${counts.total} · PASS ${counts.PASS} · FAIL ${counts.FAIL} · BLOCKED ${counts.BLOCKED} · SKIPPED ${counts.SKIPPED} · не гонялся ${counts.never}`);
     const lastRun = status.runs.at(-1);
-    if (lastRun) log(`Последний прогон: runs/${lastRun.name} — ${lastRun.verdict} (по таблице результатов).`);
+    if (lastRun) {
+      const reason = lastRun.scopeWarnings.length > 0 ? 'список кейсов расходится с таблицей' : 'по таблице результатов';
+      log(`Последний прогон: runs/${lastRun.name} — ${lastRun.verdict} (${reason}).`);
+    }
     log(`Сводка записана: ${target}`);
     return;
   }
