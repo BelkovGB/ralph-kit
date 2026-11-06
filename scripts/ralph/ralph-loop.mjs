@@ -583,6 +583,9 @@ async function reviewAndCloseCommittedIssue(config, repository, issue, commit) {
   // ревью того же самого дерева на следующем прогоне.
   activeStateStore()?.updateIssue({ phase: reviewPassedPhase, reviewedCommit: commit });
   verifyPushedHead(config, pushedHead);
+  // Сигнал review означает, что ревью вернуло вердикт. Восстановление после
+  // парковки подтверждает свежий PASS на сверенном опубликованном HEAD.
+  repairStepSucceeded('review-failed');
   await observedRepairStep('close', () => closeIssue(config, repository, issue, commit, review));
   activeStateStore()?.clearIssue();
   return { completed: true, commit, review };
