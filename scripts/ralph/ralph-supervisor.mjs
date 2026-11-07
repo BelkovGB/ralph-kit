@@ -94,7 +94,26 @@ export function prepareLisaResume(config, store, before, dependencies = {}) {
   assertLisaWorkspaceUnchanged(before, after);
   const status = execute('git', ['status', '--porcelain']).stdout;
   const issue = store.issue;
-  if (!status) return analyzeRecovery(config, issue, { run: execute });
+  if (!status) {
+    if (dependencies.acceptedRepair && issue?.phase === 'review-failed') {
+      // Environment-only repairs can leave Git clean. Re-review the preserved
+      // task commit under Lisa ownership instead of invoking development again.
+      if (typeof before.repairId !== 'string' || !before.repairId) {
+        throw Object.assign(new Error('Lisa: принятый ремонт не содержит идентификатор.'), { code: 'RALPH_RECOVERY_BLOCKED' });
+      }
+      const patch = {
+        phase: 'committed', lisaRepairId: before.repairId,
+        reviewedCommit: null, reviewReceipt: null, publicationCheckpoint: null,
+        expectedTree: null, commitMessage: null,
+        validationExpectedTreeHash: null, validationFailureFingerprint: null,
+        reviewFixAttempts: 0,
+      };
+      const plan = analyzeRecovery(config, { ...issue, ...patch }, { run: execute });
+      store.updateIssue(patch);
+      return plan;
+    }
+    return analyzeRecovery(config, issue, { run: execute });
+  }
   const allowed = new Set(['review-failed', 'committed', 'pushed', 'reviewing',
     'closing', 'agent-running', 'working-tree', 'validating']);
   if (dependencies.acceptedRepair) {
