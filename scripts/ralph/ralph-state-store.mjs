@@ -9,6 +9,8 @@ import {
   writeJsonAtomic,
 } from './ralph-runtime.mjs';
 import { fail } from './ralph-scope.mjs';
+import { createIssueProcess, updateIssueProcess } from './ralph-process.mjs';
+import { publishLiveStatus } from './ralph-live-status.mjs';
 
 /**
  * Состояние AFK-запуска: переживает перезапуск Node и не попадает в Git.
@@ -56,6 +58,8 @@ export function issueForeignPaths(issue) {
 
 export function createStateStore(config, selectedMode, statePath = runtimeStatePath, options = {}) {
   let state = readJsonFile(statePath, null);
+  const now = options.now ?? Date.now;
+  const timingOwnerId = randomUUID();
   const configuredPhaseIndex = config.phaseIndex ?? 0;
   const configuredPhaseCount = config.phaseCount ?? 1;
   const configuredPlanId = config.phasePlanId;
@@ -99,6 +103,7 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
       lisaRecommendations: [],
       approvedIssueSnapshots: {},
       issue: null,
+      phaseProcess: createIssueProcess(),
       updatedAt: new Date().toISOString(),
     };
     writeJsonAtomic(statePath, state);
@@ -106,6 +111,20 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
   if (state?.supervisorActive && selectedMode === '--run') {
     state.supervisorActive = false;
     writeJsonAtomic(statePath, state);
+  }
+
+  let interruptedTiming = false;
+  if (selectedMode === '--run') {
+    for (const process of [state?.issue?.process, state?.phaseProcess]) {
+      if (!process?.activeTiming) continue;
+      process.activeTiming = null;
+      process.timingPartial = true;
+      interruptedTiming = true;
+    }
+  }
+  if (interruptedTiming) {
+    writeJsonAtomic(statePath, state);
+    publishLiveStatus({ type: 'process-change', timing: null });
   }
 
   const persist = () => {
@@ -161,6 +180,7 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
         foreignPaths: [...foreignPaths],
         foreignPathsFormat: exactForeignPathsFormat,
         phase: 'agent-running',
+        process: createIssueProcess(),
         validationFixAttempts: 0,
         lastFailure: null,
         lastFailureSummary: null,
@@ -181,6 +201,24 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
       if (!state?.issue) return;
       Object.assign(state.issue, values);
       persist();
+    },
+    recordIssueProcess(event) {
+      if (!state?.issue) return;
+      const identity = { scope: 'issue', runId: state.runId, phaseIndex: state.phaseIndex,
+        issueNumber: state.issue.number, ownerId: timingOwnerId };
+      state.issue.process = updateIssueProcess(state.issue.process, { ...event, atMs: now(), identity });
+      persist();
+      publishLiveStatus({ type: 'process-change', timing: state.issue.process.activeTiming
+        ? { ...identity, ...state.issue.process.activeTiming } : null });
+    },
+    recordPhaseProcess(event) {
+      if (!state) return;
+      const identity = { scope: 'phase', runId: state.runId, phaseIndex: state.phaseIndex,
+        issueNumber: null, ownerId: timingOwnerId };
+      state.phaseProcess = updateIssueProcess(state.phaseProcess, { ...event, atMs: now(), identity });
+      persist();
+      publishLiveStatus({ type: 'process-change', timing: state.phaseProcess.activeTiming
+        ? { ...identity, ...state.phaseProcess.activeTiming } : null });
     },
     clearIssue() {
       if (!state) return;
@@ -302,6 +340,7 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
         fail('Следующая фаза не соответствует сохранённому плану Ralph Loop.');
       }
       state.phaseIndex = nextConfig.phaseIndex;
+      state.phaseProcess = createIssueProcess();
       state.branch = nextConfig.branch;
       state.baseBranch = nextConfig.baseBranch;
       state.milestone = nextConfig.milestone;

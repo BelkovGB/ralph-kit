@@ -77,7 +77,7 @@ test('run defaults to split with an explicit plain override; other modes stay pl
   assert.throws(() => parseUiOption('--run', ['--ui=splt']));
 });
 
-test('left column groups run, checks and session without losing overall time at 24 rows', () => {
+test('dashboard groups queue, events and timing without losing budgets at 24 rows', () => {
   const store = { phaseIndex: 0, phaseCount: 2, state: { iterationsUsed: 3, supervisorCalls: 2 },
     issue: { number: 42, title: 'Тест', phase: 'validating', validationFixAttempts: 1 } };
   const snapshot = terminalSnapshot(store, { issue: 42, startedMs: 1000 }, 0, 61000, {
@@ -86,16 +86,19 @@ test('left column groups run, checks and session without losing overall time at 
     session: { startedMs: 1000, lastEventMs: 51000, active: true, turns: 8, maxTurns: 17,
       toolResults: 6, timeoutMs: 90000, firstEventTimeoutMs: 40000, idleTimeoutMs: 20000 },
   });
-  const left = renderTerminal(snapshot, [], 140, 24).split('\n').map(line => line.split(' │ ')[0]).join('\n');
-  assert.match(left, /ПРОГОН[\s\S]*Фаза 1\/2[\s\S]*ЗАДАЧА И ПРОВЕРКИ[\s\S]*Исправления тестов[\s\S]*СЕССИЯ И ВРЕМЯ[\s\S]*Прогон: 0:01:01/);
-  assert.match(left, /До остановки: 0:00:10/);
-  assert.match(left, /Шаги агента: 8\/17 · ответы: 6/);
+  const frame = renderTerminal(snapshot, [], 140, 24);
+  assert.match(frame, /Фаза 1\/2/);
+  assert.match(frame, /ПРОГРЕСС И КАЧЕСТВО.*СОБЫТИЯ.*МЕТРИКИ ЗАДАЧИ/);
+  assert.match(frame, /Исправления тестов/);
+  assert.match(frame, /Прогон: 0:01:01/);
+  assert.match(frame, /До остановки: 0:00:10/);
+  assert.match(frame, /Шаги агента: 8\/17/);
+  assert.match(frame, /Ответы инструментов: 6|ответы: 6/);
   assert.match(renderTerminal(snapshot, [], 140, 40), /Ответы инструментов: 6/);
-  assert.match(left, /Вызовы Lisa в фазе: 2\/3/);
-  assert.equal((left.match(/^── /gm) ?? []).length, 3);
-  assert.match(left, /^СЕЙЧАС: Задача #42 · Проверки/);
-  assert.match(left, /\n *\n── ЗАДАЧА И ПРОВЕРКИ/);
-  assert.match(left, /\n *\n── СЕССИЯ И ВРЕМЯ/);
+  assert.match(frame, /Вызовы Lisa в фазе: 2\/3/);
+  assert.match(frame, /#42 Тест/);
+  assert.match(frame, /\[>\] Проверки/);
+  assert.ok(frame.split('\n').every(line => [...line].length < 140));
 });
 
 test('headline keeps task context while commands and agent waits change', () => {
@@ -112,6 +115,21 @@ test('headline keeps task context while commands and agent waits change', () => 
   snapshot = terminalSnapshot(store, metrics, 0, 3000, live);
   assert.equal(snapshot.headline, 'Задача #42 · Проверки');
   assert.equal(snapshot.detail, 'Ждём первое событие агента');
+});
+
+test('lifecycle host shows live agent counters without a local worker metrics object', () => {
+  const store = { phaseIndex: 0, phaseCount: 1, state: {}, issue: { number: 42, phase: 'reviewing' } };
+  const live = { activity: { kind: 'issue', label: 'Работа над задачей #42', startedMs: 1000 },
+    session: { startedMs: 2000, lastEventMs: 60000, active: true, turns: 8, toolResults: 6,
+      maxTurns: 50, timeoutMs: 90000, firstEventTimeoutMs: 30000, idleTimeoutMs: 20000 },
+    review: { startedMs: 2000, attempt: 2, attempts: 3, active: true } };
+  const snapshot = terminalSnapshot(store, null, 0, 61000, live);
+  assert.ok(snapshot.counters.includes('Шаги агента: 8/50'));
+  assert.ok(snapshot.counters.includes('Ответы инструментов: 6'));
+  assert.ok(snapshot.counters.includes('Запуск ревью: 2/3'));
+  assert.equal(snapshot.issueTime, '0:01:00');
+  live.activity = { kind: 'issue-preparation', label: 'Подготовка задачи #43', startedMs: 62000 };
+  assert.equal(terminalSnapshot(store, null, 0, 63000, live).counters.some(line => line.startsWith('Шаги агента:')), false);
 });
 
 test('headline names phase work, Lisa and terminal outcomes before stale operations', () => {

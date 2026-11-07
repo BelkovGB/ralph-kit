@@ -9,6 +9,7 @@ import {
 import { run, runNetwork, runtimeSettings } from './ralph-process-runner.mjs';
 import { retryTransientOperation } from './ralph-runtime.mjs';
 import { runReviewWithRetries } from './ralph-agent-session.mjs';
+import { activeStateStore } from './ralph-state-store.mjs';
 import { runReviewSession } from './ralph-agent-backends.mjs';
 import { parseJson } from './ralph-config.mjs';
 import {
@@ -284,6 +285,7 @@ export async function runMilestoneReview(config, repository, milestone, pullRequ
 
   let review;
   try {
+    activeStateStore()?.recordPhaseProcess?.({ type: 'review-start', commit: pullRequest.headRefOid });
     review = await runReviewWithRetries(
       config,
       async () => {
@@ -319,6 +321,7 @@ export async function runMilestoneReview(config, repository, milestone, pullRequ
       `Milestone review PR #${pullRequest.number}`,
     );
   } catch (error) {
+    activeStateStore()?.recordPhaseProcess?.({ type: 'review-error' });
     try {
       postMilestoneReviewFailure(config, repository, milestone, pullRequest, error.message);
     } catch (commentError) {
@@ -332,6 +335,8 @@ export async function runMilestoneReview(config, repository, milestone, pullRequ
     'Milestone review',
   );
   review = limitMilestoneReviewFindings(review, pullRequest, config.milestoneReview.maxFindings);
+  activeStateStore()?.recordPhaseProcess?.({ type: 'review-result', verdict: review.verdict,
+    findings: review.findings.length });
 
   postPullRequestReview(
     repository,

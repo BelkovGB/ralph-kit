@@ -294,6 +294,11 @@ export function hasTerminalSink() {
   return terminalSink !== null;
 }
 
+// Only the lifecycle owner writes and rotates run.log; a worker forwards records.
+export function initializeLogForwarding(sink) {
+  return initializeLogOutput(() => {}, sink);
+}
+
 function initializePersistentLog(logPath, metadata = {}, sink = null) {
   mkdirSync(path.dirname(logPath), { recursive: true });
   rotatePersistentLog(logPath, new Date().toISOString());
@@ -302,8 +307,6 @@ function initializePersistentLog(logPath, metadata = {}, sink = null) {
     `${new Date().toISOString()} INFO Ralph process started ${JSON.stringify({ pid: process.pid, ...metadata })}\n`,
     'utf8',
   );
-  const original = { log: console.log, error: console.error };
-  terminalSink = sink;
   const firstSeen = new Map();
   const append = (level, args) => {
     const stamp = new Date().toISOString();
@@ -316,6 +319,12 @@ function initializePersistentLog(logPath, metadata = {}, sink = null) {
     const record = collapseRepeatedMessage(firstSeen, stamp, text).replaceAll('\n', '\n  ');
     appendFileSync(logPath, `${stamp} ${level} ${record}\n`, 'utf8');
   };
+  return initializeLogOutput(append, sink);
+}
+
+function initializeLogOutput(append, sink) {
+  const original = { log: console.log, error: console.error };
+  terminalSink = sink;
   detailAppend = append;
   console.log = (...args) => {
     append('INFO', args);

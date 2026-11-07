@@ -125,7 +125,8 @@ test(`real CLI repair lifecycle: ${scenario}`, async () => {
       if (resumes) assert.match(result.stdout, /FIXTURE_RESUMED=fixed/);
       if (scenario === 'config-repair') {
         assert.ok((result.stdout.match(/=== Validation: node fixed-check.mjs ===/gu) ?? []).length >= 2, result.stdout);
-        assert.match(result.stdout, /CANDIDATE_VALIDATION/);
+        assert.doesNotMatch(result.stdout, /CANDIDATE_VALIDATION/);
+        assert.doesNotMatch(result.stderr, /CANDIDATE_VALIDATION/);
       }
       const state = JSON.parse(readFileSync(path.join(root, '.git/ralph-loop/state.json'), 'utf8'));
       assert.equal(state.issue.number, 12);
@@ -149,6 +150,7 @@ test(`real CLI repair lifecycle: ${scenario}`, async () => {
         assert.equal(terminal[0].repairId, accepted.repairId);
       }
       const log = readFileSync(path.join(root, '.git/ralph-loop/run.log'), 'utf8');
+      if (scenario === 'config-repair') assert.match(log, /CANDIDATE_VALIDATION/);
       assert.equal((log.match(/Ralph process started/gu) ?? []).length, 1);
       if (scenario !== 'ignored-instruction') assert.match(log, /checking/);
       if (['resume', 'repeat'].includes(scenario)) assert.match(log, /resuming/);

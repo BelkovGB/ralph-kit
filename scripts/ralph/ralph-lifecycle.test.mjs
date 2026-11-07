@@ -6,6 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { runAgentOnIssue } from './ralph-loop.mjs';
+import { createIssueProcess, updateIssueProcess } from './ralph-process.mjs';
 import { loadConfig } from './ralph-config.mjs';
 import { repairStepPassed } from './ralph-lifecycle.mjs';
 import { readLiveStatus, resetLiveStatus, subscribeLiveStatus } from './ralph-live-status.mjs';
@@ -162,7 +163,7 @@ function createFakeGh(root, { rejectClose = false, rejectCloseAttempts = 0, reje
  * beginIssue/updateIssue/clearIssue, плюс журнал фаз для проверок.
  */
 function recordingStateStore(initialIssue = null) {
-  const record = { issue: initialIssue, phases: [], runId: 'lifecycle-fixture', phaseIndex: 0 };
+  const record = { issue: initialIssue, phases: [], runId: 'lifecycle-fixture', phaseIndex: 0, process: null };
 
   return {
     record,
@@ -178,6 +179,7 @@ function recordingStateStore(initialIssue = null) {
         startingCommit,
         foreignPaths,
         phase: 'agent-running',
+        process: createIssueProcess(),
         validationFixAttempts: 0,
       };
       record.issue.phase = 'agent-running';
@@ -187,6 +189,12 @@ function recordingStateStore(initialIssue = null) {
       if (!record.issue) return;
       Object.assign(record.issue, values);
       if (values.phase) record.phases.push(values.phase);
+    },
+    recordIssueProcess(event) {
+      if (record.issue) {
+        record.issue.process = updateIssueProcess(record.issue.process, event);
+        record.process = structuredClone(record.issue.process);
+      }
     },
     clearIssue() {
       record.issue = null;
@@ -416,10 +424,35 @@ for (const agentCli of ['codex', 'claude']) {
       assert.equal(patches.length, 1);
       assert.match(patches[0].input, /"state":"closed"/);
       assert.deepEqual(store.record.phases, ['validating', 'reviewing', 'closing']);
+      assert.equal(store.record.process.current, 'done');
+      assert.ok(store.record.process.completed.includes('validation'));
+      assert.ok(store.record.process.completed.includes('review'));
+      assert.deepEqual(store.record.process.reviews, [{ round: 1, verdict: 'pass', findings: 0 }]);
       assert.equal(store.issue, null);
     }, { agentCli });
   });
 }
+
+test('ошибка локального ревью сохраняет процесс и не отмечает коммит опубликованным', async () => {
+  await withLifecycleStand('ralph/lifecycle-review-error', '{"verdict":"pass"}', async (stand) => {
+    const store = recordingStateStore();
+    setActiveStateStore(store);
+    const config = lifecycleConfig(stand.repository, stand.reviewOutputPath);
+    config.runtime.reviewRetryAttempts = 1;
+
+    await assert.rejects(runAgentOnIssue(config, 'owner/repository', lifecycleIssue(), 'rules'));
+
+    assert.equal(store.issue.phase, 'reviewing');
+    assert.equal(store.issue.pendingPublishHead, stand.repository.commit);
+    assert.equal(store.issue.pushedHead ?? null, null);
+    assert.equal(remoteHeads(stand.repository), '');
+    assert.equal(stand.gh.issueState().state, 'open');
+    assert.equal(store.record.process.current, 'review');
+    assert.equal(store.record.process.errorStage, 'review');
+    assert.deepEqual(store.record.process.reviews, []);
+    assert.deepEqual(agentInvocations(stand.reviewOutputPath), ['review']);
+  });
+});
 
 test('PASS подтверждает восстановление после отказа ревью до сбоя закрытия задачи', async () => {
   await withLifecycleStand('ralph/lifecycle-close-failed', passVerdict, async (stand) => {
@@ -557,6 +590,8 @@ test('отказ ревью оставляет коммит локально и 
     // Замечания уехали в тело issue, а сама issue осталась в работе.
     assert.equal(store.issue.phase, 'review-failed');
     assert.equal(store.issue.reviewFixAttempts, 1);
+    assert.equal(store.record.process.current, 'fixing');
+    assert.deepEqual(store.record.process.reviews, [{ round: 1, verdict: 'fail', findings: 1 }]);
     assert.equal(store.issue.startingCommit, stand.repository.commit);
     const bodyPatch = stand.gh
       .calls()
@@ -574,6 +609,7 @@ test('отказ ревью оставляет коммит локально и 
     assert.equal(second.parked, true);
     assert.equal(second.publicationBlocked, true);
     assert.equal(store.issue.phase, 'review-failed');
+    assert.deepEqual(store.record.process.reviews, [{ round: 1, verdict: 'fail', findings: 1 }]);
     assert.deepEqual(agentInvocations(stand.reviewOutputPath), [
       'review',
       'development',
