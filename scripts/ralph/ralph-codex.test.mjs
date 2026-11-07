@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
+import { runReviewSession } from './ralph-agent-backends.mjs';
 import { runAgentOnIssue } from './ralph-loop.mjs';
 import {
   agentReportedWriteAccessFailure,
@@ -22,6 +23,42 @@ import {
   run,
 } from './ralph-process-runner.mjs';
 import { withFakeCodex } from './ralph-test-support.mjs';
+
+test('a Codex review requires a fresh valid result file', async () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'ralph-codex-review-'));
+  const outputPath = path.join(directory, 'review.json');
+  const verdict = { verdict: 'pass', summary: 'Read from the result file.', findings: [] };
+  const role = { model: 'default', effort: 'medium', schemaPath: 'review.schema.json', outputPath };
+  try {
+    await withFakeCodex(`
+      import { readFileSync, writeFileSync } from 'node:fs';
+      const args = process.argv.slice(2);
+      if (!args.includes('--strict-config') || !args.includes('default_permissions=":read-only"')) {
+        throw new Error('Review lost its read-only shell');
+      }
+      const input = readFileSync(0, 'utf8');
+      const resultPath = args[args.indexOf('--output-last-message') + 1];
+      if (args[args.indexOf('--output-schema') + 1] !== 'review.schema.json') {
+        throw new Error('Review schema was not passed to Codex');
+      }
+      console.log(JSON.stringify({ type: 'item.completed', item: {
+        id: 'msg-1', type: 'agent_message', text: 'This is not the review verdict.'
+      }}));
+      if (input === 'valid') writeFileSync(resultPath, JSON.stringify(${JSON.stringify(verdict)}));
+      if (input === 'invalid') writeFileSync(resultPath, '[]');
+    `, async () => {
+      const review = (input) => runReviewSession({}, role, {
+        input, maxTurns: 10, timeoutMs: 60_000, label: 'Codex review',
+      });
+      assert.deepEqual(await review('valid'), verdict);
+      await assert.rejects(review('missing'), /не создал файл результата/u);
+      assert.equal(existsSync(outputPath), false);
+      await assert.rejects(review('invalid'), /структурированный результат/u);
+    });
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 test('Lisa step and message carry her name in CLI output', async () => {
   const printed = [];

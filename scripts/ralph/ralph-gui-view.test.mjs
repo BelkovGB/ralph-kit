@@ -45,10 +45,14 @@ test('форматтеры чисел, токенов и времени', { skip
   assert.equal(view.share(500, 1000), '50%');
 
   assert.equal(view.duration(5_000), '5 с');
+  assert.equal(view.duration(null), '—');
+  assert.equal(view.duration(0), '0 с');
   assert.equal(view.duration(90_000), '2 мин');
   assert.equal(view.duration(3_600_000), '1 ч');
   assert.equal(view.duration(3_660_000 * 2), '2 ч 2 мин');
   assert.equal(view.hours(5_400_000), `${view.num(1.5, 1)} ч`);
+  assert.equal(view.hours(null), '—');
+  assert.equal(view.hours(0), `${view.num(0, 1)} ч`);
 
   assert.equal(view.cut('длинный заголовок', 8), 'длинный…');
   assert.equal(view.cut('короткий', 20), 'короткий');

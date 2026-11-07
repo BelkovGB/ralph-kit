@@ -14,6 +14,7 @@ const steps = new Set(['development', 'validation', 'push', 'review', 'close', '
 const stopReasons = new Map([
   ['repeat-without-progress', 'Повтор прежнего отказа без подтверждения восстановленного шага.'],
   ['lisa-unavailable', 'Lisa выключена, контекст недоступен или исчерпан лимит вызовов.'],
+  ['lisa-call-budget-exhausted', 'Исчерпан сохранённый бюджет вызовов Lisa.'],
   ['lisa-iteration-reserve-exhausted', 'Исчерпан резерв дополнительных итераций Lisa.'],
   ['lisa-repair-declined', 'Lisa не предложила ремонт, который Ralph мог принять.'],
 ]);
@@ -103,6 +104,7 @@ function renderReport({ runId, startedAt, stoppedAt, durationMs, phase, limits, 
 - Последний выполненный шаг — ${known(step, steps)}. Выполненное ревью может вернуть FAIL.
 - Проверенный коммит задачи — ${id(lastReview?.commit, sha)}
 - Подтверждённый HEAD ветки при отправке коммита — ${id(lastReview?.pushedHead, sha)}
+- Локальный HEAD, ожидающий публикации — ${id(issue?.pendingPublishHead, sha)}
 - Задачи оставлены открытыми при парковке.
 - PR по данным фазы — ${count(pullRequest) === missing ? missing : `#${pullRequest}`}. HEAD PR — ${id(phase.pullRequestHead, sha)}
 - Действие владельца — разобрать оставшиеся замечания в задачах и проверить сохранённое состояние перед повторным запуском.

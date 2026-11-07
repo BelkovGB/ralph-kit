@@ -15,15 +15,14 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { runAgentOnIssue } from './ralph-loop.mjs';
-import { agentInstructionFiles, controlPlaneSnapshot, loadConfig } from './ralph-config.mjs';
+import { agentInstructionFiles, controlPlaneSnapshot, loadConfig, trustedFileHash } from './ralph-config.mjs';
+import { controlPlaneExcludePathspec, isRalphInfrastructurePath } from './ralph-scope.mjs';
 
 /**
- * Часть тестов здесь пишет в сам репозиторий: журнал одобренных issue и пробный
- * файл инструкций в `.claude`. Оба пути прибиты к корню проекта, и на копии
- * дерева их не проверить. Поэтому весь набор Ralph запускается с
- * `--test-concurrency=1`: без него другой тестовый файл вызывает `loadConfig()`
- * ровно в момент подмены и падает на «изменила доверенный файл». Остальные
- * тесты подделки работают во временном каталоге и файлов проекта не трогают.
+ * Тест пересчёта набора инструкций добавляет пробный файл в `.claude` самого
+ * проекта. Поэтому весь набор Ralph запускается с `--test-concurrency=1`.
+ * Иначе соседний тест может снять слепок с пробным файлом или без него в
+ * неподходящий момент. Журнал одобрений в тестах создаётся отдельно.
  */
 import { commitStagedChanges } from './ralph-git.mjs';
 import {
@@ -34,9 +33,11 @@ import {
   issueContentHash,
 } from './ralph-issue-contract.mjs';
 import {
+  approvedLedgerFixture,
   configTrustingOnly,
   temporaryProjectTree,
   withFakeCodex,
+  withPatchedRalphConfig,
 } from './ralph-test-support.mjs';
 import { assertTrustedControlFilesUnchanged } from './ralph-validation-runner.mjs';
 
@@ -323,10 +324,9 @@ test('Ralph accepts its own lifecycle metadata and hands the agent the approved 
   );
 });
 
-test('Ralph configuration pins approved AFK inputs before starting an agent session', () => {
-  // Тест поднимает поддельный codex, поэтому backend фиксируется здесь, а не
-  // берётся из конфигурации оператора: она может быть переключена на claude.
-  const config = { ...loadConfig(), agentCli: 'codex' };
+test('Ralph configuration pins approved AFK inputs before starting an agent session', (t) => {
+  const ledger = approvedLedgerFixture(t);
+  const config = withPatchedRalphConfig(ledger.fields, (candidate) => candidate);
 
   // Журнал одобренных issues обязан входить в границу подделки: тело issue в
   // prompt берётся из него, и незамеченная правка журнала подменила бы задание
@@ -411,34 +411,30 @@ test('every Ralph module imports the cross-module functions it calls', () => {
   assert.deepEqual(problems, []);
 });
 
-test('Ralph rejects a modified approved snapshot ledger before an AFK session starts', () => {
-  const ledgerPath = loadConfig().approvedIssueSnapshotsPath;
-  const originalLedger = readFileSync(ledgerPath, 'utf8');
-
-  try {
-    writeFileSync(ledgerPath, 'tampered approval ledger\n', 'utf8');
-    assert.throws(() => loadConfig(), /не совпадает с защищённым контрольным SHA-256/u);
-  } finally {
-    writeFileSync(ledgerPath, originalLedger, 'utf8');
-  }
+test('Ralph rejects a modified approved snapshot ledger before an AFK session starts', (t) => {
+  const ledger = approvedLedgerFixture(t);
+  writeFileSync(ledger.file, 'tampered approval ledger\n', 'utf8');
+  assert.throws(
+    () => withPatchedRalphConfig(ledger.fields, () => assert.fail('ledger hash accepted')),
+    /не совпадает с защищённым контрольным SHA-256/u,
+  );
 });
 
-test('runAgentOnIssue aborts before commit when an AFK session modifies the approved snapshot ledger', async () => {
+test('runAgentOnIssue aborts before commit when an AFK session modifies the approved snapshot ledger', async (t) => {
   // Тест поднимает поддельный codex, поэтому backend фиксируется здесь, а не
   // берётся из конфигурации оператора: она может быть переключена на claude.
   const approvedIssue = { title: 'Approved issue', body: 'Approved body.' };
+  const ledger = approvedLedgerFixture(t);
   const config = {
-    ...loadConfig(),
+    ...withPatchedRalphConfig(ledger.fields, (candidate) => candidate),
     agentCli: 'codex',
     trustedIssueAuthors: ['trusted-author'],
     approvedIssueSnapshots: { 67: approvedIssue },
   };
   const ledgerPath = config.approvedIssueSnapshotsPath;
-  const originalLedger = readFileSync(ledgerPath, 'utf8');
 
-  try {
-    await withFakeCodex(
-      `
+  await withFakeCodex(
+    `
 import { writeFileSync } from 'node:fs';
 const ledgerPath = ${JSON.stringify(ledgerPath)};
 writeFileSync(ledgerPath, 'tampered approval ledger\\n', 'utf8');
@@ -447,29 +443,26 @@ process.stdout.write(JSON.stringify({
   item: { id: 'final', type: 'agent_message', text: 'COMMIT_MESSAGE: fix: mutate approval ledger' },
 }) + '\\n');
 `,
-      async () => {
-        await assert.rejects(
-          () =>
-            runAgentOnIssue(
-              config,
-              'owner/repository',
-              {
-                number: 67,
-                title: approvedIssue.title,
-                body: approvedIssue.body,
-                url: 'https://example.test/issues/67',
-                authorLogin: 'trusted-author',
-                authorAssociation: 'OWNER',
-              },
-              'trusted rules',
-            ),
-          /изменила доверенный файл.*approved-issues\.json/u,
-        );
-      },
-    );
-  } finally {
-    writeFileSync(ledgerPath, originalLedger, 'utf8');
-  }
+    async () => {
+      await assert.rejects(
+        () =>
+          runAgentOnIssue(
+            config,
+            'owner/repository',
+            {
+              number: 67,
+              title: approvedIssue.title,
+              body: approvedIssue.body,
+              url: 'https://example.test/issues/67',
+              authorLogin: 'trusted-author',
+              authorAssociation: 'OWNER',
+            },
+            'trusted rules',
+          ),
+        /изменила доверенный файл.*approved-issues\.json/u,
+      );
+    },
+  );
 });
 
 test('runAgentOnIssue aborts before commit when an AFK session modifies a nested AGENTS instruction file', async () => {
@@ -598,6 +591,58 @@ test('an AGENTS instruction file added after the snapshot is caught by the set, 
     () => assertTrustedControlFilesUnchanged(snapshotTakenBeforeTheFileAppeared),
     /изменила набор доверенных файлов инструкций/u,
   );
+});
+
+test('an AGENTS override added or changed after the snapshot is reported by name', () => {
+  const directory = temporaryProjectTree({ 'packages/example/page.mjs': 'export {};\n' });
+  const snapshot = () => {
+    const files = agentInstructionFiles(directory);
+    return { agentInstructionFiles: files, trustedControlFileHashes: new Map(files.map((file) => [file, trustedFileHash(file)])) };
+  };
+
+  try {
+    for (const relativePath of ['AGENTS.override.md', 'packages/example/AGENTS.override.md']) {
+      const before = snapshot();
+      const file = path.join(directory, relativePath);
+      writeFileSync(file, '# trusted\n');
+      const trusted = snapshot();
+      assert.ok(trusted.agentInstructionFiles.includes(file));
+      assert.throws(() => assertTrustedControlFilesUnchanged(before, directory), (error) =>
+        error.code === 'RALPH_CONTROL_PLANE_CHANGED' && error.message.includes(path.normalize(relativePath)));
+      assert.doesNotThrow(() => assertTrustedControlFilesUnchanged(trusted, directory));
+      writeFileSync(file, '# modified\n');
+      assert.throws(() => assertTrustedControlFilesUnchanged(trusted, directory), (error) =>
+        error.code === 'RALPH_CONTROL_PLANE_CHANGED' && error.message.includes(path.normalize(relativePath)));
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('AGENTS overrides are control-plane paths in the queue and in the Git inventory', () => {
+  const instructionPaths = ['AGENTS.override.md', 'packages/example/AGENTS.override.md'];
+  if (process.platform === 'win32') instructionPaths.push('packages/windows/Agents.OVERRIDE.md');
+  const productPath = 'packages/example/AGENTS.override.md.txt';
+  const directory = temporaryProjectTree(Object.fromEntries(
+    [...instructionPaths, productPath].map((file) => [file, '# fixture\n']),
+  ));
+  const git = (args) => {
+    const result = spawnSync('git', args, { cwd: directory, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+
+  try {
+    assert.deepEqual(agentInstructionFiles(directory).map((file) =>
+      path.relative(directory, file).replaceAll('\\', '/')), instructionPaths);
+    for (const file of instructionPaths) assert.equal(isRalphInfrastructurePath(`${file}:10`), true, file);
+    assert.equal(isRalphInfrastructurePath(productPath), false);
+    git(['init', '--quiet']);
+    git(['-c', 'core.autocrlf=false', 'add', '-N', '-f', '--', '.']);
+    assert.equal(git(['diff', '--name-only', '--', '.', ...controlPlaneExcludePathspec]), productPath);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test('a file planted in .claude enters the trusted instruction set', () => {

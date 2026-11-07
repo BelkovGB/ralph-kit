@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, unlinkSync } from 'node:fs';
 
 import {
   applySeverityFloor,
@@ -10,6 +9,7 @@ import {
 import { run, runNetwork, runtimeSettings } from './ralph-process-runner.mjs';
 import { retryTransientOperation } from './ralph-runtime.mjs';
 import { runReviewWithRetries } from './ralph-agent-session.mjs';
+import { activeStateStore } from './ralph-state-store.mjs';
 import { runReviewSession } from './ralph-agent-backends.mjs';
 import { parseJson } from './ralph-config.mjs';
 import {
@@ -285,6 +285,7 @@ export async function runMilestoneReview(config, repository, milestone, pullRequ
 
   let review;
   try {
+    activeStateStore()?.recordPhaseProcess?.({ type: 'review-start', commit: pullRequest.headRefOid });
     review = await runReviewWithRetries(
       config,
       async () => {
@@ -295,25 +296,15 @@ export async function runMilestoneReview(config, repository, milestone, pullRequ
         }
         const reviewedHead = run('git', ['rev-parse', 'HEAD']).stdout;
         const reviewedBranch = run('git', ['branch', '--show-current']).stdout;
-        if (existsSync(config.milestoneReview.outputPath)) {
-          unlinkSync(config.milestoneReview.outputPath);
-        }
 
-        await runReviewSession(config, config.milestoneReview, {
+        const reviewLabel = `Milestone review PR #${pullRequest.number}`;
+        const candidate = await runReviewSession(config, config.milestoneReview, {
           input: reviewPrompt,
           maxTurns: config.milestoneReview.maxTurns,
           timeoutMs: config.runtime.agentTimeoutMs,
-          label: `Milestone review PR #${pullRequest.number}`,
+          label: reviewLabel,
         });
-        if (!existsSync(config.milestoneReview.outputPath)) {
-          fail(`Milestone review PR #${pullRequest.number} не создал файл результата.`);
-        }
-
-        const candidate = parseJson(
-          readFileSync(config.milestoneReview.outputPath, 'utf8'),
-          config.milestoneReview.outputPath,
-        );
-        assertReviewPayloadShape(candidate, `Milestone review PR #${pullRequest.number}`);
+        assertReviewPayloadShape(candidate, reviewLabel);
         const normalized = normalizeReviewResult(candidate);
         const changed = run('git', ['status', '--porcelain']).stdout !== '';
         const headChanged = run('git', ['rev-parse', 'HEAD']).stdout !== reviewedHead;
@@ -330,6 +321,7 @@ export async function runMilestoneReview(config, repository, milestone, pullRequ
       `Milestone review PR #${pullRequest.number}`,
     );
   } catch (error) {
+    activeStateStore()?.recordPhaseProcess?.({ type: 'review-error' });
     try {
       postMilestoneReviewFailure(config, repository, milestone, pullRequest, error.message);
     } catch (commentError) {
@@ -343,6 +335,8 @@ export async function runMilestoneReview(config, repository, milestone, pullRequ
     'Milestone review',
   );
   review = limitMilestoneReviewFindings(review, pullRequest, config.milestoneReview.maxFindings);
+  activeStateStore()?.recordPhaseProcess?.({ type: 'review-result', verdict: review.verdict,
+    findings: review.findings.length });
 
   postPullRequestReview(
     repository,

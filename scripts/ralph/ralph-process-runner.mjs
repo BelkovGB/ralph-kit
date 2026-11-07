@@ -415,6 +415,14 @@ function runObservedCommand(name, args, options, timeoutMs, startedAt) {
       throw error;
     }
   }
+  // Вывод команды идёт в журнал, а не в консоль. Живым он всё равно не бывает:
+  // spawnSync отдаёт его целиком по завершении, то есть набор проверок
+  // выплеснул бы в консоль десятки тысяч строк разом, и ход прогона в ней
+  // потерялся бы. В `run.log` вывод сохраняется полностью.
+  if (options.echoOutput || captureTerminal) {
+    if (result.stdout?.trim()) logDetail(outputTail(result.stdout, 100_000));
+    if (result.stderr?.trim()) logDetailError(outputTail(result.stderr, 100_000));
+  }
   const idleTimedOut = result.status === 124 &&
     String(timeoutMarker ?? result.stderr ?? '').includes('RALPH_COMMAND_IDLE_TIMEOUT:');
   if (idleTimedOut) {
@@ -466,19 +474,12 @@ function runObservedCommand(name, args, options, timeoutMs, startedAt) {
     throw error;
   }
 
-  // Вывод команды идёт в журнал, а не в консоль. Живым он всё равно не бывает:
-  // spawnSync отдаёт его целиком по завершении, то есть набор проверок
-  // выплеснул бы в консоль десятки тысяч строк разом, и ход прогона в ней
-  // потерялся бы. В `run.log` вывод сохраняется полностью.
-  if (options.echoOutput || captureTerminal) {
-    if (result.stdout?.trim()) logDetail(outputTail(result.stdout, 100_000));
-    if (result.stderr?.trim()) logDetailError(outputTail(result.stderr, 100_000));
-  }
   logCommand(`Команда ${name} завершена за ${Date.now() - startedAt} ms.`);
 
+  const stdout = result.stdout ?? '';
   return {
     status: result.status,
-    stdout: result.stdout?.trim() ?? '',
+    stdout: options.rawStdout ? stdout : stdout.trim(),
     stderr: result.stderr?.trim() ?? '',
   };
 }

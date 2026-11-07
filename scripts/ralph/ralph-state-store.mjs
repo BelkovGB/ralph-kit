@@ -9,6 +9,8 @@ import {
   writeJsonAtomic,
 } from './ralph-runtime.mjs';
 import { fail } from './ralph-scope.mjs';
+import { createIssueProcess, updateIssueProcess } from './ralph-process.mjs';
+import { publishLiveStatus } from './ralph-live-status.mjs';
 
 /**
  * Состояние AFK-запуска: переживает перезапуск Node и не попадает в Git.
@@ -33,8 +35,31 @@ export function activeStateStore() {
   return currentStateStore;
 }
 
+const exactForeignPathsFormat = 'exact-v1';
+
+/** Bound optional model output before retaining it across phases. */
+export function validatedLisaRecommendations(recommendations = []) {
+  if (!Array.isArray(recommendations) || recommendations.length > 10 || recommendations.some(
+    (reason) => typeof reason !== 'string' || !reason.trim() || reason.length > 1000 ||
+      [...reason].some((character) => character.codePointAt(0) < 32 || character.codePointAt(0) === 127),
+  )) throw new Error('Lisa: recommendations должны содержать не более десяти непустых строк до 1000 символов без управляющих символов.');
+  return [...new Set(recommendations.map((reason) => reason.trim()))];
+}
+
+export function issueForeignPaths(issue) {
+  const paths = issue?.foreignPaths ?? [];
+  if (paths.length > 0 && issue.foreignPathsFormat !== exactForeignPathsFormat) {
+    const error = new Error(`Issue #${issue.number}. Сохранён неоднозначный список чужих путей. Проверьте рабочее дерево и индекс вручную.`);
+    error.code = 'RALPH_RECOVERY_BLOCKED';
+    throw error;
+  }
+  return paths;
+}
+
 export function createStateStore(config, selectedMode, statePath = runtimeStatePath, options = {}) {
   let state = readJsonFile(statePath, null);
+  const now = options.now ?? Date.now;
+  const timingOwnerId = randomUUID();
   const configuredPhaseIndex = config.phaseIndex ?? 0;
   const configuredPhaseCount = config.phaseCount ?? 1;
   const configuredPlanId = config.phasePlanId;
@@ -75,8 +100,10 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
       supervisorExtraIterations: 0,
       supervisorActive: false,
       validationPathDirectories: [],
+      lisaRecommendations: [],
       approvedIssueSnapshots: {},
       issue: null,
+      phaseProcess: createIssueProcess(),
       updatedAt: new Date().toISOString(),
     };
     writeJsonAtomic(statePath, state);
@@ -84,6 +111,20 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
   if (state?.supervisorActive && selectedMode === '--run') {
     state.supervisorActive = false;
     writeJsonAtomic(statePath, state);
+  }
+
+  let interruptedTiming = false;
+  if (selectedMode === '--run') {
+    for (const process of [state?.issue?.process, state?.phaseProcess]) {
+      if (!process?.activeTiming) continue;
+      process.activeTiming = null;
+      process.timingPartial = true;
+      interruptedTiming = true;
+    }
+  }
+  if (interruptedTiming) {
+    writeJsonAtomic(statePath, state);
+    publishLiveStatus({ type: 'process-change', timing: null });
   }
 
   const persist = () => {
@@ -131,21 +172,28 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
         number: issue.number,
         title: issue.title,
         url: issue.url,
+        ...(issue.milestone == null ? {} : { milestone: issue.milestone }),
         body: issue.body ?? '',
         authorLogin: issue.authorLogin ?? null,
         authorAssociation: issue.authorAssociation ?? null,
         startingCommit,
         foreignPaths: [...foreignPaths],
+        foreignPathsFormat: exactForeignPathsFormat,
         phase: 'agent-running',
+        process: createIssueProcess(),
         validationFixAttempts: 0,
         lastFailure: null,
         lastFailureSummary: null,
         commit: null,
         pushedHead: null,
+        pendingPublishHead: null,
+        lastPublishedHead: null,
+        reviewReceipt: null,
         expectedTree: null,
         commitMessage: null,
       };
       state.issue.phase = 'agent-running';
+      state.issue.publicationCheckpoint = null;
       persist();
       return state.issue;
     },
@@ -153,6 +201,24 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
       if (!state?.issue) return;
       Object.assign(state.issue, values);
       persist();
+    },
+    recordIssueProcess(event) {
+      if (!state?.issue) return;
+      const identity = { scope: 'issue', runId: state.runId, phaseIndex: state.phaseIndex,
+        issueNumber: state.issue.number, ownerId: timingOwnerId };
+      state.issue.process = updateIssueProcess(state.issue.process, { ...event, atMs: now(), identity });
+      persist();
+      publishLiveStatus({ type: 'process-change', timing: state.issue.process.activeTiming
+        ? { ...identity, ...state.issue.process.activeTiming } : null });
+    },
+    recordPhaseProcess(event) {
+      if (!state) return;
+      const identity = { scope: 'phase', runId: state.runId, phaseIndex: state.phaseIndex,
+        issueNumber: null, ownerId: timingOwnerId };
+      state.phaseProcess = updateIssueProcess(state.phaseProcess, { ...event, atMs: now(), identity });
+      persist();
+      publishLiveStatus({ type: 'process-change', timing: state.phaseProcess.activeTiming
+        ? { ...identity, ...state.phaseProcess.activeTiming } : null });
     },
     clearIssue() {
       if (!state) return;
@@ -174,6 +240,22 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
     setValidationPathDirectories(directories) {
       if (!state) return;
       state.validationPathDirectories = [...directories];
+      persist();
+    },
+    get lisaRecommendations() {
+      return structuredClone(state?.lisaRecommendations ?? []);
+    },
+    addLisaRecommendations(recommendations) {
+      const reasons = validatedLisaRecommendations(recommendations);
+      if (!state || reasons.length === 0) return;
+      state.lisaRecommendations ??= [];
+      for (const reason of reasons) {
+        const record = { phaseIndex: state.phaseIndex, issueNumber: state.issue?.number ?? null, reason };
+        if (!state.lisaRecommendations.some((existing) => existing.phaseIndex === record.phaseIndex &&
+            existing.issueNumber === record.issueNumber && existing.reason === reason)) {
+          state.lisaRecommendations.push(record);
+        }
+      }
       persist();
     },
     reserveSupervisorCall() {
@@ -258,6 +340,7 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
         fail('Следующая фаза не соответствует сохранённому плану Ralph Loop.');
       }
       state.phaseIndex = nextConfig.phaseIndex;
+      state.phaseProcess = createIssueProcess();
       state.branch = nextConfig.branch;
       state.baseBranch = nextConfig.baseBranch;
       state.milestone = nextConfig.milestone;
@@ -275,4 +358,14 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
       removeFileIfExists(statePath);
     },
   };
+}
+
+export function unpublishedIssueHead(issue) {
+  const head = issue?.recoveryHead ?? issue?.commit;
+  return issue?.pendingPublishHead ?? (issue?.commit && head !== issue.pushedHead ? head : null);
+}
+
+// Preserve publication evidence when resetting the local validation or repair stage.
+export function holdIssuePublication(issue, pendingPublishHead = unpublishedIssueHead(issue)) {
+  return { pendingPublishHead, lastPublishedHead: issue?.pushedHead ?? issue?.lastPublishedHead ?? null };
 }

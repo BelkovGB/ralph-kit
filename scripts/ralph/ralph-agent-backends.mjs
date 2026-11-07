@@ -1,3 +1,5 @@
+import { readFileSync, rmSync, writeFileSync } from 'node:fs';
+
 import { runAgentSession } from './ralph-agent-session.mjs';
 import { claudeBackend } from './ralph-claude-session.mjs';
 import { codexBackend } from './ralph-codex-session.mjs';
@@ -48,23 +50,42 @@ export async function runDevelopmentSession(config, options, metricsRole = 'deve
 }
 
 /**
- * role — это `config.review` или `config.milestoneReview`: модель, усилие, путь
- * к схеме и путь к файлу результата.
+ * В роли заданы модель, усилие, схема и путь к артефакту. Адаптер задаёт
+ * доступ ревьюера к файлам, аргументы CLI и источник результата.
  *
- * Контракт для вызывающего один: после успешного возврата результат лежит в
- * `role.outputPath`. Codex пишет его сам флагом `--output-last-message`, у
- * Claude такого флага нет, поэтому файл пишет backend.
+ * Возвращается объект свежего ревью. Он же сохраняется в `role.outputPath`.
+ * Форму вердикта проверяет вызывающая роль по своему контракту.
  */
 export async function runReviewSession(config, role, options) {
   const backend = agentBackend(config);
+  const { review } = backend;
+  rmSync(role.outputPath, { force: true });
   // Роль различается по тождеству объекта конфигурации, а не по имени поля:
   // обе роли приходят сюда одной и той же формой, и отдельного признака у них
   // нет. Разделение нужно только метрикам — цена milestone-ревью на порядок
   // отличается от цены ревью одной issue.
   const metricsRole = role === config?.milestoneReview ? 'milestone-review' : 'review';
   const session = await withRecordedTelemetry(metricsRole, () =>
-    runAgentSession(backend, backend.reviewArguments({ ...role, workingDirectory: options.workingDirectory }), options),
+    runAgentSession(backend, review.arguments({ ...role, workingDirectory: options.workingDirectory }), options),
   );
-  backend.writeReviewOutput?.(role, session);
-  return session;
+
+  const fromEvent = review.resultChannel === 'structured-event';
+  const result = fromEvent ? session.structuredOutput : readReviewFile(role.outputPath, options.label);
+  if (result === null || typeof result !== 'object' || Array.isArray(result)) {
+    fail(`${options.label} не вернул структурированный результат в виде JSON-объекта.`);
+  }
+  if (fromEvent) writeFileSync(role.outputPath, JSON.stringify(result), 'utf8');
+  return result;
+}
+
+function readReviewFile(outputPath, label) {
+  try {
+    return JSON.parse(readFileSync(outputPath, 'utf8'));
+  } catch (cause) {
+    if (cause.code === 'ENOENT') throw new Error(`${label} не создал файл результата.`, { cause });
+    if (cause instanceof SyntaxError) {
+      throw new Error(`${label} вернул некорректный структурированный результат.`, { cause });
+    }
+    throw cause;
+  }
 }

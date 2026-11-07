@@ -46,6 +46,18 @@ test('orchestrator receives a distinct idle failure with retained command output
   });
 });
 
+test('rawStdout preserves whitespace and NUL in captured command output', () => {
+  const stdout = ' \tdraft.txt \0\r\n';
+  const source = `process.stdout.write(${JSON.stringify(stdout)}); process.stderr.write(' diagnostic \\n')`;
+
+  assert.deepEqual(run('node', ['-e', source], { rawStdout: true }), {
+    status: 0,
+    stdout,
+    stderr: 'diagnostic',
+  });
+  assert.equal(run('node', ['-e', source]).stdout, stdout.trim());
+});
+
 test('idle timeout terminates descendants too', async () => {
   const result = await command("const {spawn}=require('node:child_process'); const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'}); console.log(child.pid); setInterval(()=>{},1000)");
   const pid = Number(result.stdout.trim());

@@ -447,7 +447,11 @@ function normalizeRun(entry) {
     finishedAt: entry.finishedAt ?? null,
     outcome: entry.outcome ?? null,
     reason: entry.reason ?? null,
-    wallMs: numberOrZero(entry.wallMs),
+    wallMs: entry.recordKind === 'lisa-repair-outcome' ? null : numberOrZero(entry.wallMs),
+    ...(entry.recordKind === 'lisa-repair-outcome' ? {
+      recordKind: entry.recordKind, runId: entry.runId ?? null,
+      phaseIndex: entry.phaseIndex ?? null, repairId: entry.repairId ?? null,
+    } : {}),
     agentCli: entry.agentCli ?? null,
     stages: normalizeStages(entry.stages),
     roles,
@@ -455,6 +459,10 @@ function normalizeRun(entry) {
     tokensTotal: totalTokens(tokens),
     sessionsWithoutTokens: silentSessions,
   };
+}
+
+function sumMeasuredDuration(total, milliseconds) {
+  return typeof milliseconds === 'number' ? (total ?? 0) + milliseconds : total;
 }
 
 function emptySpend(metricsUnreadable = false) {
@@ -505,7 +513,7 @@ function phaseRollup(tasks, plannedOrder) {
         bugsCompleted: 0,
         bugsParked: 0,
         milestoneReviews: 0,
-        wallMs: 0,
+        wallMs: null,
         sessions: 0,
         sessionsWithoutTokens: 0,
         tokens: emptyTokens(),
@@ -513,7 +521,7 @@ function phaseRollup(tasks, plannedOrder) {
       };
       byMilestone.set(milestone, phase);
     }
-    phase.wallMs += task.wallMs;
+    phase.wallMs = sumMeasuredDuration(phase.wallMs, task.wallMs);
     phase.sessions += task.sessions;
     phase.sessionsWithoutTokens += task.sessionsWithoutTokens;
     addTokens(phase.tokens, task.tokens);
@@ -606,7 +614,7 @@ export function readTaskSpend(dependencies = {}) {
         sessions: 0,
         sessionsWithoutTokens: 0,
         tokens: emptyTokens(),
-        wallMs: 0,
+        wallMs: null,
         runs: [],
       };
       byIssue.set(key, task);
@@ -616,7 +624,7 @@ export function readTaskSpend(dependencies = {}) {
     }
     const run = normalizeRun(entry);
     if (run.kind !== 'supervisor') task.attempts += 1;
-    task.wallMs += run.wallMs;
+    task.wallMs = sumMeasuredDuration(task.wallMs, run.wallMs);
     task.sessions += run.roles.reduce((count, role) => count + role.sessions, 0);
     task.sessionsWithoutTokens += run.sessionsWithoutTokens;
     addTokens(task.tokens, run.tokens);
@@ -626,7 +634,8 @@ export function readTaskSpend(dependencies = {}) {
   const startTimes = entries.map((entry) => entry.startedAt).filter(Boolean).sort();
   const tasks = [...byIssue.values()].map((task) => {
     // В файле записи лежат от новых к старым; человеку нужен ход попыток.
-    task.runs.sort((a, b) => String(a.startedAt).localeCompare(String(b.startedAt)));
+    // Reverse first so stable sorting preserves write order for same-ms decisions.
+    task.runs.reverse().sort((a, b) => String(a.startedAt).localeCompare(String(b.startedAt)));
     const last = task.runs.at(-1);
     task.lastOutcome = last?.outcome ?? null;
     task.lastReason = last?.reason ?? null;
@@ -647,7 +656,7 @@ export function readTaskSpend(dependencies = {}) {
       tasks: sum.tasks + (task.issue === null ? 0 : 1),
       attempts: sum.attempts + (task.issue === null ? 0 : task.attempts),
       milestoneReviews: sum.milestoneReviews + (task.kind === 'milestone-review' ? task.attempts : 0),
-      wallMs: sum.wallMs + task.wallMs,
+      wallMs: sumMeasuredDuration(sum.wallMs, task.wallMs),
       sessions: sum.sessions + task.sessions,
       sessionsWithoutTokens: sum.sessionsWithoutTokens + task.sessionsWithoutTokens,
       tokens: addTokens(sum.tokens, task.tokens),
@@ -656,7 +665,7 @@ export function readTaskSpend(dependencies = {}) {
       tasks: 0,
       attempts: 0,
       milestoneReviews: 0,
-      wallMs: 0,
+      wallMs: null,
       sessions: 0,
       sessionsWithoutTokens: 0,
       tokens: emptyTokens(),

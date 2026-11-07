@@ -217,6 +217,54 @@ test('status: неполный прогон явно назван, а ложно
   }
 });
 
+test('status: сверяет назначенные ID и заменяет устаревший вердикт в сводке', async () => {
+  const root = temporaryProjectTree({
+    'docs/acceptance/modules.md': modulesText,
+    'docs/acceptance/cases/cart.md': cartCases,
+    'docs/acceptance/runs/2026-09-01-legacy.md': run(['| CART-001 | PASS | |']),
+    'docs/acceptance/runs/2026-09-02-complete.md': `**Кейсы** CART-002, CART-001\n\n${run([
+      '| CART-001 | PASS | |', '| CART-002 | PASS | |',
+    ])}`,
+    'docs/acceptance/runs/2026-09-02-malformed.md': `**Кейсы** CART-001, \u001b[2J\n\n${run([
+      '| CART-001 | PASS | |',
+    ])}`,
+    'docs/acceptance/runs/2026-09-03-failed.md': `**Кейсы** CART-001, CART-002\n\nВердикт: принято.\n\n${run([
+      '| CART-001 | FAIL | ошибка |',
+    ])}`,
+    'docs/acceptance/runs/2026-09-04-missing.md': `**Кейсы** CART-001, CART-002\n\nВердикт: принято.\n\n${run([
+      '| CART-001 | PASS | |',
+    ])}`,
+    'docs/acceptance/runs/2026-09-05-extra.md': `**Кейсы** CART-001\n\n${run([
+      '| CART-001 | PASS | |', '| CART-004 | PASS | |',
+    ])}`,
+    'docs/acceptance/status.md': '| runs/2026-09-03-failed.md | принято |',
+  });
+  const output = capture();
+  await main(['status'], { projectRoot: root, log: output.log, warn: output.warn });
+
+  const written = readFileSync(path.join(root, 'docs', 'acceptance', 'status.md'), 'utf8');
+  assert.match(written, /2026-09-01-legacy\.md \| принято \|/u);
+  assert.match(written, /2026-09-02-complete\.md \| принято \|/u);
+  assert.match(written, /2026-09-02-malformed\.md \| не завершено \|/u);
+  assert.match(written, /2026-09-03-failed\.md \| не принято \|/u);
+  assert.match(written, /2026-09-04-missing\.md \| не завершено \|/u);
+  assert.match(written, /2026-09-05-extra\.md \| не завершено \|/u);
+  assert.match(written, /2026-09-03-failed\.md:.*CART-002/u);
+  assert.match(written, /2026-09-04-missing\.md:.*CART-002/u);
+  assert.match(written, /2026-09-05-extra\.md:.*CART-004/u);
+  const warnings = output.err.join('\n');
+  assert.match(warnings, /2026-09-02-malformed\.md:.*Кейсы/u);
+  assert.match(warnings, /2026-09-03-failed\.md:.*CART-002/u);
+  assert.match(warnings, /2026-09-04-missing\.md:.*CART-002/u);
+  assert.match(warnings, /2026-09-05-extra\.md:.*CART-004/u);
+  assert.doesNotMatch(written + warnings, /\[2J/u);
+  assert.match(output.out.join('\n'), /Последний прогон: runs\/2026-09-05-extra\.md — не завершено/u);
+  await assert.rejects(
+    () => main(['impact', 'a...b'], { projectRoot: root, changedPaths: () => [] }),
+    /2026-09-03-failed\.md.*принято.*PASS/u,
+  );
+});
+
 test('сводка: последний статус, прогон и история из пяти, свежий справа', () => {
   const files = memoryFiles({
     'docs/acceptance/modules.md': modulesText,

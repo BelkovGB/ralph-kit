@@ -5,17 +5,28 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { run, removeTemporaryDirectory } from './ralph-process-runner.mjs';
-import { isAncestorCommit } from './ralph-git.mjs';
+import { gitPathKey, isAncestorCommit } from './ralph-git.mjs';
 import { committedRecoveryPhases } from './ralph-recovery.mjs';
+import { issueForeignPaths } from './ralph-state-store.mjs';
 import { agentInstructionFiles } from './ralph-config.mjs';
 import { prepareLisaRepairConfig } from './ralph-repair-policy.mjs';
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const contexts = new WeakMap();
 const assessments = new WeakMap();
-const protectedModules = new Set(['ralph-lifecycle.mjs', 'ralph-lifecycle-host.mjs', 'ralph-lisa-repair.mjs', 'ralph-repair-policy.mjs']);
+const repairReviewVerdicts = ['pass', 'retry', 'human'];
+const externalRepairFailureCodes = new Set([
+  'RALPH_AGENT_AUTH', 'RALPH_AGENT_WRITE_ACCESS', 'RALPH_CONTROL_PLANE_CHANGED',
+  'RALPH_RECOVERY_BLOCKED', 'RALPH_NEEDS_HUMAN', 'RALPH_PROCESS_CONFIG', 'RALPH_PROCESS_EVIDENCE',
+  'EACCES', 'EPERM',
+]);
+const protectedModules = new Set([
+  'ralph-lifecycle.mjs', 'ralph-lifecycle-host.mjs', 'ralph-lisa-repair.mjs',
+  'ralph-process-packs.mjs', 'ralph-repair-policy.mjs',
+]);
 const beforeCommit = new Set(['agent-running', 'working-tree', 'validating', 'validation-mutated', 'validation-diagnostic', 'review-failed']);
 const digest = (value) => createHash('sha256').update(value).digest('hex');
+const gitPath = (name) => path.sep === '\\' ? name.replaceAll('\\', '/') : name;
 
 function identity(options) {
   if (options.identity) return options.identity();
@@ -26,12 +37,12 @@ function identity(options) {
 
 function tree(root, options) {
   const files = options.files ? options.files() : (options.run ?? run)(
-    'git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard'],
+    'git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard'], { rawStdout: true },
   ).stdout.split('\0').filter(Boolean);
   const result = new Map();
   const controls = [...(options.controlFiles ?? []), ...agentInstructionFiles(root)];
   for (const name of [...new Set([...files, ...controls.map((file) => path.relative(root, file))])].sort()) {
-    const relative = name.replaceAll('\\', '/');
+    const relative = gitPath(name);
     const target = path.resolve(root, name);
     if (path.isAbsolute(name) || relative.split('/').includes('..') || !target.startsWith(`${root}${path.sep}`)) {
       throw new Error(`Lisa: небезопасный путь ${name}.`);
@@ -120,8 +131,9 @@ export async function assessLisaRepair(context, options = {}) {
   const treeOptions = { ...options, controlFiles: [...saved.controls.keys()] };
   const after = tree(saved.root, treeOptions);
   const paths = changedPaths(saved.baseline, after);
-  for (const name of saved.state?.issue?.foreignPaths ?? []) {
-    if (paths.includes(name.replaceAll('\\', '/'))) throw new Error(`Lisa изменила чужую работу: ${name}.`);
+  const changedKeys = new Set(paths.map(gitPathKey));
+  for (const name of issueForeignPaths(saved.state?.issue)) {
+    if (changedKeys.has(gitPathKey(gitPath(name)))) throw new Error(`Lisa изменила чужую работу: ${name}.`);
   }
   const ralphPaths = paths.filter((name) => name.startsWith('scripts/ralph/'));
   const instructionFiles = new Set([...saved.instructions.keys(), ...agentInstructionFiles(saved.root),
@@ -150,7 +162,7 @@ export async function assessLisaRepair(context, options = {}) {
     }
   }
   for (const [file, hash] of saved.controls) {
-    const relative = path.relative(saved.root, file).replaceAll('\\', '/');
+    const relative = gitPath(path.relative(saved.root, file));
     const stats = lstatSync(file, { throwIfNoEntry: false });
     const current = stats?.isFile() ? digest(readFileSync(file)) : null;
     if (hash === current) continue;
@@ -162,7 +174,7 @@ export async function assessLisaRepair(context, options = {}) {
     }
   }
   let candidate = structuredClone(saved.config);
-  if (saved.rawConfig && paths.includes(path.relative(saved.root, saved.configPath).replaceAll('\\', '/'))) {
+  if (saved.rawConfig && paths.includes(gitPath(path.relative(saved.root, saved.configPath)))) {
     candidate = prepareLisaRepairConfig(saved.rawConfig, JSON.parse(readFileSync(saved.configPath, 'utf8')),
       saved.config, saved.state?.phaseIndex ?? 0, options);
   }
@@ -171,16 +183,33 @@ export async function assessLisaRepair(context, options = {}) {
     before: saved.baseline.get(name)?.content?.toString('utf8') ?? null,
     after: after.get(name)?.content?.toString('utf8') ?? null,
   }));
-  const originalInstructions = [...saved.instructions.keys()].map((file) => ({
-    path: path.relative(saved.root, file).replaceAll('\\', '/'),
-    content: saved.baseline.get(path.relative(saved.root, file).replaceAll('\\', '/'))?.content?.toString('utf8'),
-  }));
+  const originalInstructions = [...saved.instructions.keys()].map((file) => {
+    const relative = gitPath(path.relative(saved.root, file));
+    return { path: relative, content: saved.baseline.get(relative)?.content?.toString('utf8') };
+  });
   const review = await options.review({ context, policy: structuredClone(saved.config), state: structuredClone(saved.state), changes, originalInstructions });
-  if (review?.verdict !== 'pass') throw new Error(`Lisa: ремонт не принят: ${review?.reason ?? 'нет вердикта ревью'}.`);
+  if (!repairReviewVerdicts.includes(review?.verdict) ||
+    typeof review.reason !== 'string' || review.reason.trim() === '' ||
+    Object.keys(review).some((key) => key !== 'verdict' && key !== 'reason')) {
+    throw new Error('Lisa: ремонт не принят. Независимое ревью вернуло некорректный результат.');
+  }
   checkedContext(context, options);
   if (treeHash(tree(saved.root, treeOptions)) !== treeHash(after)) throw new Error('Lisa: ревью изменило дерево ремонта.');
+  if (review.verdict === 'human') throw new Error(`Lisa: ремонт не принят: ${review.reason}.`);
+  if (review.verdict === 'retry') throw repairRetry('review', review.reason);
   if (!options.validate) throw new Error('Lisa: проверки ремонта обязательны.');
-  await options.validate({ context, changedPaths: paths, config: structuredClone(candidate) });
+  try {
+    await options.validate({ context, changedPaths: paths, config: structuredClone(candidate) });
+  } catch (error) {
+    checkedContext(context, options);
+    if (treeHash(tree(saved.root, treeOptions)) !== treeHash(after)) throw new Error('Lisa: проверки изменили дерево ремонта.');
+    const causes = new Set();
+    for (let cause = error; cause && !causes.has(cause); cause = cause.cause) {
+      causes.add(cause);
+      if (externalRepairFailureCodes.has(cause.code)) throw error;
+    }
+    throw repairRetry('validation', String(error?.message ?? error), error);
+  }
   checkedContext(context, options);
   if (treeHash(tree(saved.root, treeOptions)) !== treeHash(after)) throw new Error('Lisa: проверки изменили дерево ремонта.');
   const controlPlane = {
@@ -191,6 +220,13 @@ export async function assessLisaRepair(context, options = {}) {
   const assessment = { changedPaths: paths, ralphChanged: ralphPaths.length > 0, treeHash: treeHash(after), review };
   assessments.set(assessment, { context, result: structuredClone(assessment), candidate, controlPlane });
   return assessment;
+}
+
+function repairRetry(stage, reason, cause) {
+  const error = new Error(`Lisa: ремонт требует исправления: ${reason}`, { cause });
+  error.code = 'RALPH_LISA_RETRY';
+  error.repairFeedback = { stage, reason };
+  return error;
 }
 
 export function acceptLisaRepair(context, assessment, options = {}) {
@@ -223,7 +259,7 @@ export function createTrustedRepairRuntime(directory = path.dirname(fileURLToPat
   const schemaPath = path.join(root, 'repair-review.schema.json');
   const schema = JSON.stringify({ type: 'object', additionalProperties: false,
     required: ['verdict', 'reason'], properties: {
-      verdict: { type: 'string', enum: ['pass', 'human'] }, reason: { type: 'string', minLength: 1 },
+      verdict: { type: 'string', enum: repairReviewVerdicts }, reason: { type: 'string', minLength: 1 },
     } });
   writeFileSync(schemaPath, schema);
   hashes.set('repair-review.schema.json', digest(schema));

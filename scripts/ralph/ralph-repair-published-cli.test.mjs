@@ -32,8 +32,12 @@ for (const scenario of ['pushed', 'closing', 'closing-foreign', 'closing-staged'
       const target = path.join(root, 'scripts/ralph/ralph-acceptance.mjs');
       writeFileSync(target, readFileSync(target, 'utf8') + "\nexport const repairFixtureValue = 'broken';\n");
       const entry = path.join(root, 'scripts/ralph/ralph-loop.mjs');
+      const workersPath = path.join(root, '.git/ralph-loop/fixture-workers.jsonl');
       let source = readFileSync(entry, 'utf8').replace("import path from 'node:path';",
-        "import path from 'node:path';\nimport { repairFixtureValue } from './ralph-acceptance.mjs';");
+        `import path from 'node:path';
+import { randomUUID as createFixtureWorkerId } from 'node:crypto';
+import { appendFileSync as recordFixtureWorker } from 'node:fs';
+import { repairFixtureValue } from './ralph-acceptance.mjs';`);
       // Inject the initial failure, retaining real recovery, queue, validation,
       // staging, commit, push, close, lifecycle, state, and agent transport.
       source = source.replace('    verifyTools(config);', `
@@ -47,7 +51,9 @@ for (const scenario of ['pushed', 'closing', 'closing-foreign', 'closing-staged'
             store.updateIssue({ phase: '${scenario === 'pushed' ? 'pushed' : 'closing'}', commit: head, recoveryHead: head, pushedHead: head, reviewedCommit: head });
           }
           sendRalphWorkerMessage(lifecycle, 'prepared', { config: phaseConfig, stateRunId: store.state.runId });
-          console.log('PUBLISHED_PID=' + process.pid);
+          const fixtureKey = Symbol.for('ralph.publishedFixture.worker');
+          const workerId = process[fixtureKey] ??= createFixtureWorkerId();
+          recordFixtureWorker(${JSON.stringify(workersPath)}, JSON.stringify({ workerId, code: repairFixtureValue }) + '\\n', 'utf8');
           if (repairFixtureValue === 'broken') await observedRepairStep('${scenario === 'pushed' ? 'push' : 'close'}', () => { throw new Error('fixture external step failed'); });
           console.log('PUBLISHED_BUDGET=' + store.supervisorCalls + ' ITERATIONS=' + store.iterationsUsed);
           return await runContinuousLoop({ mode: '--run', config: phaseConfig, repository: 'owner/repo', milestone: { number: 1 },
@@ -101,7 +107,11 @@ for (const scenario of ['pushed', 'closing', 'closing-foreign', 'closing-staged'
         });
         const failed = ['closing-foreign', 'closing-staged'].includes(scenario);
         assert.equal(result.status, failed ? 1 : 0, result.stdout + result.stderr);
-        assert.equal(new Set([...result.stdout.matchAll(/PUBLISHED_PID=(\d+)/gu)].map((m) => m[1])).size, 2);
+        // Windows can reuse a PID once the previous worker has exited.
+        // Verify both worker starts and the module version each process loaded.
+        const workers = readFileSync(workersPath, 'utf8').trimEnd().split('\n').map((line) => JSON.parse(line));
+        assert.deepEqual(workers.map(({ code }) => code), ['broken', 'fixed'], result.stdout + result.stderr);
+        assert.equal(new Set(workers.map(({ workerId }) => workerId)).size, 2);
         if (scenario === 'closing-staged') {
           assert.equal(git(root, 'rev-parse', 'HEAD'), before);
           assert.equal(git(root, 'show', ':user.txt'), 'preserve foreign work');
