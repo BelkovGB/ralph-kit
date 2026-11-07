@@ -253,3 +253,79 @@ test('successful checks resolve validation corrections but preserve outstanding 
   assert.equal(project(done).correctionSource, null);
   assert.equal(project(done).failed, null);
 });
+
+
+for (const stage of ['implementation', 'validation', 'publishing']) {
+  test(`a technical ${stage} error clears on retry or successful completion of that stage`, () => {
+    let process = updateIssueProcess(createIssueProcess(), { type: 'stage-error', stage });
+    assert.equal(project(process).errorStage, stage);
+    const resumed = updateIssueProcess(process, { type: 'stage-start', stage });
+    assert.equal(project(resumed).errorStage, null);
+    process = updateIssueProcess(process, { type: 'stage-complete', stage });
+    assert.equal(project(process).errorStage, null);
+  });
+}
+
+test('technical review error is distinct from an accepted FAIL verdict and retains correction context', () => {
+  let process = updateIssueProcess(createIssueProcess(), { type: 'review-start' });
+  process = updateIssueProcess(process, { type: 'review-error' });
+  assert.equal(project(process).errorStage, 'review');
+  process = updateIssueProcess(process, { type: 'review-start' });
+  assert.equal(project(process).errorStage, null);
+  process = updateIssueProcess(process, { type: 'review-error' });
+  process = updateIssueProcess(process, { type: 'review-result', verdict: 'fail', findings: 2 });
+  assert.equal(project(process).errorStage, null);
+  assert.equal(project(process).failed, 'review');
+  assert.equal(project(process).correctionSource, 'review');
+  process = updateIssueProcess(process, { type: 'stage-error', stage: 'implementation' });
+  assert.equal(project(process).errorStage, 'implementation');
+  assert.equal(project(process).correctionSource, 'review');
+});
+
+test('projection exposes raw operation while legacy FAIL never invents a technical error', () => {
+  const legacy = { version: 1, current: 'fixing', completed: [], failed: 'review', reviews: [], partial: true };
+  const snapshot = issueProcessSnapshot({ phase: 'pushed', process: legacy });
+  assert.equal(snapshot.operation, 'pushed');
+  assert.equal(snapshot.errorStage, null);
+  assert.equal(phaseProcessSnapshot({ phaseProcess: legacy }, { operation: 'milestone-review' }).operation,
+    'milestone-review');
+  assert.equal(phaseProcessSnapshot({ phaseProcess: legacy }).operation, null);
+});
+
+
+test('validation retains the completed correction session as confirmed upstream work', () => {
+  let process = updateIssueProcess(createIssueProcess(), { type: 'review-start' });
+  process = updateIssueProcess(process, { type: 'review-result', verdict: 'fail', findings: 2 });
+  process = updateIssueProcess(process, { type: 'stage-start', stage: 'implementation' });
+  process = updateIssueProcess(process, { type: 'stage-complete', stage: 'implementation' });
+  assert.ok(project(process).completed.includes('fixing'));
+  process = updateIssueProcess(process, { type: 'stage-start', stage: 'validation' });
+  assert.ok(project(process).completed.includes('implementation'));
+  assert.ok(project(process).completed.includes('fixing'));
+  assert.equal(project(process).completed.includes('review'), false);
+});
+
+
+test('a new review FAIL clears completion of fixes from the previous review circle', () => {
+  let process = updateIssueProcess(createIssueProcess(), { type: 'review-start' });
+  process = updateIssueProcess(process, { type: 'review-result', verdict: 'fail', findings: 2 });
+  process = updateIssueProcess(process, { type: 'stage-start', stage: 'implementation' });
+  process = updateIssueProcess(process, { type: 'stage-complete', stage: 'implementation' });
+  process = updateIssueProcess(process, { type: 'stage-start', stage: 'validation' });
+  process = updateIssueProcess(process, { type: 'stage-complete', stage: 'validation' });
+  assert.ok(project(process).completed.includes('fixing'));
+  process = updateIssueProcess(process, { type: 'review-start' });
+  process = updateIssueProcess(process, { type: 'review-result', verdict: 'fail', findings: 1 });
+  assert.equal(project(process).reviewRound, 2);
+  assert.equal(project(process).completed.includes('fixing'), false);
+});
+
+test('a new validation FAIL clears completion of fixes that need another correction session', () => {
+  let process = updateIssueProcess(createIssueProcess(), { type: 'stage-fail', stage: 'validation' });
+  process = updateIssueProcess(process, { type: 'stage-start', stage: 'implementation' });
+  process = updateIssueProcess(process, { type: 'stage-complete', stage: 'implementation' });
+  process = updateIssueProcess(process, { type: 'stage-start', stage: 'validation' });
+  assert.ok(project(process).completed.includes('fixing'));
+  process = updateIssueProcess(process, { type: 'stage-fail', stage: 'validation' });
+  assert.equal(project(process).completed.includes('fixing'), false);
+});

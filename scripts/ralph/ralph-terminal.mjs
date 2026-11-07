@@ -1,6 +1,7 @@
 import { stripVTControlCharacters } from 'node:util';
 import { renderProcessLines, renderProcessDashboard, colorTerminalFrame } from './ralph-terminal-process.mjs';
 import { issueProcessSnapshot, phaseProcessSnapshot } from './ralph-process.mjs';
+import { processCurrentStage } from './ralph-terminal-map.mjs';
 
 const stages = {
   'agent-running': 'Реализация', 'working-tree': 'Изменения готовы', validating: 'Проверки',
@@ -32,8 +33,8 @@ export function terminalSnapshot(store, metrics, startedMs, now = Date.now(), li
   const supervisor = phaseActivity && activity.kind === 'supervisor';
   const config = live.phaseConfig ?? {};
   const process = issueProcessSnapshot(issue, { reviewEnabled: config.reviewEnabled, timing: live.processTiming, now });
-  const issueStage = process?.current === 'fixing' && issue?.phase === 'agent-running'
-    ? 'Исправления' : stages[issue?.phase] ?? issue?.phase;
+  const issueStage = process && processCurrentStage(process) === 'fixing' && ['agent-running', 'working-tree'].includes(issue?.phase)
+    ? process.errorStage === 'implementation' ? 'Сбой исправлений' : 'Исправления' : stages[issue?.phase] ?? issue?.phase;
   const activityStartedMs = metrics?.startedMs ?? activity?.startedMs;
   const session = live.session && activityStartedMs != null && live.session.startedMs >= activityStartedMs
     && (!activity || live.session.startedMs >= activity.startedMs) ? live.session : null;
@@ -67,8 +68,8 @@ export function terminalSnapshot(store, metrics, startedMs, now = Date.now(), li
   const detail = ended ? null : operation ? commandPurpose[operation.label] ?? `Выполняется ${operation.label}` : wait;
   const screenProcess = ended ? null : phaseActivity && !supervisor
       ? ['pull-request', 'milestone-review', 'review-results', 'milestone-close'].includes(activity.kind)
-        ? phaseProcessSnapshot(state, { reviewEnabled: config.milestoneReviewEnabled, timing: live.processTiming, now }) : null
-      : supervisor && !issue ? phaseProcessSnapshot(state, { reviewEnabled: config.milestoneReviewEnabled, timing: live.processTiming, now }) : process;
+        ? phaseProcessSnapshot(state, { reviewEnabled: config.milestoneReviewEnabled, timing: live.processTiming, now, operation: activity.kind }) : null
+      : supervisor && !issue ? phaseProcessSnapshot(state, { reviewEnabled: config.milestoneReviewEnabled, timing: live.processTiming, now, operation: activity?.kind }) : process;
   const pair = (value, limit) => `${value ?? '—'}/${limit ?? '—'}`;
   const runCounters = [];
   const checkCounters = [];
@@ -107,6 +108,9 @@ export function terminalSnapshot(store, metrics, startedMs, now = Date.now(), li
   return {
     headline,
     detail,
+    subject: issue ? `#${issue.number} ${issue.title ?? ''}` : null,
+    actor: supervisor ? 'Lisa' : null,
+    repairStatus: supervisor ? repair?.status ?? null : null,
     issueKey: screenProcess?.scope === 'phase' ? `phase:${state?.phaseIndex ?? store?.phaseIndex ?? 0}`
       : issue || metrics?.issue != null ? `${state?.phaseIndex ?? 0}:${issue?.number ?? metrics.issue}`
       : metrics ? `stage:${metrics.startedMs}` : null,
@@ -146,7 +150,7 @@ function clean(value) {
   return stripVTControlCharacters(String(value ?? '—'))
     // eslint-disable-next-line no-control-regex -- kit-hygiene: allow — линтер набора; удаляем управляющие символы.
     .replace(/[\x00-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2060-\u206f]/gu, '')
-    .replace(/[^\u0020-\u007e\u00a0-\u024f\u0400-\u052f\u2010-\u2027\u2500-\u259f]/gu, '?');
+    .replace(/[^\u0020-\u007e\u00a0-\u024f\u0400-\u052f\u2010-\u2027\u2190-\u2193\u2500-\u259f]/gu, '?');
 }
 
 function fit(value, width) {
@@ -165,7 +169,8 @@ export function renderTerminal(snapshot, events, columns, rows, view = {}) {
       `Итерация фазы: ${snapshot.iteration ?? '—'}`, `Исправлений тестов: ${snapshot.fixes ?? '—'}`,
     ], session: [],
   };
-  const header = `СЕЙЧАС: ${snapshot.headline ?? snapshot.stage ?? 'Подготовка запуска'}`;
+  const header = snapshot.process ? `RALPH --run · ${snapshot.actor ?? snapshot.status ?? ''}`
+    : `СЕЙЧАС: ${snapshot.headline ?? snapshot.stage ?? 'Подготовка запуска'}`;
   const summaryWith = sessionRows => [
     '── ПРОГОН ──',
     `Фаза ${snapshot.phase ?? '—'} · Milestone: ${snapshot.milestone ?? '—'}`,
@@ -190,10 +195,10 @@ export function renderTerminal(snapshot, events, columns, rows, view = {}) {
   const footer = snapshot.process ? 'PgUp/PgDn круги · End последние · Tab лог · Ctrl+C стоп'
     : 'Tab лог · Ctrl+C остановить · run.log';
   if (stacked && snapshot.process) {
-    const processRows = renderProcessLines(snapshot.process, width, { ...view, reviewLimit: 1 });
+    const processRows = renderProcessLines(snapshot.process, width, { ...view, reviewLimit: 1, snapshot });
     const top = [
       `Фаза ${snapshot.phase ?? '—'} · ${snapshot.milestone ?? '—'}`,
-      ...(snapshot.issue ? [snapshot.issue] : []), ...processRows,
+      ...(snapshot.subject || snapshot.issue ? [snapshot.subject ?? snapshot.issue] : []), ...processRows,
       `Прогон: ${snapshot.runTime ?? '—'}`,
     ];
     const room = Math.max(0, height - top.length - 3);
@@ -210,8 +215,8 @@ export function renderTerminal(snapshot, events, columns, rows, view = {}) {
   const left = Math.floor(width * 0.38);
   const right = width - left - 3;
   const processRows = snapshot.process ? [
-    ...renderProcessLines(snapshot.process, right, view),
-    '> сейчас · + пройдено · ! сбой · - впереди', '',
+    ...renderProcessLines(snapshot.process, right, { ...view, snapshot }),
+    '',
   ] : [];
   const eventRoom = Math.max(0, height - 3 - processRows.length);
   const eventRows = [...processRows, 'СОБЫТИЯ', ...(eventRoom ? events.slice(-eventRoom) : [])];

@@ -10,7 +10,7 @@ const timedStages = ['implementation', 'validation', 'review', 'fixing', 'publis
 const unknownStageMs = () => Object.fromEntries(timedStages.map(stage => [stage, null]));
 
 export function createIssueProcess({ partial = false } = {}) {
-  return { version: 1, current: null, completed: [], failed: null, correctionSource: null,
+  return { version: 1, current: null, completed: [], failed: null, errorStage: null, correctionSource: null,
     reviewRound: partial ? null : 0, reviews: [], partial, activeReview: false,
     stageMs: unknownStageMs(), timingPartial: partial, activeTiming: null };
 }
@@ -36,10 +36,11 @@ export function updateIssueProcess(previous, event) {
         ? 'fixing' : event.stage;
       process.completed = process.completed.filter(stage => {
         if (event.stage === 'implementation') return false;
-        if (event.stage === 'validation') return stage === 'implementation';
+        if (event.stage === 'validation') return stage === 'implementation' || stage === 'fixing';
         return stage !== event.stage && stage !== 'done';
       });
       if (process.failed === event.stage) process.failed = null;
+      if (process.errorStage === event.stage) process.errorStage = null;
       break;
     case 'stage-complete':
       if (event.stage === 'implementation' && process.current === 'fixing') complete('fixing');
@@ -51,18 +52,22 @@ export function updateIssueProcess(previous, event) {
         process.correctionSource = null;
       }
       if (process.failed === event.stage) process.failed = null;
+      if (process.errorStage === event.stage || event.stage === 'done') process.errorStage = null;
       break;
     case 'stage-error':
+      process.errorStage = event.stage;
       process.failed = event.stage;
       process.current = event.stage;
       break;
     case 'stage-fail':
       process.failed = event.stage;
       if (event.stage === 'validation' && process.correctionSource !== 'review') process.correctionSource = 'validation';
-      process.completed = process.completed.filter(stage => stage !== event.stage);
+      process.completed = process.completed.filter(stage => stage !== event.stage &&
+        (event.stage !== 'validation' || stage !== 'fixing'));
       process.current = event.stage === 'validation' ? 'fixing' : event.stage;
       break;
     case 'review-start':
+      if (process.errorStage === 'review') process.errorStage = null;
       // Незавершённый круг продолжается после технического отказа или рестарта.
       if (!process.activeReview && process.reviewRound !== null) process.reviewRound += 1;
       process.activeReview = true;
@@ -71,6 +76,7 @@ export function updateIssueProcess(previous, event) {
       process.completed = process.completed.filter(stage => stage !== 'review' && stage !== 'done');
       break;
     case 'review-result':
+      process.errorStage = null;
       process.reviews.push({ round: process.reviewRound, verdict: event.verdict,
         findings: Number.isInteger(event.findings) && event.findings >= 0 ? event.findings : null });
       process.activeReview = false;
@@ -78,8 +84,10 @@ export function updateIssueProcess(previous, event) {
       process.correctionSource = event.verdict === 'pass' ? null : 'review';
       process.current = event.verdict === 'pass' ? 'publishing' : 'fixing';
       if (event.verdict === 'pass') complete('review');
+      else process.completed = process.completed.filter(stage => stage !== 'fixing');
       break;
     case 'review-error':
+      process.errorStage = 'review';
       process.current = 'review';
       process.failed = 'review';
       break;
@@ -110,6 +118,8 @@ export function issueProcessSnapshot(issue, { reviewEnabled = true, timing = nul
     current: process?.current ?? phaseStages[issue.phase] ?? null,
     completed: [...(process?.completed ?? [])],
     failed: process?.failed ?? null,
+    errorStage: process?.errorStage ?? null,
+    operation: issue.phase ?? null,
     correctionSource: process?.correctionSource ?? null,
     reviewRound: process?.reviewRound > 0 ? process.reviewRound : null,
     reviews: (process?.reviews ?? []).map(review => ({ ...review })),
@@ -124,6 +134,6 @@ export function phaseProcessSnapshot(state, options = {}) {
   if (!state) return null;
   const identity = state.phaseProcess?.timingIdentity;
   const timing = identity?.runId === state.runId && identity?.phaseIndex === state.phaseIndex ? options.timing : null;
-  return { ...issueProcessSnapshot({ process: state.phaseProcess },
+  return { ...issueProcessSnapshot({ process: state.phaseProcess, phase: options.operation ?? null },
     { ...options, timing, scope: 'phase', identity }), scope: 'phase' };
 }

@@ -1036,6 +1036,7 @@ function collectTrustedControlFileHashes(config) {
     path.join(scriptDirectory, 'ralph-runtime.mjs'),
     path.join(scriptDirectory, 'ralph-terminal.mjs'),
     path.join(scriptDirectory, 'ralph-terminal-process.mjs'),
+    path.join(scriptDirectory, 'ralph-terminal-map.mjs'),
     path.join(scriptDirectory, 'ralph-terminal-host.mjs'),
     path.join(scriptDirectory, 'ralph-terminal-worker.mjs'),
     path.join(scriptDirectory, 'ralph-live-status.mjs'),

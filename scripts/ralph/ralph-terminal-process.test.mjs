@@ -5,6 +5,7 @@ import { createTerminal, renderTerminal, terminalSnapshot } from './ralph-termin
 
 const processState = {
   current: 'fixing', completed: ['implementation', 'validation'], failed: 'review',
+  correctionSource: 'review', errorStage: null,
   reviewRound: 2, reviews: [{ round: 1, verdict: 'fail', findings: 4 }, { round: 2, verdict: 'fail', findings: 1 }],
   partial: false, reviewEnabled: true,
 };
@@ -18,23 +19,21 @@ const snapshot = {
 test('process map shows review returns and results without treating phase iterations as review rounds', () => {
   const frame = renderTerminal(snapshot, ['Повторная проверка началась'], 160, 32);
   assert.match(frame, /ПРОЦЕСС ЗАДАЧИ/);
-  assert.match(frame, /\[\+\] Реализация.*\[\+\] Проверки.*\[!\] Ревью.*\[-\] Готово/);
-  assert.match(frame, /Сейчас: Исправления/);
-  assert.match(frame, /\[>\] Исправления/);
-  assert.match(frame, /Круг ревью: 2/);
-  assert.match(frame, /Ревью 1: FAIL · к исправлению 4/);
-  assert.match(frame, /Ревью 2: FAIL · к исправлению 1/);
-  assert.match(frame, /Возврат: ревью -> исправления -> проверки/);
+  assert.match(frame, /\[\+\] Реализация.*\[\+\] Проверки.*\[~\] Ревью #2.*\[-\] Готово/);
+  assert.match(frame, /\[>\] Исправления #2/);
+  assert.match(frame, /Круг 1: 4 \[~\]/);
+  assert.match(frame, /Круг 2: 1 \[~\]/);
+  assert.match(frame, /1 замечание/);
+  assert.match(frame, /↑/);
   assert.match(frame, /Повторная проверка началась/);
-  assert.doesNotMatch(frame, /Круг ревью: 7/);
+  assert.doesNotMatch(frame, /Ревью #7/);
 });
 
 test('compact process screen keeps stage, review round, result and time at 60 by 16', () => {
   for (const [columns, rows] of [[60, 16], [80, 24], [120, 24], [160, 40]]) {
     const frame = renderTerminal(snapshot, ['Новое событие'], columns, rows);
-    assert.match(frame, /Круг ревью: 2/);
-    assert.match(frame, /Ревью 2: FAIL · к исправлению 1/);
-    assert.match(frame, /Сейчас: Исправления/);
+    assert.match(frame, /\[>\] Исправления #2/);
+    assert.match(frame, /1 замеч/);
     assert.match(frame, /0:42:18/);
     assert.ok(frame.split('\n').length <= rows - 1);
     assert.ok(frame.split('\n').every(line => [...line].length < columns));
@@ -44,12 +43,13 @@ test('compact process screen keeps stage, review round, result and time at 60 by
 test('disabled review and partial history never appear as a passed review', () => {
   const disabled = renderTerminal({ ...snapshot, process: { ...processState, reviewEnabled: false,
     current: 'publishing', failed: null, reviews: [], reviewRound: null } }, [], 120, 24);
-  assert.match(disabled, /Ревью выключено/);
+  assert.match(disabled, /\[x\] Ревью/);
+  assert.match(disabled, /× выключено/);
   assert.doesNotMatch(disabled, /\[\+\] Ревью|PASS/);
   const legacy = renderTerminal({ ...snapshot, process: { ...processState, current: 'review', failed: null,
     completed: [], reviews: [], reviewRound: null, partial: true } }, [], 120, 24);
   assert.match(legacy, /История неполная/);
-  assert.match(legacy, /Круг ревью: нет данных/);
+  assert.match(legacy, /\[>\] Ревью #\?/);
   assert.doesNotMatch(legacy, /\[\+\] Реализация|к исправлению 0/);
 });
 
@@ -62,20 +62,20 @@ test('process history scrolls through all known reviews and resets for the next 
   const reviews = Array.from({ length: 8 }, (_, i) => ({ round: i + 1, verdict: 'fail', findings: 8 - i }));
   const terminal = createTerminal({ output, errorOutput: output, input, lifecycle: new EventEmitter(), term: 'xterm',
     snapshot: () => ({ ...snapshot, issueKey, process: { ...processState, reviews, reviewRound: 8 } }) });
-  assert.match(output.text, /Ревью 8: FAIL/);
+  assert.match(output.text, /Круг 8: 1/);
   output.text = '';
   input.emit('data', Buffer.from('\x1b[5~'));
   input.emit('data', Buffer.from('\x1b[5~'));
-  assert.match(output.text, /Ревью 1: FAIL/);
+  assert.match(output.text, /Круг 1: 8/);
   output.text = '';
   terminal.log('INFO', 'Не менять выбор');
-  assert.match(output.text, /Ревью 1: FAIL/);
+  assert.match(output.text, /Круг 1: 8/);
   input.emit('data', Buffer.from('\x1b[F'));
-  assert.match(output.text, /Ревью 8: FAIL/);
+  assert.match(output.text, /Круг 8: 1/);
   output.text = '';
   issueKey = '43';
   terminal.refresh();
-  assert.match(output.text, /Ревью 8: FAIL/);
+  assert.match(output.text, /Круг 8: 1/);
   terminal.close();
 });
 
@@ -98,19 +98,22 @@ test('compact review navigation visits adjacent rounds and preserves the viewed 
   const input = new EventEmitter();
   Object.assign(input, { isTTY: true, isRaw: false, setRawMode(v) { this.isRaw = v; }, resume() {}, pause() {} });
   const reviews = Array.from({ length: 8 }, (_, i) => ({ round: i + 1, verdict: 'fail', findings: 1 }));
+  let passed = false;
   const terminal = createTerminal({ output, errorOutput: output, input, lifecycle: new EventEmitter(), term: 'xterm',
-    snapshot: () => ({ ...snapshot, issueKey: '42', process: { ...processState, reviews, reviewRound: reviews.length } }) });
+    snapshot: () => ({ ...snapshot, issueKey: '42', process: { ...processState, reviews, reviewRound: reviews.length,
+      ...(passed ? { current: 'done', failed: null, correctionSource: null, completed: ['implementation', 'validation', 'review', 'done'] } : {}) } }) });
   try {
     output.text = '';
     input.emit('data', Buffer.from('\x1b[5~'));
     assert.match(output.text, /Ревью 7: FAIL/);
     output.text = '';
     reviews.push({ round: 9, verdict: 'pass', findings: 0 });
+    passed = true;
     terminal.refresh();
     assert.match(output.text, /Ревью 7: FAIL/);
     assert.doesNotMatch(output.text, /Ревью 8: FAIL/);
     input.emit('data', Buffer.from('\x1b[F'));
-    assert.match(output.text, /Ревью 9: PASS/);
+    assert.match(output.text, /\[\+\] Ревью #9/);
   } finally { terminal.close(); }
 });
 
@@ -135,15 +138,17 @@ test('Lisa preserves the phase process when there is no current issue', () => {
       activity: { kind: 'supervisor', label: 'Lisa: ремонт ревью фазы', startedMs: 0 } });
   assert.equal(snapshot.process.scope, 'phase');
   assert.equal(snapshot.process.reviewRound, 2);
-  assert.match(renderTerminal(snapshot, [], 160, 32), /ПРОЦЕСС ФАЗЫ[\s\S]*Круг ревью фазы: 2/);
+  assert.match(renderTerminal(snapshot, [], 160, 32), /ПРОЦЕСС ФАЗЫ[\s\S]*Ревью #2/);
 });
 
 test('a technical failure is marked failed and preserves the source of a validation correction', () => {
-  const process = { ...processState, current: 'review', failed: 'review' };
+  const process = { ...processState, current: 'review', failed: 'review', errorStage: 'review' };
   assert.match(renderTerminal({ ...snapshot, process }, [], 160, 32), /\[!\] Ревью/);
   const fixing = { ...processState, failed: 'implementation', correctionSource: 'validation' };
-  assert.match(renderTerminal({ ...snapshot, process: fixing }, [], 160, 32),
-    /Возврат: проверки -> исправления -> проверки/);
+  const frame = renderTerminal({ ...snapshot, process: fixing }, [], 160, 32);
+  assert.match(frame, /FAIL/);
+  assert.match(frame, /\[>\] Исправления/);
+  assert.match(frame, /↑/);
 });
 
 

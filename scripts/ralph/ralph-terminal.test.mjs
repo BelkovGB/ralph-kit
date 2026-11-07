@@ -92,10 +92,12 @@ test('dashboard groups queue, events and timing without losing budgets at 24 row
   assert.match(frame, /Исправления тестов/);
   assert.match(frame, /Прогон: 0:01:01/);
   assert.match(frame, /До остановки: 0:00:10/);
-  assert.match(frame, /Шаги агента: 8\/17 · ответы: 6/);
+  assert.match(frame, /Шаги агента: 8\/17/);
+  assert.match(frame, /Ответы инструментов: 6|ответы: 6/);
   assert.match(renderTerminal(snapshot, [], 140, 40), /Ответы инструментов: 6/);
   assert.match(frame, /Вызовы Lisa в фазе: 2\/3/);
-  assert.match(frame, /СЕЙЧАС: Задача #42 · Проверки/);
+  assert.match(frame, /#42 Тест/);
+  assert.match(frame, /\[>\] Проверки/);
   assert.ok(frame.split('\n').every(line => [...line].length < 140));
 });
 
