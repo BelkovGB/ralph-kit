@@ -5,7 +5,80 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { ralphRunOutcome, runRalphLifecycle, startRalphWorker, repairStepPassed } from './ralph-lifecycle.mjs';
-import { acquireRunLock } from './ralph-runtime.mjs';
+import { acquireRunLock, initializePersistentLog } from './ralph-runtime.mjs';
+
+for (const mode of ['split', 'plain']) {
+  test(`worker logging preserves short events, details and severity in ${mode} mode`, async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'ralph-worker-logging-'));
+    const entry = path.join(root, 'worker.mjs');
+    const lockPath = path.join(root, 'run.lock');
+    const logPath = path.join(root, 'run.log');
+    const lifecycleUrl = new URL('./ralph-lifecycle.mjs', import.meta.url).href;
+    const runtimeUrl = new URL('./ralph-runtime.mjs', import.meta.url).href;
+    const runnerUrl = new URL('./ralph-process-runner.mjs', import.meta.url).href;
+    const events = [];
+    const original = { log: console.log, error: console.error };
+    let restore;
+    try {
+      writeFileSync(lockPath, JSON.stringify({ pid: process.pid, token: 'logging', runId: 'run' }));
+      writeFileSync(entry, `
+        import { receiveRalphWorkerStart, sendRalphWorkerMessage } from ${JSON.stringify(lifecycleUrl)};
+        import { logDetail, logDetailError } from ${JSON.stringify(runtimeUrl)};
+        import { run } from ${JSON.stringify(runnerUrl)};
+        const context = await receiveRalphWorkerStart({ lockPath: process.argv[2] });
+        console.log('SHORT_PROGRESS');
+        console.error('SHORT_ERROR');
+        logDetail('DETAIL_AGENT_TEXT\\nSECOND_DETAIL_LINE');
+        logDetailError('DETAIL_ERROR');
+        run('node', ['-e', "process.stdout.write('COMMAND_OUTPUT'); process.stderr.write('COMMAND_ERROR');"], { inherit: true });
+        try { run('node', ['-e', "process.stdout.write('FAILED_COMMAND_OUTPUT'); process.stderr.write('FAILED_COMMAND_ERROR'); process.exit(1);"], { inherit: true }); } catch {}
+        process.stdout.write('RAW_STDOUT\\n');
+        process.stderr.write('RAW_STDERR\\n');
+        logDetail('LAST_DETAIL' + 'x'.repeat(70000));
+        await new Promise((resolve, reject) => sendRalphWorkerMessage(context, 'outcome',
+          { outcome: { kind: 'completed' } }, error => error ? reject(error) : resolve()));
+        context.finished = true;
+        process.disconnect();
+      `);
+      console.log = (...args) => events.push({ channel: 'short', level: 'INFO', text: args.join(' ') });
+      console.error = (...args) => events.push({ channel: 'short', level: 'ERROR', text: args.join(' ') });
+      const sink = mode === 'split' ? {
+        log: (level, text) => events.push({ channel: 'short', level, text }),
+        detail: (level, text) => events.push({ channel: 'detail', level, text }),
+      } : null;
+      restore = initializePersistentLog(logPath, { mode: '--run' }, sink);
+      const result = await startRalphWorker({ entry, args: [lockPath], root, token: 'logging', runId: 'run', lockPath,
+        onStarted: workerPid => writeFileSync(lockPath, JSON.stringify({ pid: process.pid, workerPid, token: 'logging', runId: 'run' })) });
+      assert.equal(result.kind, 'completed');
+      const short = events.filter(event => event.channel === 'short');
+      assert.ok(short.some(event => event.text === 'SHORT_PROGRESS' && event.level === 'INFO'));
+      assert.ok(short.some(event => event.text === 'SHORT_ERROR' && event.level === 'ERROR'));
+      assert.ok(short.some(event => event.text.includes('RAW_STDOUT') && event.level === 'INFO'));
+      assert.ok(short.some(event => event.text.includes('RAW_STDERR') && event.level === 'ERROR'));
+      assert.equal(short.some(event => /DETAIL_|COMMAND_OUTPUT|COMMAND_ERROR|Команда:/.test(event.text)), false);
+      if (mode === 'split') {
+        for (const [text, level] of [['DETAIL_AGENT_TEXT\nSECOND_DETAIL_LINE', 'INFO'], ['DETAIL_ERROR', 'ERROR'],
+          ['COMMAND_OUTPUT', 'INFO'], ['COMMAND_ERROR', 'ERROR'],
+          ['FAILED_COMMAND_OUTPUT', 'INFO'], ['FAILED_COMMAND_ERROR', 'ERROR']]) {
+          assert.ok(events.some(event => event.channel === 'detail' && event.level === level && event.text === text), text);
+        }
+      }
+      assert.equal(events.filter(event => event.channel === 'detail' && event.text === 'LAST_DETAIL' + 'x'.repeat(70000)).length, mode === 'split' ? 1 : 0);
+      const log = readFileSync(logPath, 'utf8');
+      for (const text of ['SHORT_PROGRESS', 'SHORT_ERROR', 'DETAIL_AGENT_TEXT', 'SECOND_DETAIL_LINE',
+        'DETAIL_ERROR', 'COMMAND_OUTPUT', 'COMMAND_ERROR', 'FAILED_COMMAND_OUTPUT', 'FAILED_COMMAND_ERROR', 'RAW_STDOUT', 'RAW_STDERR', 'LAST_DETAIL']) assert.ok(log.includes(text), text);
+      assert.match(log, /ERROR SHORT_ERROR/);
+      assert.match(log, /ERROR DETAIL_ERROR/);
+      assert.match(log, /ERROR COMMAND_ERROR/);
+      assert.equal(log.match(/Ralph process started/g)?.length, 1);
+    } finally {
+      restore?.();
+      console.log = original.log;
+      console.error = original.error;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
 
 test('worker exit and drained IPC settle even when aggregate close notification is lost', async () => {
   const root = mkdtempSync(path.join(tmpdir(), 'ralph-worker-close-race-'));
