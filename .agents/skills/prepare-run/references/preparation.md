@@ -11,8 +11,10 @@
 проектных проверок используй `loadConfig()` с полным снимком control plane:
 он также применяет runtime-настройки и выбранный GitHub-аккаунт к процессу.
 
-`ralph-gui-fields.mjs` экспортирует `fieldGroups`: подписи, hints, варианты,
-единицы. Импорт не запускает GUI. Умолчания в метаданных формы могут быть
+`ralph-gui-fields.mjs`, если поставлен, экспортирует `fieldGroups`: подписи,
+hints, варианты, единицы. Импорт не запускает GUI. В минимальной CLI-копии
+этого модуля может не быть: бери подписи из таблицы ниже, значения — из
+`prepareConfig`. Программа ниже не зависит от GUI. Умолчания в метаданных формы могут быть
 условными: **значение бери из `prepareConfig`, не из `field.default`**.
 Например, `supervisor.timeoutMs` наследует `runtime.agentTimeoutMs`, а
 `milestoneReview.maxTurns` — `maxTurns`.
@@ -24,16 +26,16 @@
 ```javascript
 import { readFileSync } from 'node:fs';
 import { prepareConfig } from './scripts/ralph/ralph-config.mjs';
-import { fieldGroups } from './scripts/ralph/ralph-gui-fields.mjs';
 const raw = JSON.parse(readFileSync('.agents/ralph.config.json', 'utf8'));
 const effective = prepareConfig(structuredClone(raw), { captureControlPlane: false });
 const get = (object, key) => key.split('.').reduce((value, part) => value?.[part], object);
-for (const field of fieldGroups.find((group) => group.id === 'limits').fields) {
-  console.log(JSON.stringify({ key: field.path, label: field.label,
-    value: get(effective, field.path),
-    source: get(raw, field.path) == null ? 'умолчание' : 'файл' }));
+const keys = ['maxIterations', 'maxTurns', 'maxTestFixAttempts', 'maxReviewFixAttempts'];
+for (const group of ['runtime', 'supervisor', 'milestoneReview']) {
+  for (const [key, value] of Object.entries(effective[group])) {
+    if (typeof value === 'number') keys.push(`${group}.${key}`);
+  }
 }
-for (const key of ['milestoneReview.maxTurns', 'milestoneReview.maxFindings']) {
+for (const key of keys) {
   console.log(JSON.stringify({ key, value: get(effective, key),
     source: get(raw, key) == null ? 'умолчание' : 'файл' }));
 }
