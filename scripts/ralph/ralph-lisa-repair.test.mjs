@@ -161,6 +161,77 @@ test('accepted validation cannot keep mutations produced by a formerly mutating 
   } finally { f.cleanup(); }
 });
 
+test('fixable review feedback retries against the original policy and accumulated diff', async () => {
+  const f = fixture();
+  try {
+    const target = path.join(f.root, 'scripts/ralph/ralph-loop.mjs');
+    writeFileSync(target, 'incomplete();\n');
+    await assert.rejects(assessLisaRepair(f.context, { ...f.options,
+      review: async () => ({ verdict: 'retry', reason: 'Restore the original assertion and fix late GET' }),
+      validate: async () => assert.fail('Rejected review must not run validation'),
+    }), error => error.code === 'RALPH_LISA_RETRY' && error.repairFeedback.stage === 'review');
+    writeFileSync(target, 'complete();\n');
+    const assessment = await assessLisaRepair(f.context, { ...f.options,
+      review: async ({ policy, changes }) => {
+        assert.equal(policy.supervisor.maxInterventions, 2);
+        assert.deepEqual(changes, [{ path: 'scripts/ralph/ralph-loop.mjs', before: 'broken();\n', after: 'complete();\n' }]);
+        return { verdict: 'pass', reason: 'Original requirements preserved' };
+      }, validate: async () => {},
+    });
+    assert.equal(acceptLisaRepair(f.context, assessment, f.options).ralphChanged, true);
+  } finally { f.cleanup(); }
+});
+
+test('a failing repair gate returns actionable feedback without accepting the tree', async () => {
+  const f = fixture();
+  try {
+    writeFileSync(path.join(f.root, 'scripts/ralph/ralph-loop.mjs'), 'incomplete();\n');
+    await assert.rejects(assessLisaRepair(f.context, { ...f.options,
+      review: async () => ({ verdict: 'pass', reason: 'Requirements preserved' }),
+      validate: async () => { throw new Error('Late GET still overwrites the saved revision'); },
+    }), error => error.code === 'RALPH_LISA_RETRY' &&
+      error.repairFeedback.stage === 'validation' && /Late GET/.test(error.repairFeedback.reason));
+    assert.throws(() => acceptLisaRepair(f.context, {}, f.options), /нет принятого ревью/);
+  } finally { f.cleanup(); }
+});
+
+test('a wrapped external permission failure is not retried as a repairable gate failure', async () => {
+  const f = fixture();
+  try {
+    const permission = Object.assign(new Error('Host HOME is not writable'), { code: 'EACCES' });
+    const environment = Object.assign(new Error('Cannot prepare validation environment', { cause: permission }),
+      { code: 'RALPH_VALIDATION_ENVIRONMENT' });
+    await assert.rejects(assessLisaRepair(f.context, { ...f.options,
+      review: async () => ({ verdict: 'pass', reason: 'Requirements preserved' }),
+      validate: async () => { throw environment; },
+    }), error => error === environment && error.code !== 'RALPH_LISA_RETRY');
+  } finally { f.cleanup(); }
+});
+
+test('a cyclic validation cause chain still returns bounded repair feedback', async () => {
+  const f = fixture();
+  try {
+    const failure = new Error('A repairable gate failed');
+    failure.cause = failure;
+    await assert.rejects(assessLisaRepair(f.context, { ...f.options,
+      review: async () => ({ verdict: 'pass', reason: 'Requirements preserved' }),
+      validate: async () => { throw failure; },
+    }), { code: 'RALPH_LISA_RETRY' });
+  } finally { f.cleanup(); }
+});
+
+test('review retry cannot hide mutation by the independent reviewer', async () => {
+  const f = fixture();
+  try {
+    await assert.rejects(assessLisaRepair(f.context, { ...f.options,
+      review: async () => {
+        writeFileSync(path.join(f.root, 'scripts/ralph/ralph-loop.mjs'), 'reviewer mutation');
+        return { verdict: 'retry', reason: 'Fix a remaining defect' };
+      }, validate: async () => {},
+    }), error => error.code !== 'RALPH_LISA_RETRY' && /ревью изменило дерево/.test(error.message));
+  } finally { f.cleanup(); }
+});
+
 for (const phase of ['committed', 'pushed', 'reviewing', 'closing']) {
   test(`accepted Ralph repair preserves the saved ${phase} commit evidence`, async () => {
     const f = fixture({ phase, commit: 'head', recoveryHead: 'head', reviewedCommit: 'head' });

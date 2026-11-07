@@ -155,6 +155,8 @@ export function summarizeIssueMetrics(metrics, outcome) {
     agentCli: metrics.agentCli,
     outcome: outcome?.outcome ?? 'unknown',
     reason: outcome?.reason ?? null,
+    ...(['resume', 'human'].includes(outcome?.proposalVerdict)
+      ? { proposalVerdict: outcome.proposalVerdict } : {}),
     startedAt: metrics.startedAt,
     finishedAt: new Date(finishedMs).toISOString(),
     wallMs: finishedMs - metrics.startedMs,
@@ -183,6 +185,46 @@ export function appendIssueMetrics(record, dependencies = {}) {
   });
 
   return record;
+}
+
+/** Acceptance belongs to the lifecycle owner, after the Lisa session has ended. */
+export function recordLisaRepairOutcome(config, store, event, dependencies = {}) {
+  if (!['retry', 'human', 'accepted'].includes(event?.verdict)) {
+    throw new Error('Lisa metrics: invalid verdict.');
+  }
+  if (typeof event.reason !== 'string' || !event.reason.trim()) {
+    throw new Error('Lisa metrics: outcome reason is required.');
+  }
+  const state = store?.state;
+  const issue = store?.issue;
+  const repairId = Object.hasOwn(event, 'repairId') ? event.repairId : state?.lisaRepair?.repairId ?? null;
+  const repair = repairId != null && repairId === state?.lisaRepair?.repairId ? state.lisaRepair : null;
+  const context = repair ?? state;
+  const issueNumber = repair ? repair.issueNumber ?? null : issue?.number ?? null;
+  const samePhase = !repair || (repair.runId === state?.runId && repair.phaseIndex === state?.phaseIndex);
+  const eventId = event.verdict === 'retry' ? event.eventId ?? store?.supervisorCalls ?? null : null;
+  const identity = JSON.stringify([context?.runId ?? null, context?.phaseIndex ?? null,
+    issueNumber, repairId, event.verdict, eventId, repairId === null ? event.reason : null]);
+  const metricsPath = dependencies.metricsPath ?? issueMetricsPath;
+  const stored = readJsonFile(metricsPath, null);
+  const previous = stored?.version === metricsVersion && Array.isArray(stored.entries)
+    ? stored.entries.find((entry) => entry.repairOutcomeId === identity) : null;
+  if (previous) return previous;
+
+  const now = (dependencies.now ?? Date.now)();
+  const record = summarizeIssueMetrics({
+    issue: issueNumber, issueTitle: issue?.number === issueNumber ? issue.title ?? null : null,
+    milestone: samePhase ? config?.milestone ?? state?.milestone ?? null : null,
+    branch: samePhase ? config?.branch ?? state?.branch ?? null : null,
+    iteration: null, agentCli: null, startedMs: now, startedAt: new Date(now).toISOString(),
+    stages: new Map(), agents: [], now: () => now,
+  }, { outcome: `supervisor-${event.verdict}`, reason: event.reason });
+  return appendIssueMetrics({ ...record, recordKind: 'lisa-repair-outcome',
+    runId: context?.runId ?? null, phaseIndex: context?.phaseIndex ?? null,
+    repairId, repairEventId: eventId, repairOutcomeId: identity,
+    // This is a decision event, not an independently measured session duration.
+    wallMs: null,
+  }, dependencies);
 }
 
 /**
@@ -268,6 +310,10 @@ function metricsSubject(record) {
 }
 
 export function formatIssueMetrics(record) {
+  if (record.recordKind === 'lisa-repair-outcome') {
+    return `Lisa${record.issue == null ? '' : ` для issue #${record.issue}`}: ` +
+      `${describeOutcome(record.outcome)}; ${record.reason}`;
+  }
   const stages = Object.entries(record.stages)
     .map(([name, stage]) => {
       const runs = stage.runs > 1 ? ` ×${stage.runs}` : '';
@@ -337,6 +383,9 @@ export const outcomeDescriptions = {
   'validation-failed': 'проверки не прошли',
   'agent-failed': 'сессия агента оборвалась, наработки сохранены',
   'supervisor-resume': 'Lisa вернула задачу Ralph',
+  'supervisor-proposed': 'Lisa предложила решение; приёмка ещё не завершена',
+  'supervisor-accepted': 'ремонт Lisa принят; задача ожидает штатных проверок',
+  'supervisor-retry': 'Lisa получила замечания для следующего исправления',
   'supervisor-human': 'Lisa запросила человека',
   'supervisor-failed': 'сессия Lisa остановилась с ошибкой',
   RALPH_VALIDATION_FAILED: 'проверки не прошли, попытки кончились',

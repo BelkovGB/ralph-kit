@@ -117,8 +117,8 @@ test('real --run reports both review parks and Lisa restart in one safe file', a
     `, () => withFakeGh(fakeGithub, async () => {
       const result = launch();
       assert.equal(result.status, 1, result.stdout + result.stderr);
-      assert.match(result.stderr, /Повтор прежнего отказа без прогресса/u);
-      assert.equal(readFileSync(path.join(runtime, 'fixture-review-count'), 'utf8'), '4');
+      assert.match(result.stderr, /лимит вмешательств|бюджет вызовов/iu);
+      assert.equal(readFileSync(path.join(runtime, 'fixture-review-count'), 'utf8'), '3');
       const state = JSON.parse(readFileSync(statePath, 'utf8'));
       assert.equal(state.status, 'active');
       assert.equal(state.lisaRepair.status, 'needs-human');
@@ -135,11 +135,12 @@ test('real --run reports both review parks and Lisa restart in one safe file', a
       const reportPath = path.join(reports, names[0]);
       assert.ok(result.stdout.includes(reportPath), result.stdout);
       const report = readFileSync(reportPath, 'utf8');
-      for (const fact of [state.runId, KIT_VERSION, state.issue.reviewedCommit, 'needs-human', 'active', 'review-failed', '3 → 1', '1 → 1']) {
+      for (const fact of [state.runId, KIT_VERSION, state.issue.reviewedCommit, 'needs-human', 'active', 'review-failed', '3 → 1']) {
         assert.ok(report.includes(fact), fact);
       }
       assert.match(report, /\| 1 \| 1 \| #12 \| 3 → 1 \| да \|/u);
-      assert.match(report, /\| 2 \| 1 \| #12 \| 1 → 1 \| да \|/u);
+      assert.match(report, /\| 2 \| 1 \| #12 \| 1 \| да \|/u);
+      assert.ok(report.includes('Исчерпан сохранённый бюджет вызовов Lisa.'));
       assert.ok(report.includes('`needs-human`, код выхода `1`'));
       assert.ok(report.includes('`state.status` — `active`'));
       assert.ok(report.includes('Ремонт Lisa принят — да. Worker после ремонта запущен — да'));
@@ -178,7 +179,7 @@ test('real --run reports both review parks and Lisa restart in one safe file', a
       const blocked = launch();
       assert.equal(blocked.status, 1, blocked.stdout + blocked.stderr);
       assert.match(blocked.stderr, /Не удалось сохранить отчёт Ralph об остановке/u);
-      assert.match(blocked.stderr, /Нужен человек: Lisa выключена, контекст недоступен или лимит вмешательств исчерпан/u);
+      assert.match(blocked.stderr, /Нужен человек: Лимит вмешательств Lisa исчерпан \(1\/1\)/u);
       assert.equal(JSON.parse(readFileSync(statePath, 'utf8')).issue.phase, 'review-failed');
       assert.match(readFileSync(path.join(runtime, 'run.log'), 'utf8'), /RALPH|Issue #12/u);
       assert.equal(guiState().stopReportPath, undefined);

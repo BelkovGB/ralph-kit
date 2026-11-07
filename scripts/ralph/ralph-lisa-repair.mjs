@@ -14,7 +14,12 @@ import { prepareLisaRepairConfig } from './ralph-repair-policy.mjs';
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const contexts = new WeakMap();
 const assessments = new WeakMap();
-const repairReviewVerdicts = ['pass', 'human'];
+const repairReviewVerdicts = ['pass', 'retry', 'human'];
+const externalRepairFailureCodes = new Set([
+  'RALPH_AGENT_AUTH', 'RALPH_AGENT_WRITE_ACCESS', 'RALPH_CONTROL_PLANE_CHANGED',
+  'RALPH_RECOVERY_BLOCKED', 'RALPH_NEEDS_HUMAN', 'RALPH_PROCESS_CONFIG', 'RALPH_PROCESS_EVIDENCE',
+  'EACCES', 'EPERM',
+]);
 const protectedModules = new Set([
   'ralph-lifecycle.mjs', 'ralph-lifecycle-host.mjs', 'ralph-lisa-repair.mjs',
   'ralph-process-packs.mjs', 'ralph-repair-policy.mjs',
@@ -188,11 +193,23 @@ export async function assessLisaRepair(context, options = {}) {
     Object.keys(review).some((key) => key !== 'verdict' && key !== 'reason')) {
     throw new Error('Lisa: ремонт не принят. Независимое ревью вернуло некорректный результат.');
   }
-  if (review.verdict === 'human') throw new Error(`Lisa: ремонт не принят: ${review.reason}.`);
   checkedContext(context, options);
   if (treeHash(tree(saved.root, treeOptions)) !== treeHash(after)) throw new Error('Lisa: ревью изменило дерево ремонта.');
+  if (review.verdict === 'human') throw new Error(`Lisa: ремонт не принят: ${review.reason}.`);
+  if (review.verdict === 'retry') throw repairRetry('review', review.reason);
   if (!options.validate) throw new Error('Lisa: проверки ремонта обязательны.');
-  await options.validate({ context, changedPaths: paths, config: structuredClone(candidate) });
+  try {
+    await options.validate({ context, changedPaths: paths, config: structuredClone(candidate) });
+  } catch (error) {
+    checkedContext(context, options);
+    if (treeHash(tree(saved.root, treeOptions)) !== treeHash(after)) throw new Error('Lisa: проверки изменили дерево ремонта.');
+    const causes = new Set();
+    for (let cause = error; cause && !causes.has(cause); cause = cause.cause) {
+      causes.add(cause);
+      if (externalRepairFailureCodes.has(cause.code)) throw error;
+    }
+    throw repairRetry('validation', String(error?.message ?? error), error);
+  }
   checkedContext(context, options);
   if (treeHash(tree(saved.root, treeOptions)) !== treeHash(after)) throw new Error('Lisa: проверки изменили дерево ремонта.');
   const controlPlane = {
@@ -203,6 +220,13 @@ export async function assessLisaRepair(context, options = {}) {
   const assessment = { changedPaths: paths, ralphChanged: ralphPaths.length > 0, treeHash: treeHash(after), review };
   assessments.set(assessment, { context, result: structuredClone(assessment), candidate, controlPlane });
   return assessment;
+}
+
+function repairRetry(stage, reason, cause) {
+  const error = new Error(`Lisa: ремонт требует исправления: ${reason}`, { cause });
+  error.code = 'RALPH_LISA_RETRY';
+  error.repairFeedback = { stage, reason };
+  return error;
 }
 
 export function acceptLisaRepair(context, assessment, options = {}) {
