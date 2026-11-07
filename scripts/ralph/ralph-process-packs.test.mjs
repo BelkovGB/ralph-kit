@@ -122,7 +122,7 @@ if (schemaFlag !== -1) {
   assert.deepEqual(JSON.parse(args[args.indexOf('--mcp-config') + 1]), { mcpServers: {} });
   const schema = JSON.parse(args[schemaFlag + 1]);
   assert.deepEqual(schema.required, ['verdict', 'reason']);
-  assert.deepEqual(schema.properties.verdict.enum, ['pass', 'human']);
+  assert.deepEqual(schema.properties.verdict.enum, ['pass', 'retry', 'human']);
   structured_output = { verdict: 'pass', reason: 'preserved scope' };
   result = 'Repair review completed.';
 } else {

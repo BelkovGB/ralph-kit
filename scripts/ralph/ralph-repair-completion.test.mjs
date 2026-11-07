@@ -132,14 +132,30 @@ test('a failed revalidation retains the unpublished barrier when the issue is cl
   assert.equal(store.issue.pendingPublishHead, 'local-head');
 });
 
-test('review failure after an accepted repair consumes a development iteration', async () => {
+test('review failure after an accepted repair returns directly to Lisa', async () => {
   const store = repairStore();
   Object.assign(store.issue, { phase: 'review-failed', commit: 'reviewed-head' });
   let iterations = 0;
   store.reserveIteration = () => ++iterations;
-  await runContinuousLoop(context({ config: { stopAfterFirstIssue: true }, stateStore: store }), actions({
+  const result = await runContinuousLoop(context({ config: { stopAfterFirstIssue: true }, stateStore: store }), actions({
     openIssues: () => [store.issue], issueState: () => 'OPEN',
-    runAgentOnIssue: async () => { store.clearIssue(); return { completed: true }; },
+    runAgentOnIssue: async () => assert.fail('A rejected Lisa repair must not return to the ordinary developer'),
   }));
-  assert.equal(iterations, 1);
+  assert.equal(result.verdict, 'parked');
+  assert.equal(iterations, 0);
+  assert.equal(store.issue.commit, 'reviewed-head');
+});
+
+test('a ready accepted Lisa repair passes the exhausted development budget without reserving an iteration', async () => {
+  const store = repairStore();
+  store.iterationsUsed = 3;
+  store.state.iterationsUsed = 3;
+  let checked = false;
+  const result = await runContinuousLoop(context({ config: { maxIterations: 3, stopAfterFirstIssue: true }, stateStore: store }), actions({
+    openIssues: () => [store.issue], issueState: () => 'OPEN',
+    runAgentOnIssue: async () => { checked = true; store.clearIssue(); return { completed: true }; },
+  }));
+  assert.equal(checked, true);
+  assert.equal(result.completed, 1);
+  assert.equal(store.iterationsUsed, 3);
 });

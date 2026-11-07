@@ -110,7 +110,7 @@ import { repairFixtureValue } from './ralph-acceptance.mjs';`);
         // Windows can reuse a PID once the previous worker has exited.
         // Verify both worker starts and the module version each process loaded.
         const workers = readFileSync(workersPath, 'utf8').trimEnd().split('\n').map((line) => JSON.parse(line));
-        assert.deepEqual(workers.map(({ code }) => code), ['broken', 'fixed']);
+        assert.deepEqual(workers.map(({ code }) => code), ['broken', 'fixed'], result.stdout + result.stderr);
         assert.equal(new Set(workers.map(({ workerId }) => workerId)).size, 2);
         if (scenario === 'closing-staged') {
           assert.equal(git(root, 'rev-parse', 'HEAD'), before);

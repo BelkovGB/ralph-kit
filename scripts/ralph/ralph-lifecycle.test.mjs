@@ -324,6 +324,29 @@ const failVerdict = JSON.stringify({
   ],
 });
 
+test('a product FAIL after accepted Lisa repair returns to Lisa before another development session', async () => {
+  await withLifecycleStand('ralph/lifecycle-lisa-fail', failVerdict, async (stand) => {
+    const store = recordingStateStore({ number: issueNumber, title: issueTitle, body: issueBody,
+      phase: 'committed', commit: stand.repository.commit, recoveryHead: stand.repository.commit,
+      startingCommit: git(stand.repository.workTree, ['rev-parse', 'HEAD^']),
+      lisaRepairId: 'repair', foreignPaths: [], foreignPathsFormat: 'exact-v1' });
+    store.state.lisaRepair = { repairId: 'repair', runId: store.state.runId,
+      phaseIndex: store.state.phaseIndex, issueNumber, status: 'resuming', acceptedTreeHash: 'checked' };
+    setActiveStateStore(store);
+    resetLiveStatus();
+    const config = lifecycleConfig(stand.repository, stand.reviewOutputPath);
+    config.supervisor.enabled = true;
+    config.maxReviewFixAttempts = 10;
+    const result = await runAgentOnIssue(config, 'owner/repository', lifecycleIssue(), 'rules');
+    assert.equal(result.parked, true);
+    assert.equal(store.issue.reviewFixAttempts, 1);
+    assert.equal(stand.gh.issueState().state, 'open');
+    assert.deepEqual(agentInvocations(stand.reviewOutputPath), ['review']);
+    assert.notEqual(readLiveStatus().lastPassedStep?.step, 'review-failed');
+    resetLiveStatus();
+  });
+});
+
 for (const agentCli of ['codex', 'claude']) {
   test(`локальное ревью предшествует push и закрытию issue (${agentCli})`, async () => {
     await withLifecycleStand('ralph/lifecycle-pass', passVerdict, async (stand) => {
