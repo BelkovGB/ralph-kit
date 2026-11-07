@@ -9,6 +9,8 @@ import {
   writeJsonAtomic,
 } from './ralph-runtime.mjs';
 import { fail } from './ralph-scope.mjs';
+import { createIssueProcess, updateIssueProcess } from './ralph-process.mjs';
+import { publishLiveStatus } from './ralph-live-status.mjs';
 
 /**
  * Состояние AFK-запуска: переживает перезапуск Node и не попадает в Git.
@@ -77,6 +79,7 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
       validationPathDirectories: [],
       approvedIssueSnapshots: {},
       issue: null,
+      phaseProcess: createIssueProcess(),
       updatedAt: new Date().toISOString(),
     };
     writeJsonAtomic(statePath, state);
@@ -137,6 +140,7 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
         startingCommit,
         foreignPaths: [...foreignPaths],
         phase: 'agent-running',
+        process: createIssueProcess(),
         validationFixAttempts: 0,
         lastFailure: null,
         lastFailureSummary: null,
@@ -153,6 +157,18 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
       if (!state?.issue) return;
       Object.assign(state.issue, values);
       persist();
+    },
+    recordIssueProcess(event) {
+      if (!state?.issue) return;
+      state.issue.process = updateIssueProcess(state.issue.process, event);
+      persist();
+      publishLiveStatus({ type: 'process-change' });
+    },
+    recordPhaseProcess(event) {
+      if (!state) return;
+      state.phaseProcess = updateIssueProcess(state.phaseProcess, event);
+      persist();
+      publishLiveStatus({ type: 'process-change' });
     },
     clearIssue() {
       if (!state) return;
@@ -258,6 +274,7 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
         fail('Следующая фаза не соответствует сохранённому плану Ralph Loop.');
       }
       state.phaseIndex = nextConfig.phaseIndex;
+      state.phaseProcess = createIssueProcess();
       state.branch = nextConfig.branch;
       state.baseBranch = nextConfig.baseBranch;
       state.milestone = nextConfig.milestone;

@@ -6,6 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { runAgentOnIssue } from './ralph-loop.mjs';
+import { createIssueProcess, updateIssueProcess } from './ralph-process.mjs';
 import { loadConfig } from './ralph-config.mjs';
 import { setActiveStateStore } from './ralph-state-store.mjs';
 import { withFakeCodex, withFakeGh } from './ralph-test-support.mjs';
@@ -132,7 +133,7 @@ function createFakeGh(root) {
  * beginIssue/updateIssue/clearIssue, плюс журнал фаз для проверок.
  */
 function recordingStateStore(initialIssue = null) {
-  const record = { issue: initialIssue, phases: [] };
+  const record = { issue: initialIssue, phases: [], process: null };
 
   return {
     record,
@@ -147,6 +148,7 @@ function recordingStateStore(initialIssue = null) {
         startingCommit,
         foreignPaths,
         phase: 'agent-running',
+        process: createIssueProcess(),
         validationFixAttempts: 0,
       };
       record.issue.phase = 'agent-running';
@@ -156,6 +158,12 @@ function recordingStateStore(initialIssue = null) {
       if (!record.issue) return;
       Object.assign(record.issue, values);
       if (values.phase) record.phases.push(values.phase);
+    },
+    recordIssueProcess(event) {
+      if (record.issue) {
+        record.issue.process = updateIssueProcess(record.issue.process, event);
+        record.process = structuredClone(record.issue.process);
+      }
     },
     clearIssue() {
       record.issue = null;
@@ -305,6 +313,10 @@ test('счастливый путь: найденный commit доходит д
     assert.equal(patches.length, 1);
     assert.match(patches[0].input, /"state":"closed"/);
     assert.deepEqual(store.record.phases, ['validating', 'pushed', 'reviewing', 'closing']);
+    assert.equal(store.record.process.current, 'done');
+    assert.ok(store.record.process.completed.includes('validation'));
+    assert.ok(store.record.process.completed.includes('review'));
+    assert.deepEqual(store.record.process.reviews, [{ round: 1, verdict: 'pass', findings: 0 }]);
     assert.equal(store.issue, null);
   });
 });
@@ -351,6 +363,8 @@ test('отказ ревью возвращает issue агенту, повто�
     // Замечания уехали в тело issue, а сама issue осталась в работе.
     assert.equal(store.issue.phase, 'review-failed');
     assert.equal(store.issue.reviewFixAttempts, 1);
+    assert.equal(store.record.process.current, 'fixing');
+    assert.deepEqual(store.record.process.reviews, [{ round: 1, verdict: 'fail', findings: 1 }]);
     assert.equal(store.issue.startingCommit, stand.repository.commit);
     const bodyPatch = stand.gh
       .calls()
@@ -365,6 +379,9 @@ test('отказ ревью возвращает issue агенту, повто�
 
     assert.equal(second.completed, false);
     assert.equal(second.parked, true);
+    assert.deepEqual(store.record.process.reviews, [
+      { round: 1, verdict: 'fail', findings: 1 }, { round: 2, verdict: 'fail', findings: 1 },
+    ]);
     assert.equal(store.issue, null);
     assert.deepEqual(codexInvocations(stand.reviewOutputPath), [
       'review',

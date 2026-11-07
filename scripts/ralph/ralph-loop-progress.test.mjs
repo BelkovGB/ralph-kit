@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { runContinuousLoop } from './ralph-loop.mjs';
+import { createIssueProcess, updateIssueProcess, phaseProcessSnapshot } from './ralph-process.mjs';
 import { readLiveStatus, resetLiveStatus } from './ralph-live-status.mjs';
 import { actions, context } from './ralph-test-support.mjs';
 
@@ -79,4 +80,45 @@ test('a new loop resets progress and exposes the effective phase limits', async 
   assert.deepEqual(readLiveStatus().queueProgress, {
     completedInRun: 0, remaining: 0, parked: 0,
   });
+});
+
+
+test('phase review sees confirmed task completion and published PR before the phase closes', async () => {
+  let phaseProcess = createIssueProcess();
+  const stateStore = {
+    get state() { return { phaseProcess }; },
+    recordPhaseProcess(event) { phaseProcess = updateIssueProcess(phaseProcess, event); },
+  };
+  await runContinuousLoop(context({ stateStore }), actions({
+    runMilestoneReview: async () => {
+      const snapshot = phaseProcessSnapshot(stateStore.state);
+      assert.ok(snapshot.completed.includes('implementation'));
+      assert.ok(snapshot.completed.includes('publishing'));
+      stateStore.recordPhaseProcess({ type: 'review-start' });
+      stateStore.recordPhaseProcess({ type: 'review-result', verdict: 'pass', findings: 0 });
+      return { verdict: 'pass', findings: [] };
+    },
+    closeMilestone: () => {
+      assert.deepEqual(phaseProcessSnapshot(stateStore.state).completed,
+        ['implementation', 'publishing', 'review']);
+    },
+  }));
+  assert.equal(phaseProcessSnapshot(stateStore.state).current, 'done');
+});
+
+test('a phase with parked tasks does not claim all tasks completed when its runnable queue empties', async () => {
+  let phaseProcess = createIssueProcess();
+  const stateStore = {
+    get state() { return { phaseProcess }; },
+    recordPhaseProcess(event) { phaseProcess = updateIssueProcess(phaseProcess, event); },
+    finish() {},
+    reserveIteration() { return 1; },
+  };
+  const result = await runContinuousLoop(context({ stateStore }), actions({
+    openIssues: () => [{ number: 1, title: 'Park me' }],
+    runAgentOnIssue: async () => ({ completed: false, parked: true }),
+    closeMilestone: () => assert.fail('a parked task keeps the phase open'),
+  }));
+  assert.equal(result.verdict, 'parked');
+  assert.equal(phaseProcessSnapshot(stateStore.state).completed.includes('implementation'), false);
 });

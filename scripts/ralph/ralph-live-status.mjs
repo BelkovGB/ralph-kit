@@ -23,6 +23,9 @@ export function subscribeLiveStatus(listener) {
 export function publishLiveStatus(event) {
   const { type, ...values } = event;
   switch (type) {
+    case 'process-change':
+      state.processSequence = (state.processSequence ?? 0) + 1;
+      break;
     case 'worker-snapshot':
       state = structuredClone(values.snapshot);
       break;
