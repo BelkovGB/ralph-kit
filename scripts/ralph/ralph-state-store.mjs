@@ -37,6 +37,8 @@ export function activeStateStore() {
 
 export function createStateStore(config, selectedMode, statePath = runtimeStatePath, options = {}) {
   let state = readJsonFile(statePath, null);
+  const now = options.now ?? Date.now;
+  const timingOwnerId = randomUUID();
   const configuredPhaseIndex = config.phaseIndex ?? 0;
   const configuredPhaseCount = config.phaseCount ?? 1;
   const configuredPlanId = config.phasePlanId;
@@ -87,6 +89,20 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
   if (state?.supervisorActive && selectedMode === '--run') {
     state.supervisorActive = false;
     writeJsonAtomic(statePath, state);
+  }
+
+  let interruptedTiming = false;
+  if (selectedMode === '--run') {
+    for (const process of [state?.issue?.process, state?.phaseProcess]) {
+      if (!process?.activeTiming) continue;
+      process.activeTiming = null;
+      process.timingPartial = true;
+      interruptedTiming = true;
+    }
+  }
+  if (interruptedTiming) {
+    writeJsonAtomic(statePath, state);
+    publishLiveStatus({ type: 'process-change', timing: null });
   }
 
   const persist = () => {
@@ -160,15 +176,21 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
     },
     recordIssueProcess(event) {
       if (!state?.issue) return;
-      state.issue.process = updateIssueProcess(state.issue.process, event);
+      const identity = { scope: 'issue', runId: state.runId, phaseIndex: state.phaseIndex,
+        issueNumber: state.issue.number, ownerId: timingOwnerId };
+      state.issue.process = updateIssueProcess(state.issue.process, { ...event, atMs: now(), identity });
       persist();
-      publishLiveStatus({ type: 'process-change' });
+      publishLiveStatus({ type: 'process-change', timing: state.issue.process.activeTiming
+        ? { ...identity, ...state.issue.process.activeTiming } : null });
     },
     recordPhaseProcess(event) {
       if (!state) return;
-      state.phaseProcess = updateIssueProcess(state.phaseProcess, event);
+      const identity = { scope: 'phase', runId: state.runId, phaseIndex: state.phaseIndex,
+        issueNumber: null, ownerId: timingOwnerId };
+      state.phaseProcess = updateIssueProcess(state.phaseProcess, { ...event, atMs: now(), identity });
       persist();
-      publishLiveStatus({ type: 'process-change' });
+      publishLiveStatus({ type: 'process-change', timing: state.phaseProcess.activeTiming
+        ? { ...identity, ...state.phaseProcess.activeTiming } : null });
     },
     clearIssue() {
       if (!state) return;

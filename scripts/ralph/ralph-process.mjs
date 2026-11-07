@@ -6,13 +6,27 @@ const phaseStages = {
   reviewing: 'review', 'review-failed': 'fixing', closing: 'publishing',
 };
 
+const timedStages = ['implementation', 'validation', 'review', 'fixing', 'publishing'];
+const unknownStageMs = () => Object.fromEntries(timedStages.map(stage => [stage, null]));
+
 export function createIssueProcess({ partial = false } = {}) {
   return { version: 1, current: null, completed: [], failed: null, correctionSource: null,
-    reviewRound: partial ? null : 0, reviews: [], partial, activeReview: false };
+    reviewRound: partial ? null : 0, reviews: [], partial, activeReview: false,
+    stageMs: unknownStageMs(), timingPartial: partial, activeTiming: null };
 }
 
 export function updateIssueProcess(previous, event) {
   const process = previous?.version === 1 ? structuredClone(previous) : createIssueProcess({ partial: true });
+  process.timingPartial ??= !process.stageMs;
+  process.stageMs ??= unknownStageMs();
+  if (process.activeTiming) {
+    const { stage, startedMs } = process.activeTiming;
+    if (Number.isFinite(event.atMs) && event.atMs >= startedMs) {
+      process.stageMs[stage] = (process.stageMs[stage] ?? 0) + event.atMs - startedMs;
+    } else process.timingPartial = true;
+    process.activeTiming = null;
+  }
+  if (event.identity) process.timingIdentity = { ...event.identity };
   const complete = (stage) => {
     if (!process.completed.includes(stage)) process.completed.push(stage);
   };
@@ -28,6 +42,7 @@ export function updateIssueProcess(previous, event) {
       if (process.failed === event.stage) process.failed = null;
       break;
     case 'stage-complete':
+      if (event.stage === 'implementation' && process.current === 'fixing') complete('fixing');
       complete(event.stage);
       if (event.stage === 'validation' && process.correctionSource === 'validation') process.correctionSource = null;
       if (event.stage === 'done') {
@@ -71,12 +86,26 @@ export function updateIssueProcess(previous, event) {
     default:
       throw new Error(`Unknown process event: ${event.type}`);
   }
+  const startedStage = event.type === 'review-start' ? 'review'
+    : event.type === 'stage-start' ? process.current : null;
+  if (timedStages.includes(startedStage) && Number.isFinite(event.atMs)) {
+    process.activeTiming = { stage: startedStage, startedMs: event.atMs };
+  }
   return process;
 }
 
-export function issueProcessSnapshot(issue, { reviewEnabled = true } = {}) {
+export function issueProcessSnapshot(issue, { reviewEnabled = true, timing = null, now = Date.now(),
+  scope = 'issue', identity = null } = {}) {
   if (!issue) return null;
   const process = issue.process?.version === 1 ? issue.process : null;
+  const stageMs = { ...unknownStageMs(), ...process?.stageMs };
+  const expected = identity ?? process?.timingIdentity;
+  const sameOwner = timing && expected && expected.scope === scope && expected.issueNumber === (issue.number ?? null)
+    && ['scope', 'runId', 'phaseIndex', 'issueNumber', 'ownerId'].every(key => timing[key] === expected[key]);
+  const active = process?.activeTiming;
+  const currentTiming = sameOwner && active && active.stage === timing.stage && active.startedMs === timing.startedMs
+    && Number.isFinite(now) && now >= active.startedMs;
+  if (currentTiming) stageMs[active.stage] = (stageMs[active.stage] ?? 0) + now - active.startedMs;
   return {
     current: process?.current ?? phaseStages[issue.phase] ?? null,
     completed: [...(process?.completed ?? [])],
@@ -86,10 +115,15 @@ export function issueProcessSnapshot(issue, { reviewEnabled = true } = {}) {
     reviews: (process?.reviews ?? []).map(review => ({ ...review })),
     partial: process?.partial ?? true,
     reviewEnabled,
+    stageMs,
+    timingPartial: (process?.timingPartial ?? !process?.stageMs) || Boolean(active && !currentTiming),
   };
 }
 
 export function phaseProcessSnapshot(state, options = {}) {
   if (!state) return null;
-  return { ...issueProcessSnapshot({ process: state.phaseProcess }, options), scope: 'phase' };
+  const identity = state.phaseProcess?.timingIdentity;
+  const timing = identity?.runId === state.runId && identity?.phaseIndex === state.phaseIndex ? options.timing : null;
+  return { ...issueProcessSnapshot({ process: state.phaseProcess },
+    { ...options, timing, scope: 'phase', identity }), scope: 'phase' };
 }

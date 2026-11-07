@@ -124,6 +124,7 @@ test('headline distinguishes corrections from first implementation and phase rev
   assert.equal(phase.process.scope, 'phase');
   assert.equal(phase.process.reviewEnabled, false);
   assert.match(renderTerminal(phase, [], 120, 24), /ПРОЦЕСС ФАЗЫ/);
+  assert.match(renderTerminal(phase, [], 120, 24), /МЕТРИКИ ФАЗЫ/);
 });
 
 
