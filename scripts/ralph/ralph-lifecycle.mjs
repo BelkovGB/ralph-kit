@@ -1,7 +1,7 @@
 import { fork } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { terminateProcessTreeByPid } from './ralph-runtime.mjs';
+import { initializeLogForwarding, logDetail, logDetailError, terminateProcessTreeByPid } from './ralph-runtime.mjs';
 
 /** The worker must close before start resolves; only this owner may restart it. */
 export const humanOnlyFailureCodes = new Set([
@@ -81,9 +81,9 @@ export function startRalphWorker(options) {
       killTimer.unref();
     };
     signal?.addEventListener('abort', stop, { once: true });
-    for (const stream of [child.stdout, child.stderr]) {
+    for (const [stream, output] of [[child.stdout, console.log], [child.stderr, console.error]]) {
       stream.setEncoding('utf8');
-      stream.on('data', (chunk) => (options.onOutput ?? console.log)(chunk.replace(/\r?\n$/u, '')));
+      stream.on('data', (chunk) => (options.onOutput ?? output)(chunk.replace(/\r?\n$/u, '')));
       stream.once('close', () => { closedStreams += 1; finishWhenDrained(); });
     }
     child.on('message', (message) => {
@@ -96,6 +96,14 @@ export function startRalphWorker(options) {
         if (message.type === 'outcome') outcome = message.outcome;
         else if (message.type === 'live') onLive?.(message.snapshot);
         else if (message.type === 'prepared') onPrepared?.(message);
+        else if (message.type === 'log') {
+          if (typeof message.detail !== 'boolean' || typeof message.text !== 'string' ||
+              !['INFO', 'ERROR'].includes(message.level)) throw new Error('Ralph: неверная запись журнала worker.');
+          const output = message.detail
+            ? message.level === 'ERROR' ? logDetailError : logDetail
+            : options.onOutput ?? (message.level === 'ERROR' ? console.error : console.log);
+          output(message.text);
+        }
       } catch (error) { protocolError = error; stop(); }
     });
     child.once('error', (error) => { protocolError = error; });
@@ -141,13 +149,18 @@ export function receiveRalphWorkerStart({ timeoutMs = 10_000, lockPath } = {}) {
         process.once('disconnect', () => {
           if (!message.finished) terminateProcessTreeByPid(process.pid, true);
         });
+        message.restoreLog = initializeLogForwarding({
+          log: (level, text) => sendRalphWorkerMessage(message, 'log', { level, text, detail: false }),
+          detail: (level, text) => sendRalphWorkerMessage(message, 'log', { level, text, detail: true }),
+        });
         resolve(message);
       } catch (error) { reject(error); }
     });
   });
 }
 
-export function sendRalphWorkerMessage(context, type, values = {}) {
+export function sendRalphWorkerMessage(context, type, values = {}, callback) {
   if (process.connected) process.send({ ...values, type, token: context.token,
-    runId: context.runId, pid: process.pid });
+    runId: context.runId, pid: process.pid }, callback);
+  else callback?.(new Error('Ralph: канал worker уже закрыт.'));
 }

@@ -1798,16 +1798,23 @@ const isMainModule =
 
 export async function runCli() {
   let lifecycle;
+  // Drain the final outcome and preceding detail records before disconnecting IPC.
+  const sendOutcome = outcome => new Promise((resolve, reject) => {
+    sendRalphWorkerMessage(lifecycle, 'outcome', { outcome }, error => error ? reject(error) : resolve());
+  });
   try {
     lifecycle = await receiveRalphWorkerStart({ lockPath: runtimeLockPath });
     const result = mode === '--run' && !lifecycle ? await runRalphLifecycleCli() : await main(lifecycle);
-    if (lifecycle) sendRalphWorkerMessage(lifecycle, 'outcome', { outcome: ralphRunOutcome(result) });
+    if (lifecycle) await sendOutcome(ralphRunOutcome(result));
   } catch (error) {
-    if (lifecycle) sendRalphWorkerMessage(lifecycle, 'outcome', { outcome: ralphRunOutcome(null, error) });
     console.error(`\nRalph Loop остановлен: ${error.message}`);
+    if (lifecycle) await sendOutcome(ralphRunOutcome(null, error));
     process.exitCode = 1;
   } finally {
-    if (lifecycle) lifecycle.finished = true;
+    if (lifecycle) {
+      lifecycle.finished = true;
+      lifecycle.restoreLog();
+    }
     if (process.send && process.connected) process.disconnect();
   }
 }
