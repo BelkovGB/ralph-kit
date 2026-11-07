@@ -159,7 +159,8 @@ test('prompt includes saved context and forbids changing task boundaries', () =>
   assert.match(prompt, /не меняй.*критерии/i);
   assert.match(prompt, /validationPathDirectories/);
   assert.match(prompt, /Каталоги внутри проекта/);
-  assert.match(prompt, /команды, которые устанавливают или заменяют зависимости/);
+  assert.match(prompt, /восстановить объявленные зависимости/);
+  assert.match(prompt, /manifest и lock-файлам/);
   assert.match(prompt, /общую тестовую фикстуру проекта/);
   assert.match(prompt, /lisa-tools/);
 });

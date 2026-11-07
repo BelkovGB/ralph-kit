@@ -98,6 +98,7 @@ function tokenKindList(value, withShare) {
 }
 
 function duration(ms) {
+  if (ms === null) return '—';
   var total = Math.max(0, Math.round((Number(ms) || 0) / 1000));
   if (total < 60) return total + ' с';
   var minutes = Math.round(total / 60);
@@ -108,6 +109,7 @@ function duration(ms) {
 }
 
 function hours(ms) {
+  if (ms === null) return '—';
   return num((Number(ms) || 0) / 3600000, 1) + ' ч';
 }
 

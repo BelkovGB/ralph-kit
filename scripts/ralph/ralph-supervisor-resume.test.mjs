@@ -68,6 +68,47 @@ test('clean committed recovery keeps validated commit evidence', (t) => {
   assert.deepEqual(f.issue, before);
 });
 
+test('an accepted clean repair retains Lisa ownership and requires fresh review of the preserved commit', (t) => {
+  const f = fixture(t);
+  f.issue.reviewReceipt = { head: f.head, result: { verdict: 'fail', findings: ['Preserve this finding'] } };
+  f.issue.publicationCheckpoint = { head: f.head, fingerprint: 'old', step: 'push' };
+  const indexBefore = f.run('git', ['diff', '--cached', '--binary']).stdout;
+  const plan = supervisor.prepareLisaResume(f.config, f.store, { ...f.before, repairId: 'clean-repair' },
+    { run: f.run, acceptedRepair: true });
+  assert.equal(plan.kind, 'ready');
+  assert.equal(f.issue.phase, 'committed');
+  assert.equal(f.issue.lisaRepairId, 'clean-repair');
+  assert.equal(f.issue.commit, f.head);
+  assert.equal(f.issue.recoveryHead, f.head);
+  assert.equal(f.issue.pushedHead, f.head);
+  assert.equal(f.issue.reviewReceipt, null);
+  assert.equal(f.issue.reviewedCommit, null);
+  assert.equal(f.issue.publicationCheckpoint, null);
+  assert.equal(f.issue.reviewFindings, 'A regression scenario is missing');
+  assert.equal(f.issue.reviewFixAttempts, 0);
+  assert.deepEqual(f.issue.foreignPaths, ['unrelated.txt']);
+  assert.equal(f.run('git', ['rev-parse', 'HEAD']).stdout, f.head);
+  assert.equal(f.run('git', ['diff', '--cached', '--binary']).stdout, indexBefore);
+  assert.equal(f.run('git', ['status', '--porcelain']).stdout, '');
+  assert.equal(analyzeRecovery(f.config, f.issue, { run: f.run }).kind, 'ready');
+});
+
+test('an accepted clean repair cannot authorize an inconsistent saved commit', (t) => {
+  const f = fixture(t);
+  f.issue.recoveryHead = 'not-the-current-head';
+  const before = structuredClone(f.issue);
+  assert.throws(() => supervisor.prepareLisaResume(f.config, f.store, { ...f.before, repairId: 'clean-repair' },
+    { run: f.run, acceptedRepair: true }), { code: 'RALPH_RECOVERY_BLOCKED' });
+  assert.deepEqual(f.issue, before);
+});
+
+test('a clean unaccepted proposal cannot transfer the rejected issue to Lisa', (t) => {
+  const f = fixture(t);
+  const before = structuredClone(f.issue);
+  supervisor.prepareLisaResume(f.config, f.store, { ...f.before, repairId: 'unaccepted' }, { run: f.run });
+  assert.deepEqual(f.issue, before);
+});
+
 test('Lisa invalidates review without losing an unpublished commit', (t) => {
   const f = fixture(t, 'reviewing');
   f.issue.pushedHead = 'previously-published';

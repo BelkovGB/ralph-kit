@@ -35,6 +35,15 @@ export function activeStateStore() {
 
 const exactForeignPathsFormat = 'exact-v1';
 
+/** Bound optional model output before retaining it across phases. */
+export function validatedLisaRecommendations(recommendations = []) {
+  if (!Array.isArray(recommendations) || recommendations.length > 10 || recommendations.some(
+    (reason) => typeof reason !== 'string' || !reason.trim() || reason.length > 1000 ||
+      [...reason].some((character) => character.codePointAt(0) < 32 || character.codePointAt(0) === 127),
+  )) throw new Error('Lisa: recommendations должны содержать не более десяти непустых строк до 1000 символов без управляющих символов.');
+  return [...new Set(recommendations.map((reason) => reason.trim()))];
+}
+
 export function issueForeignPaths(issue) {
   const paths = issue?.foreignPaths ?? [];
   if (paths.length > 0 && issue.foreignPathsFormat !== exactForeignPathsFormat) {
@@ -87,6 +96,7 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
       supervisorExtraIterations: 0,
       supervisorActive: false,
       validationPathDirectories: [],
+      lisaRecommendations: [],
       approvedIssueSnapshots: {},
       issue: null,
       updatedAt: new Date().toISOString(),
@@ -192,6 +202,22 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
     setValidationPathDirectories(directories) {
       if (!state) return;
       state.validationPathDirectories = [...directories];
+      persist();
+    },
+    get lisaRecommendations() {
+      return structuredClone(state?.lisaRecommendations ?? []);
+    },
+    addLisaRecommendations(recommendations) {
+      const reasons = validatedLisaRecommendations(recommendations);
+      if (!state || reasons.length === 0) return;
+      state.lisaRecommendations ??= [];
+      for (const reason of reasons) {
+        const record = { phaseIndex: state.phaseIndex, issueNumber: state.issue?.number ?? null, reason };
+        if (!state.lisaRecommendations.some((existing) => existing.phaseIndex === record.phaseIndex &&
+            existing.issueNumber === record.issueNumber && existing.reason === reason)) {
+          state.lisaRecommendations.push(record);
+        }
+      }
       persist();
     },
     reserveSupervisorCall() {

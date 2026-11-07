@@ -14,6 +14,7 @@ const steps = new Set(['development', 'validation', 'push', 'review', 'close', '
 const stopReasons = new Map([
   ['repeat-without-progress', 'Повтор прежнего отказа без подтверждения восстановленного шага.'],
   ['lisa-unavailable', 'Lisa выключена, контекст недоступен или исчерпан лимит вызовов.'],
+  ['lisa-call-budget-exhausted', 'Исчерпан сохранённый бюджет вызовов Lisa.'],
   ['lisa-iteration-reserve-exhausted', 'Исчерпан резерв дополнительных итераций Lisa.'],
   ['lisa-repair-declined', 'Lisa не предложила ремонт, который Ralph мог принять.'],
 ]);

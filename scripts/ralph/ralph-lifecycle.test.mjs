@@ -10,6 +10,7 @@ import { loadConfig } from './ralph-config.mjs';
 import { repairStepPassed } from './ralph-lifecycle.mjs';
 import { readLiveStatus, resetLiveStatus, subscribeLiveStatus } from './ralph-live-status.mjs';
 import { setActiveStateStore } from './ralph-state-store.mjs';
+import { prepareLisaResume } from './ralph-supervisor.mjs';
 import { withFakeClaude, withFakeCodex, withFakeGh } from './ralph-test-support.mjs';
 
 /**
@@ -322,6 +323,64 @@ const failVerdict = JSON.stringify({
       body: 'The invariant is broken.',
     },
   ],
+});
+
+test('an accepted no-op repair freshly reviews the complete task at the same HEAD without development', async () => {
+  await withLifecycleStand('ralph/lifecycle-lisa-clean', failVerdict, async (stand) => {
+    const store = recordingStateStore({ number: issueNumber, title: issueTitle, body: issueBody,
+      phase: 'review-failed', startingCommit: stand.repository.commit, commit: stand.repository.commit,
+      recoveryHead: stand.repository.commit, pushedHead: null, reviewedCommit: stand.repository.commit,
+      reviewReceipt: { head: stand.repository.commit, result: JSON.parse(failVerdict) },
+      reviewFindings: 'NOOP_PRIOR_FINDING: The invariant is still broken', reviewFixAttempts: 2,
+      foreignPaths: [], foreignPathsFormat: 'exact-v1' });
+    setActiveStateStore(store);
+    resetLiveStatus();
+    const config = lifecycleConfig(stand.repository, stand.reviewOutputPath);
+    config.supervisor.enabled = true;
+    config.maxReviewFixAttempts = 10;
+    const before = { branch: stand.repository.branch, head: stand.repository.commit, repairId: 'clean-repair' };
+    prepareLisaResume(config, store, before, { acceptedRepair: true,
+      run: (command, args) => { assert.equal(command, 'git'); return { status: 0, stdout: git(stand.repository.workTree, args) }; },
+    });
+    store.state.lisaRepair = { ...before, runId: store.state.runId, phaseIndex: store.state.phaseIndex,
+      issueNumber, status: 'resuming', acceptedTreeHash: 'checked' };
+    const result = await runAgentOnIssue(config, 'owner/repository', lifecycleIssue(), 'rules');
+    assert.equal(result.review.verdict, 'fail');
+    assert.deepEqual(agentInvocations(stand.reviewOutputPath), ['review']);
+    assert.equal(result.parked, true);
+    const prompt = readFileSync(`${stand.reviewOutputPath}.review-prompt`, 'utf8');
+    assert.match(prompt, /NOOP_PRIOR_FINDING/);
+    assert.match(prompt, /complete set of changes made for this issue/);
+    assert.match(prompt, /\+implemented/);
+    assert.equal(git(stand.repository.workTree, ['rev-parse', 'HEAD']), before.head);
+    assert.equal(stand.gh.issueState().state, 'open');
+    assert.equal(store.issue.lisaRepairId, before.repairId);
+    assert.notEqual(readLiveStatus().lastPassedStep?.step, 'review-failed');
+    resetLiveStatus();
+  });
+});
+
+test('a product FAIL after accepted Lisa repair returns to Lisa before another development session', async () => {
+  await withLifecycleStand('ralph/lifecycle-lisa-fail', failVerdict, async (stand) => {
+    const store = recordingStateStore({ number: issueNumber, title: issueTitle, body: issueBody,
+      phase: 'committed', commit: stand.repository.commit, recoveryHead: stand.repository.commit,
+      startingCommit: git(stand.repository.workTree, ['rev-parse', 'HEAD^']),
+      lisaRepairId: 'repair', foreignPaths: [], foreignPathsFormat: 'exact-v1' });
+    store.state.lisaRepair = { repairId: 'repair', runId: store.state.runId,
+      phaseIndex: store.state.phaseIndex, issueNumber, status: 'resuming', acceptedTreeHash: 'checked' };
+    setActiveStateStore(store);
+    resetLiveStatus();
+    const config = lifecycleConfig(stand.repository, stand.reviewOutputPath);
+    config.supervisor.enabled = true;
+    config.maxReviewFixAttempts = 10;
+    const result = await runAgentOnIssue(config, 'owner/repository', lifecycleIssue(), 'rules');
+    assert.equal(result.parked, true);
+    assert.equal(store.issue.reviewFixAttempts, 1);
+    assert.equal(stand.gh.issueState().state, 'open');
+    assert.deepEqual(agentInvocations(stand.reviewOutputPath), ['review']);
+    assert.notEqual(readLiveStatus().lastPassedStep?.step, 'review-failed');
+    resetLiveStatus();
+  });
 });
 
 for (const agentCli of ['codex', 'claude']) {

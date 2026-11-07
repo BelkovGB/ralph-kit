@@ -167,7 +167,9 @@ function workingTreeStatus() {
 }
 
 function assertCleanTree(message) {
-  if (workingTreeStatus() !== '') fail(message);
+  if (workingTreeStatus() !== '') {
+    throw Object.assign(new Error(message), { code: 'RALPH_RECOVERY_BLOCKED' });
+  }
 }
 
 // Проверки не имеют права трогать рабочее дерево: сгенерированный ими файл
@@ -538,7 +540,8 @@ async function reviewAndCloseCommittedIssue(config, repository, issue, commit, e
       console.error(`Issue #${issue.number}: замечания сохранены локально, GitHub недоступен. ${error.message}`);
     }
 
-    if (reviewFixAttempts >= config.maxReviewFixAttempts) {
+    const lisaOwnsIssue = hasAcceptedLisaIssueRepair(store?.state, issue);
+    if (lisaOwnsIssue || reviewFixAttempts >= config.maxReviewFixAttempts) {
       console.error(
         `Issue #${issue.number}: ревью отклонило работу ${reviewFixAttempts} раз подряд. ` +
           (alreadyPublished
@@ -592,7 +595,8 @@ function isForeignEntry(entry, foreignPaths) {
 
 function assertNoForeignStaging(entries, foreignPaths) {
   if (entries.some((entry) => isForeignEntry(entry, foreignPaths) && ![' ', '?'].includes(entry.index))) {
-    fail('В индексе есть чужие изменения; ремонт сохранён без commit. Нужен оператор.');
+    throw Object.assign(new Error('В индексе есть чужие изменения; ремонт сохранён без commit. Нужен оператор.'),
+      { code: 'RALPH_RECOVERY_BLOCKED' });
   }
 }
 
@@ -861,7 +865,7 @@ export async function runAgentOnIssue(config, repository, issue, rules) {
   recoverHostValidationMutation(storedIssue);
   if (shouldCommitAcceptedRepair(activeStateStore()?.state, issue)) {
     return commitAndCompleteIssue(config, repository, issue, storedIssue.startingCommit,
-      `fix: repair Ralph for issue #${issue.number}`);
+      `fix: repair issue #${issue.number} with Lisa`);
   }
   if (storedIssue?.commit && committedRecoveryPhases.includes(storedIssue.phase)) {
     assertCleanTree(`Issue #${issue.number}: committed recovery требует чистое рабочее дерево.`);
@@ -1506,6 +1510,9 @@ export async function runContinuousLoop(context, actions) {
       stateStore?.issue?.number === currentIssue.number ? stateStore.issue.phase : null;
     const linkedCommit = storedPhase ? null : actions.linkedCommitForIssue?.(currentIssue);
     if (linkedCommit) currentIssue.linkedCommit = linkedCommit;
+    if (storedPhase === 'review-failed' && hasAcceptedLisaIssueRepair(stateStore?.state, currentIssue)) {
+      return { mode: 'run', verdict: 'parked', parkedIssues: [currentIssue.number] };
+    }
     const needsDevelopmentIteration =
       !shouldCommitAcceptedRepair(stateStore?.state, currentIssue) &&
       !committedRecoveryPhases.includes(storedPhase) &&
