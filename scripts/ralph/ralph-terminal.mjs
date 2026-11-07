@@ -1,4 +1,7 @@
 import { stripVTControlCharacters } from 'node:util';
+import { renderProcessLines, renderProcessDashboard, colorTerminalFrame } from './ralph-terminal-process.mjs';
+import { issueProcessSnapshot, phaseProcessSnapshot } from './ralph-process.mjs';
+import { processCurrentStage } from './ralph-terminal-map.mjs';
 
 const stages = {
   'agent-running': 'Реализация', 'working-tree': 'Изменения готовы', validating: 'Проверки',
@@ -29,7 +32,11 @@ export function terminalSnapshot(store, metrics, startedMs, now = Date.now(), li
   const phaseActivity = activity?.active !== false && activity && activity.kind !== 'issue';
   const supervisor = phaseActivity && activity.kind === 'supervisor';
   const config = live.phaseConfig ?? {};
-  const session = live.session && metrics && live.session.startedMs >= metrics.startedMs
+  const process = issueProcessSnapshot(issue, { reviewEnabled: config.reviewEnabled, timing: live.processTiming, now });
+  const issueStage = process && processCurrentStage(process) === 'fixing' && ['agent-running', 'working-tree'].includes(issue?.phase)
+    ? process.errorStage === 'implementation' ? 'Сбой исправлений' : 'Исправления' : stages[issue?.phase] ?? issue?.phase;
+  const activityStartedMs = metrics?.startedMs ?? activity?.startedMs;
+  const session = live.session && activityStartedMs != null && live.session.startedMs >= activityStartedMs
     && (!activity || live.session.startedMs >= activity.startedMs) ? live.session : null;
   const operation = live.operation?.active ? live.operation : null;
   const commandPurpose = {
@@ -39,7 +46,7 @@ export function terminalSnapshot(store, metrics, startedMs, now = Date.now(), li
     'git fetch': 'Обновление веток', 'git push': 'Отправка изменений',
     'git switch': 'Переключение ветки',
   };
-  let stage = issue ? (stages[issue.phase] ?? issue.phase) : 'Подготовка';
+  let stage = issue ? issueStage : 'Подготовка';
   if (phaseActivity) stage = 'Выполняется';
   const repair = state?.lisaRepair ?? live.lisaRepair;
   if (repair && supervisor) stage = ({ repairing: 'Ремонт', checking: 'Проверка ремонта',
@@ -51,14 +58,18 @@ export function terminalSnapshot(store, metrics, startedMs, now = Date.now(), li
   if (operation) stage = commandPurpose[operation.label] ?? `Выполняется ${operation.label}`;
   if (supervisor) stage = `Lisa · ${stage}`;
   const issueWait = session?.active && issue && !phaseActivity && !operation ? stage : null;
-  if (issueWait) stage = stages[issue.phase] ?? issue.phase;
+  if (issueWait) stage = issueStage;
   const ended = activity?.kind === 'failed' || activity?.kind === 'finished' || (store && !state);
   const headline = ended ? activity?.kind === 'failed' ? 'Прогон остановлен с ошибкой' : 'Прогон завершён'
     : supervisor ? 'Lisa: восстановление работы'
       : phaseActivity ? activity.label
-        : issue ? `Задача #${issue.number} · ${stages[issue.phase] ?? issue.phase}`
+        : issue ? `Задача #${issue.number} · ${issueStage}`
           : operation ? commandPurpose[operation.label] ?? `Выполняется ${operation.label}` : 'Подготовка запуска';
   const detail = ended ? null : operation ? commandPurpose[operation.label] ?? `Выполняется ${operation.label}` : wait;
+  const screenProcess = ended ? null : phaseActivity && !supervisor
+      ? ['pull-request', 'milestone-review', 'review-results', 'milestone-close'].includes(activity.kind)
+        ? phaseProcessSnapshot(state, { reviewEnabled: config.milestoneReviewEnabled, timing: live.processTiming, now, operation: activity.kind }) : null
+      : supervisor && !issue ? phaseProcessSnapshot(state, { reviewEnabled: config.milestoneReviewEnabled, timing: live.processTiming, now, operation: activity?.kind }) : process;
   const pair = (value, limit) => `${value ?? '—'}/${limit ?? '—'}`;
   const runCounters = [];
   const checkCounters = [];
@@ -90,15 +101,21 @@ export function terminalSnapshot(store, metrics, startedMs, now = Date.now(), li
     }
   }
   if (live.network) sessionCounters.push(`Сеть${live.network.active ? '' : ', последняя'}: ${pair(live.network.attempt, live.network.attempts)}`);
-  if (live.review && metrics && live.review.startedMs >= metrics.startedMs) {
+  if (live.review && activityStartedMs != null && live.review.startedMs >= activityStartedMs) {
     checkCounters.push(`Запуск ревью${live.review.active ? '' : ', последний'}: ${pair(live.review.attempt, live.review.attempts)}`);
   }
   if (operation) sessionCounters.push(`Команда: ${operation.label}`, `Время команды: ${duration(now - operation.startedMs)} / ${duration(operation.timeoutMs)}`);
   return {
     headline,
     detail,
-    issueKey: issue || metrics?.issue != null ? `${state?.phaseIndex ?? 0}:${issue?.number ?? metrics.issue}`
+    subject: issue ? `#${issue.number} ${issue.title ?? ''}` : null,
+    actor: supervisor ? 'Lisa' : null,
+    repairStatus: supervisor ? repair?.status ?? null : null,
+    issueKey: screenProcess?.scope === 'phase' ? `phase:${state?.phaseIndex ?? store?.phaseIndex ?? 0}`
+      : issue || metrics?.issue != null ? `${state?.phaseIndex ?? 0}:${issue?.number ?? metrics.issue}`
       : metrics ? `stage:${metrics.startedMs}` : null,
+    process: screenProcess,
+    phaseBudget: { used: state?.iterationsUsed ?? null, limit: config.maxIterations ?? null },
     counters: [...runCounters, ...checkCounters, ...sessionCounters],
     counterGroups: { run: runCounters, checks: checkCounters, session: sessionCounters },
     compactSessionCounters: session
@@ -114,7 +131,8 @@ export function terminalSnapshot(store, metrics, startedMs, now = Date.now(), li
     fixes: issue?.validationFixAttempts,
     timeLabel: phaseActivity ? 'Время этапа' : 'Сессия задачи',
     issueTime: phaseActivity ? duration(now - activity.startedMs)
-      : metrics && issue?.number === metrics.issue ? duration(now - metrics.startedMs) : undefined,
+      : metrics && issue?.number === metrics.issue ? duration(now - metrics.startedMs)
+        : issue && activity?.kind === 'issue' ? duration(now - activity.startedMs) : undefined,
     runTime: duration(now - startedMs),
   };
 }
@@ -132,7 +150,7 @@ function clean(value) {
   return stripVTControlCharacters(String(value ?? '—'))
     // eslint-disable-next-line no-control-regex -- kit-hygiene: allow — линтер набора; удаляем управляющие символы.
     .replace(/[\x00-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2060-\u206f]/gu, '')
-    .replace(/[^\u0020-\u007e\u00a0-\u024f\u0400-\u052f\u2010-\u2027\u2500-\u257f]/gu, '?');
+    .replace(/[^\u0020-\u007e\u00a0-\u024f\u0400-\u052f\u2010-\u2027\u2190-\u2193\u2500-\u259f]/gu, '?');
 }
 
 function fit(value, width) {
@@ -140,15 +158,19 @@ function fit(value, width) {
   return (text.length > width ? text.slice(0, Math.max(0, width - 1)).join('') + '…' : text.join('')).padEnd(width);
 }
 
-export function renderTerminal(snapshot, events, columns, rows) {
+export function renderTerminal(snapshot, events, columns, rows, view = {}) {
   const width = Math.max(1, Math.floor(columns) - 1);
   const height = Math.max(1, Math.floor(rows) - 1);
+  if (snapshot.process && width >= 119 && height >= 23) {
+    return renderProcessDashboard(snapshot, events, columns, rows, { ...view, fit }).map(line => fit(line, width)).join('\n');
+  }
   const groups = snapshot.counterGroups ?? {
     run: [], checks: snapshot.counters ?? [
       `Итерация фазы: ${snapshot.iteration ?? '—'}`, `Исправлений тестов: ${snapshot.fixes ?? '—'}`,
     ], session: [],
   };
-  const header = `СЕЙЧАС: ${snapshot.headline ?? snapshot.stage ?? 'Подготовка запуска'}`;
+  const header = snapshot.process ? `RALPH --run · ${snapshot.actor ?? snapshot.status ?? ''}`
+    : `СЕЙЧАС: ${snapshot.headline ?? snapshot.stage ?? 'Подготовка запуска'}`;
   const summaryWith = sessionRows => [
     '── ПРОГОН ──',
     `Фаза ${snapshot.phase ?? '—'} · Milestone: ${snapshot.milestone ?? '—'}`,
@@ -170,7 +192,20 @@ export function renderTerminal(snapshot, events, columns, rows) {
   if (summary.length > summaryRoom && snapshot.compactSessionCounters) {
     summary = summaryWith(snapshot.compactSessionCounters);
   }
-  const footer = 'Tab лог · Ctrl+C остановить · run.log';
+  const footer = snapshot.process ? 'PgUp/PgDn круги · End последние · Tab лог · Ctrl+C стоп'
+    : 'Tab лог · Ctrl+C остановить · run.log';
+  if (stacked && snapshot.process) {
+    const processRows = renderProcessLines(snapshot.process, width, { ...view, reviewLimit: 1, snapshot });
+    const top = [
+      `Фаза ${snapshot.phase ?? '—'} · ${snapshot.milestone ?? '—'}`,
+      ...(snapshot.subject || snapshot.issue ? [snapshot.subject ?? snapshot.issue] : []), ...processRows,
+      `Прогон: ${snapshot.runTime ?? '—'}`,
+    ];
+    const room = Math.max(0, height - top.length - 3);
+    return [header, ...top, '── События ──', ...(room ? events.slice(-room) : [])]
+      .slice(0, height - 1).concat(footer)
+      .map(line => fit(line, width)).join('\n');
+  }
   if (stacked) {
     const top = summary.slice(0, summaryRoom);
     const room = Math.max(0, height - top.length - 3);
@@ -179,34 +214,47 @@ export function renderTerminal(snapshot, events, columns, rows) {
   }
   const left = Math.floor(width * 0.38);
   const right = width - left - 3;
-  const eventRows = ['СОБЫТИЯ', ...events.slice(-(height - 3))];
+  const processRows = snapshot.process ? [
+    ...renderProcessLines(snapshot.process, right, { ...view, snapshot }),
+    '',
+  ] : [];
+  const eventRoom = Math.max(0, height - 3 - processRows.length);
+  const eventRows = [...processRows, 'СОБЫТИЯ', ...(eventRoom ? events.slice(-eventRoom) : [])];
   const lines = Array.from({ length: height - 2 }, (_, index) =>
     `${fit(summary[index] ?? '', left)} │ ${fit(eventRows[index] ?? '', right)}`);
   return [fit(header, width), ...lines, fit(footer, width)].join('\n');
 }
 
 export function createTerminal({ output = process.stdout, errorOutput = process.stderr, input = process.stdin,
-  lifecycle = process, term = process.env.TERM, snapshot = () => ({}) } = {}) {
+  lifecycle = process, term = process.env.TERM, snapshot = () => ({}), color } = {}) {
   if (!output.isTTY || !errorOutput.isTTY || term === 'dumb' || !output.columns || !output.rows) return null;
   let closed = false;
   const events = [];
   const details = [];
   let logMode = false;
+  let reviewOffset = 0;
+  let reviewCount = 0;
   let scrollTop = null;
   let taskKey = null;
   let taskLabel = '';
   let keyBuffer = '';
+  const useColor = color ?? (process.env.NO_COLOR === undefined && output.hasColors?.(8) === true);
   const interactive = input.isTTY && typeof input.setRawMode === 'function';
   const wasRaw = input.isRaw;
   const wasFlowing = input.readableFlowing === true;
   const syncTask = () => {
     const current = snapshot();
     if (current.issueKey != null && current.issueKey !== taskKey) {
+      reviewOffset = 0;
+      reviewCount = 0;
       details.length = 0;
       scrollTop = null;
       taskKey = current.issueKey;
       taskLabel = current.issue ?? 'Ревью milestone';
     }
+    const count = current.process?.reviews?.length ?? 0;
+    if (reviewOffset > 0) reviewOffset = Math.max(0, reviewOffset + count - reviewCount);
+    reviewCount = count;
     if (current.issue) taskLabel = current.issue;
     return current;
   };
@@ -231,8 +279,9 @@ export function createTerminal({ output = process.stdout, errorOutput = process.
         ...lines.slice(top, top + room), ...Array(Math.max(0, room - lines.slice(top, top + room).length)).fill(''),
         'Tab пульт · PgUp/PgDn листать · End следить · Ctrl+C стоп']
         .slice(0, Math.max(1, output.rows - 1)).map(line => fit(line, Math.max(1, output.columns - 1))).join('\n');
-    } else frame = renderTerminal(current, events, output.columns, output.rows);
-    output.write('\x1b[H' + frame.replaceAll('\n', '\x1b[K\r\n') + '\x1b[J');
+    } else frame = renderTerminal(current, events, output.columns, output.rows, { reviewOffset });
+    const painted = !logMode && useColor ? colorTerminalFrame(frame) : frame;
+    output.write('\x1b[H' + painted.replaceAll('\n', '\x1b[K\r\n') + '\x1b[J');
   };
   const close = () => {
     if (closed) return;
@@ -273,6 +322,11 @@ export function createTerminal({ output = process.stdout, errorOutput = process.
         if (key === '\x1b[5~') scrollTop = Math.max(0, (scrollTop ?? bottom) - room);
         else if (key === '\x1b[6~') scrollTop = Math.min(bottom, (scrollTop ?? bottom) + room);
         else scrollTop = null;
+      } else if (syncTask().process) {
+        const pageSize = output.columns < 90 || output.rows < 16 ? 1 : 3;
+        if (key === '\x1b[5~') reviewOffset = Math.min(Math.max(0, reviewCount - 1), reviewOffset + pageSize);
+        else if (key === '\x1b[6~') reviewOffset = Math.max(0, reviewOffset - pageSize);
+        else reviewOffset = 0;
       }
       draw();
     }

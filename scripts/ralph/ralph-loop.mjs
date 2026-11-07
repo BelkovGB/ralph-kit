@@ -204,26 +204,37 @@ function observeIssue(kind, details) {
     runId: state.runId, phaseIndex: state.phaseIndex, issueNumber: state.issue.number, ...details });
 }
 
+function recordProcess(event) {
+  activeStateStore()?.recordIssueProcess?.(event);
+}
+
 async function observedRepairStep(step, operation) {
+  const publishing = ['push', 'close'].includes(step);
+  if (publishing) recordProcess({ type: 'stage-start', stage: 'publishing' });
   try {
     const result = await operation();
     repairStepSucceeded(step);
     return result;
   } catch (error) {
+    if (publishing) recordProcess({ type: 'stage-error', stage: 'publishing' });
     error.ralphFailureStep = step;
     throw error;
   }
 }
 
 function measuredValidation(runValidation) {
+  recordProcess({ type: 'stage-start', stage: 'validation' });
   const endStage = startStage('validation');
   try {
     const outcome = runValidation();
     repairStepSucceeded('validation');
+    recordProcess({ type: 'stage-complete', stage: 'validation' });
     endStage();
     return outcome;
   } catch (error) {
     endStage({ failed: true });
+    recordProcess({ type: diagnosticValidationCodes.has(error.code) || error.code === 'RALPH_VALIDATION_MUTATED'
+      ? 'stage-error' : 'stage-fail', stage: 'validation' });
     error.ralphFailureStep = 'validation';
     throw error;
   }
@@ -407,6 +418,8 @@ function closeIssue(config, repository, issue, commit, review = null) {
   }
 
   closeIssueOnce(repository, issue.number);
+  recordProcess({ type: 'stage-complete', stage: 'publishing' });
+  recordProcess({ type: 'stage-complete', stage: 'done' });
 }
 
 /**
@@ -486,6 +499,7 @@ async function reviewAndCloseCommittedIssue(config, repository, issue, commit) {
   }
 
   activeStateStore()?.updateIssue({ phase: 'reviewing' });
+  recordProcess({ type: 'review-start', commit });
   let review;
   // Замер охватывает повторы: попытка ревью, упавшая технически, стоит полной
   // сессии, а таких попыток допускается reviewRetryAttempts.
@@ -497,6 +511,7 @@ async function reviewAndCloseCommittedIssue(config, repository, issue, commit) {
       `Review issue #${issue.number}`,
     ));
     endReview();
+    recordProcess({ type: 'review-result', verdict: review.verdict, findings: review.findings.length });
     // Замечания ниже порога не блокируют работу, но и не теряются: каждое
     // становится отложенной GitHub issue для ручного разбора.
     recordDeferredFindingsSafely(
@@ -507,6 +522,7 @@ async function reviewAndCloseCommittedIssue(config, repository, issue, commit) {
     );
   } catch (error) {
     endReview({ failed: true });
+    recordProcess({ type: 'review-error' });
     activeStateStore()?.updateIssue({
       phase: 'pushed',
       ...recordedFailure(error),
@@ -735,6 +751,7 @@ async function commitAndCompleteIssue(config, repository, issue, startingCommit,
     return { completed: false, validationFailed: true };
   }
   activeStateStore()?.updateIssue({ phase: 'staging' });
+  recordProcess({ type: 'stage-start', stage: 'publishing' });
   // Именно пути агента, а не `--all`: остальное в дереве принадлежит оператору
   // и обязано остаться незакоммиченным.
   //
@@ -906,6 +923,7 @@ export async function runAgentOnIssue(config, repository, issue, rules) {
 
   let codexResult;
   console.log(`\n=== Issue #${issue.number}: ${issue.title} ===\n`);
+  recordProcess({ type: 'stage-start', stage: 'implementation' });
   const endImplementation = startStage('implementation');
   try {
     codexResult = await observedRepairStep('development', () => runDevelopmentSession(config, {
@@ -915,8 +933,10 @@ export async function runAgentOnIssue(config, repository, issue, rules) {
       label: `${config.agentCli} issue #${issue.number}`,
     }));
     endImplementation();
+    recordProcess({ type: 'stage-complete', stage: 'implementation' });
   } catch (error) {
     endImplementation({ failed: true });
+    recordProcess({ type: 'stage-error', stage: 'implementation' });
     activeStateStore()?.updateIssue({
       phase: 'working-tree',
       ...recordedFailure(error),
@@ -1301,8 +1321,13 @@ export async function runContinuousLoop(context, actions) {
         stateStore?.finish();
         return { mode: 'run', completed: 0 };
       }
+      if (parkedIssueNumbers.size === 0) {
+        stateStore?.recordPhaseProcess?.({ type: 'stage-complete', stage: 'implementation' });
+      }
+      stateStore?.recordPhaseProcess?.({ type: 'stage-start', stage: 'publishing' });
       reportActivity('pull-request', 'Подготовка pull request фазы');
       const pullRequest = await observedRepairStep('pull-request', () => actions.createPullRequest(config, repository));
+      stateStore?.recordPhaseProcess?.({ type: 'stage-complete', stage: 'publishing' });
       // Телеметрия роли `milestone-review` снимается только внутри активной
       // записи, а между задачами её нет: без отдельной записи самая дорогая
       // сессия прогона не попадает в журнал вовсе. Запись без номера issue —
@@ -1365,6 +1390,7 @@ export async function runContinuousLoop(context, actions) {
         }
         reportActivity('milestone-close', 'Закрытие завершённой фазы в GitHub');
         actions.closeMilestone(repository, milestone);
+        stateStore?.recordPhaseProcess?.({ type: 'stage-complete', stage: 'done' });
         return { verdict: 'pass', iterations: iteration, pullRequest };
       }
 
@@ -1605,7 +1631,9 @@ function publishPhaseConfig(config) {
     type: 'phase-config',
     phaseConfig: { maxIterations, maxTestFixAttempts, maxReviewFixAttempts,
       supervisorEnabled: config.supervisor?.enabled ?? false,
-      maxSupervisorCalls: config.supervisor?.maxInterventions },
+      maxSupervisorCalls: config.supervisor?.maxInterventions,
+      reviewEnabled: config.review?.enabled ?? false,
+      milestoneReviewEnabled: config.milestoneReview?.enabled ?? false },
   });
   publishLiveStatus({ type: 'queue-progress', queueProgress: null });
 }
@@ -1647,9 +1675,10 @@ async function main(lifecycle = null) {
       return {
         store: store ? { phaseIndex: store.phaseIndex, phaseCount: store.phaseCount,
           state: state ? { phaseIndex: state.phaseIndex, milestone: state.milestone, iterationsUsed: state.iterationsUsed,
-            supervisorCalls: store.supervisorCalls } : null,
+            supervisorCalls: store.supervisorCalls, phaseProcess: state.phaseProcess } : null,
           issue: issue ? { number: issue.number, title: issue.title, phase: issue.phase,
-            validationFixAttempts: issue.validationFixAttempts, reviewFixAttempts: issue.reviewFixAttempts } : null } : null,
+            validationFixAttempts: issue.validationFixAttempts, reviewFixAttempts: issue.reviewFixAttempts,
+            process: issue.process } : null } : null,
         metrics: metrics ? { issue: metrics.issue, issueTitle: metrics.issueTitle, startedMs: metrics.startedMs } : null,
         startedMs, live: readLiveStatus(),
       };
