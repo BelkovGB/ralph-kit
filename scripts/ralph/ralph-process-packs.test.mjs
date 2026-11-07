@@ -251,7 +251,9 @@ if (scope === 'phase' && !fs.existsSync('docs/ralph-reports/issue-13.md')) proce
       assert.equal(result.status, 0, output.slice(-12_000));
       const browserResults = [...output.matchAll(/Validation: check node browser\.cjs — \d+ ms, (pass|fail)/gu)];
       assert.deepEqual(browserResults.map((match) => match[1]), ['fail', 'pass', 'pass']);
-      const browserScopes = [...output.matchAll(/fixture browser scope=(\w+)/gu)];
+      assert.doesNotMatch(output, /fixture browser scope=/u);
+      const log = readFileSync(path.join(root, '.git/ralph-loop/run.log'), 'utf8');
+      const browserScopes = [...log.matchAll(/fixture browser scope=(\w+)/gu)];
       assert.deepEqual(browserScopes.slice(-2).map((match) => match[1]), ['issue', 'phase']);
       assert.match(output, /research: измените только docs\/ralph-reports\/issue-13\.md/u);
       assert.match(output, /Lisa: восстановлен шаг validation/u);
