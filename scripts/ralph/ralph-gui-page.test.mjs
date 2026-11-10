@@ -100,6 +100,21 @@ test('every command carries a title', { skip: !existsSync(guiPagePath) }, async 
   }
 });
 
+test('chat commands follow a work package from planning to completion', async () => {
+  const { commandGuide } = await import('./ralph-gui-page.mjs');
+  const commands = commandGuide.flatMap((group) => group.items).map((item) => item.command);
+  // Эти примеры копируют в чат: пути должны совпадать с состоянием комплекта
+  // на входе команды, а не со старым размещением одиночных файлов.
+  assert.equal(commands.find((command) => command.startsWith('/plan-phase ')),
+    '/plan-phase docs/work/planned/слаг/prd.md');
+  assert.equal(commands.find((command) => command.startsWith('/issues ')),
+    '/issues docs/work/active/слаг/plan.md');
+  assert.equal(commands.find((command) => command.startsWith('/solution-architect ')),
+    '/solution-architect docs/work/planned/слаг/prd.md');
+  assert.ok(commands.includes('/complete-work docs/work/active/слаг/'));
+  assert.ok(commands.includes('/complete-work cancel docs/work/planned/слаг/'));
+});
+
 test('a command is split into coloured parts', { skip: !existsSync(guiPagePath) }, async () => {
   const { commandTokens } = await import('./ralph-gui-page.mjs');
 

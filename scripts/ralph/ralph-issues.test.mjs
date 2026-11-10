@@ -671,7 +671,9 @@ test(
       .map((file) => path.basename(path.dirname(file)))
       .filter((skill) => !internalSkills.has(skill));
 
-    assert.deepEqual(listed.sort(), bodies.sort());
+    // Несколько режимов одной команды могут ссылаться на один навык.
+    // Все имена всё равно должны существовать, каждый навык — быть доступен.
+    assert.deepEqual([...new Set(listed)].sort(), bodies.sort());
   },
 );
 
