@@ -23,7 +23,8 @@ export function renderProcessLines(process, width, { reviewOffset = 0, reviewLim
   const names = phase ? { ...labels, implementation: 'Задачи', publishing: 'PR фазы' } : labels;
   const current = processCurrentStage(process);
   const auxiliary = processOperationNode(snapshot ?? { process });
-  const stages = phase ? ['implementation', 'publishing', 'review', 'done'] : ['implementation', 'validation', 'review', 'done'];
+  const stages = phase ? ['implementation', 'validation', 'publishing', 'review', 'done']
+    : ['implementation', 'validation', 'review', 'done'];
   const badge = value => Number.isInteger(value) && value > 0 ? ` #${value}` : process.partial ? ' #?' : '';
   const lines = [phase ? 'ПРОЦЕСС ФАЗЫ' : 'ПРОЦЕСС ЗАДАЧИ'];
   let line = '';
@@ -127,7 +128,8 @@ export function renderProcessDashboard(snapshot, events, columns, rows, view) {
   const height = rows - 1;
   const status = `Фаза ${snapshot.phase ?? '—'} · Прогон: ${snapshot.runTime ?? '—'}`;
   const header = fit(`RALPH --run · ${snapshot.status ?? 'Работает'} · ${snapshot.milestone ?? ''}`, Math.max(0, width - status.length - 1)) + ' ' + status;
-  const context = `${snapshot.subject ?? snapshot.issue ?? snapshot.milestone ?? ''}${snapshot.detail ? ` · ${snapshot.detail}` : ''}`;
+  const subject = snapshot.subject ?? snapshot.issue ?? snapshot.headline ?? snapshot.milestone ?? '';
+  const context = [subject, snapshot.detail === subject ? null : snapshot.detail].filter(Boolean).join(' · ');
   const map = processMap(snapshot, width, fit);
   const bottomHeight = height - map.length - 3;
   const left = Math.floor((width - 2) * 0.28);

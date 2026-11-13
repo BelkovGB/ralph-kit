@@ -25,7 +25,7 @@ export function renderRunSummary({ result, error, startedMs, endedMs, phaseCount
     `Длительность: ${duration(endedMs - startedMs)}\nПолный лог: ${logPath}\n`;
 }
 
-export function terminalSnapshot(store, metrics, startedMs, now = Date.now(), live = {}) {
+export function terminalSnapshot(store, metrics, startedMs, now = Date.now(), live = {}, lastOutputMs) {
   const state = store?.state;
   const issue = store?.issue;
   const activity = live.activity;
@@ -46,6 +46,7 @@ export function terminalSnapshot(store, metrics, startedMs, now = Date.now(), li
     'git fetch': 'Обновление веток', 'git push': 'Отправка изменений',
     'git switch': 'Переключение ветки',
   };
+  const operationText = operation && (operation.displayLabel ?? commandPurpose[operation.label] ?? `Выполняется ${operation.label}`);
   let stage = issue ? issueStage : 'Подготовка';
   if (phaseActivity) stage = 'Выполняется';
   const repair = state?.lisaRepair ?? live.lisaRepair;
@@ -55,7 +56,7 @@ export function terminalSnapshot(store, metrics, startedMs, now = Date.now(), li
     : session.turns === 0 && session.toolResults === 0 ? 'Ждём первый рабочий шаг'
       : 'Ждём следующее событие агента' : null;
   if (wait) stage = wait;
-  if (operation) stage = commandPurpose[operation.label] ?? `Выполняется ${operation.label}`;
+  if (operationText) stage = operationText;
   if (supervisor) stage = `Lisa · ${stage}`;
   const issueWait = session?.active && issue && !phaseActivity && !operation ? stage : null;
   if (issueWait) stage = issueStage;
@@ -64,12 +65,12 @@ export function terminalSnapshot(store, metrics, startedMs, now = Date.now(), li
     : supervisor ? 'Lisa: восстановление работы'
       : phaseActivity ? activity.label
         : issue ? `Задача #${issue.number} · ${issueStage}`
-          : operation ? commandPurpose[operation.label] ?? `Выполняется ${operation.label}` : 'Подготовка запуска';
-  const detail = ended ? null : operation ? commandPurpose[operation.label] ?? `Выполняется ${operation.label}` : wait;
-  const screenProcess = ended ? null : phaseActivity && !supervisor
-      ? ['pull-request', 'milestone-review', 'review-results', 'milestone-close'].includes(activity.kind)
-        ? phaseProcessSnapshot(state, { reviewEnabled: config.milestoneReviewEnabled, timing: live.processTiming, now, operation: activity.kind }) : null
-      : supervisor && !issue ? phaseProcessSnapshot(state, { reviewEnabled: config.milestoneReviewEnabled, timing: live.processTiming, now, operation: activity?.kind }) : process;
+          : operationText ?? 'Подготовка запуска';
+  const detail = ended ? null : operationText ?? wait;
+  const screenProcess = ended ? null : !issue || (phaseActivity && !supervisor)
+    ? phaseProcessSnapshot(state ?? {}, { reviewEnabled: config.milestoneReviewEnabled,
+      timing: live.processTiming, now, operation: activity?.kind })
+    : process;
   const pair = (value, limit) => `${value ?? '—'}/${limit ?? '—'}`;
   const runCounters = [];
   const checkCounters = [];
@@ -104,11 +105,17 @@ export function terminalSnapshot(store, metrics, startedMs, now = Date.now(), li
   if (live.review && activityStartedMs != null && live.review.startedMs >= activityStartedMs) {
     checkCounters.push(`Запуск ревью${live.review.active ? '' : ', последний'}: ${pair(live.review.attempt, live.review.attempts)}`);
   }
-  if (operation) sessionCounters.push(`Команда: ${operation.label}`, `Время команды: ${duration(now - operation.startedMs)} / ${duration(operation.timeoutMs)}`);
+  if (operation) {
+    sessionCounters.push(`Команда: ${operation.displayLabel ?? operation.label}`, `Время команды: ${duration(now - operation.startedMs)} / ${duration(operation.timeoutMs)}`);
+    if (operation.progressPath && Number.isFinite(operation.idleTimeoutMs)) {
+      const lastOutput = Math.max(operation.startedMs, lastOutputMs ?? operation.startedMs);
+      sessionCounters.push(`Без вывода: ${duration(Math.max(0, now - lastOutput))} / ${duration(operation.idleTimeoutMs)}`);
+    }
+  }
   return {
     headline,
     detail,
-    subject: issue ? `#${issue.number} ${issue.title ?? ''}` : null,
+    subject: issue && (!phaseActivity || supervisor) ? `#${issue.number} ${issue.title ?? ''}` : null,
     actor: supervisor ? 'Lisa' : null,
     repairStatus: supervisor ? repair?.status ?? null : null,
     issueKey: screenProcess?.scope === 'phase' ? `phase:${state?.phaseIndex ?? store?.phaseIndex ?? 0}`
@@ -200,6 +207,8 @@ export function renderTerminal(snapshot, events, columns, rows, view = {}) {
       `Фаза ${snapshot.phase ?? '—'} · ${snapshot.milestone ?? '—'}`,
       ...(snapshot.subject || snapshot.issue ? [snapshot.subject ?? snapshot.issue] : []), ...processRows,
       `Прогон: ${snapshot.runTime ?? '—'}`,
+      ...(snapshot.detail && snapshot.detail !== snapshot.issue ? [snapshot.detail] : []),
+      ...groups.session.filter(line => line.startsWith('Без вывода:')),
     ];
     const room = Math.max(0, height - top.length - 3);
     return [header, ...top, '── События ──', ...(room ? events.slice(-room) : [])]

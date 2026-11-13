@@ -22,6 +22,30 @@ function fixture() {
     close() { resetLiveStatus(); rmSync(directory, { recursive: true, force: true }); } };
 }
 
+test('phase metrics retain measured issue stages across queue refresh and restart', () => {
+  const f = fixture();
+  try {
+    for (const [stage, start, end] of [
+      ['implementation', 1000, 2000], ['validation', 2000, 4000],
+      ['review', 4000, 7000], ['fixing', 7000, 11000],
+    ]) {
+      f.setNow(start);
+      f.store.recordIssueProcess({ type: 'stage-start', stage });
+      f.setNow(end);
+      f.store.recordIssueProcess({ type: 'stage-complete', stage });
+    }
+    f.store.clearIssue();
+    f.store.clearIssue();
+    const resumed = createStateStore(f.config, '--run', f.statePath, f.options);
+    resumed.recordPhaseProcess({ type: 'stage-start', stage: 'validation' });
+    f.setNow(16000);
+    resumed.recordPhaseProcess({ type: 'stage-complete', stage: 'validation' });
+    resumed.recordPhaseProcess({ type: 'stage-start', stage: 'publishing' });
+    assert.deepEqual(phaseProcessSnapshot(resumed.state, { timing: readLiveStatus().processTiming, now: 17000 }).stageMs,
+      { implementation: 1000, validation: 7000, review: 3000, fixing: 4000, publishing: 1000 });
+  } finally { f.close(); }
+});
+
 test('terminal snapshots advance the live stage while the worker has not sent another event', () => {
   const f = fixture();
   try {

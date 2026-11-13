@@ -1041,12 +1041,11 @@ function verifyReviewedPullRequestHead(config, repository, pullRequest) {
   return refreshed;
 }
 
-function createPullRequest(config, repository) {
+function validatePhaseForPullRequest(config) {
   assertCleanTree('Нельзя создать PR: в рабочем дереве есть незакоммиченные изменения.');
 
   const phaseBase = verifyBaseHistory(config);
-  const checkedHead = config.browserValidationScripts?.length
-    ? run('git', ['rev-parse', 'HEAD']).stdout : undefined;
+  const checkedHead = run('git', ['rev-parse', 'HEAD']).stdout;
   runConfiguredValidation(config, {
     scope: 'phase', baseCommit: phaseBase,
     skipPreflight: Boolean(config.validationProfiles),
@@ -1055,6 +1054,10 @@ function createPullRequest(config, repository) {
     '',
     'Нельзя обновить PR: проектные проверки изменили чистое рабочее дерево.',
   );
+  return checkedHead;
+}
+
+function createPullRequest(config, repository, checkedHead) {
   const commitCount = Number(
     run('git', ['rev-list', '--count', `origin/${config.baseBranch}..HEAD`]).stdout,
   );
@@ -1399,10 +1402,22 @@ export async function runContinuousLoop(context, actions) {
       if (parkedIssueNumbers.size === 0) {
         stateStore?.recordPhaseProcess?.({ type: 'stage-complete', stage: 'implementation' });
       }
-      stateStore?.recordPhaseProcess?.({ type: 'stage-start', stage: 'publishing' });
-      reportActivity('pull-request', 'Подготовка pull request фазы');
-      const pullRequest = await observedRepairStep('pull-request', () => actions.createPullRequest(config, repository));
-      stateStore?.recordPhaseProcess?.({ type: 'stage-complete', stage: 'publishing' });
+      const phaseStep = async (stage, kind, label, work) => {
+        stateStore?.recordPhaseProcess?.({ type: 'stage-start', stage });
+        reportActivity(kind, label);
+        try {
+          const result = await observedRepairStep('pull-request', work);
+          stateStore?.recordPhaseProcess?.({ type: 'stage-complete', stage });
+          return result;
+        } catch (error) {
+          stateStore?.recordPhaseProcess?.({ type: 'stage-error', stage });
+          throw error;
+        }
+      };
+      const checkedHead = await phaseStep('validation', 'phase-validation', 'Проверки фазы перед PR',
+        () => actions.validatePhaseForPullRequest(config));
+      const pullRequest = await phaseStep('publishing', 'pull-request', 'Публикация PR фазы',
+        () => actions.createPullRequest(config, repository, checkedHead));
       // Телеметрия роли `milestone-review` снимается только внутри активной
       // записи, а между задачами её нет: без отдельной записи самая дорогая
       // сессия прогона не попадает в журнал вовсе. Запись без номера issue —
@@ -1677,6 +1692,7 @@ function defaultActions() {
     runPreflight,
     runAgentOnIssue,
     resumeAcceptedIssue,
+    validatePhaseForPullRequest,
     createPullRequest,
     runMilestoneReview,
     createOrReopenReviewIssues,
@@ -1785,8 +1801,10 @@ async function main(lifecycle = null) {
       // Экрану не нужны тела issues, одобрения, prompts и телеметрия сессий.
       return {
         store: store ? { phaseIndex: store.phaseIndex, phaseCount: store.phaseCount,
-          state: state ? { phaseIndex: state.phaseIndex, milestone: state.milestone, iterationsUsed: state.iterationsUsed,
-            supervisorCalls: store.supervisorCalls, phaseProcess: state.phaseProcess } : null,
+          state: state ? { phaseIndex: state.phaseIndex, runId: state.runId, milestone: state.milestone,
+            iterationsUsed: state.iterationsUsed, supervisorCalls: store.supervisorCalls,
+            phaseProcess: state.phaseProcess, phaseTaskStageMs: state.phaseTaskStageMs,
+            phaseTaskTimingPartial: state.phaseTaskTimingPartial } : null,
           issue: issue ? { number: issue.number, title: issue.title, phase: issue.phase,
             validationFixAttempts: issue.validationFixAttempts, reviewFixAttempts: issue.reviewFixAttempts,
             process: issue.process } : null } : null,

@@ -9,7 +9,7 @@ import {
   writeJsonAtomic,
 } from './ralph-runtime.mjs';
 import { fail } from './ralph-scope.mjs';
-import { createIssueProcess, updateIssueProcess } from './ralph-process.mjs';
+import { addStageTimes, createIssueProcess, updateIssueProcess } from './ralph-process.mjs';
 import { publishLiveStatus } from './ralph-live-status.mjs';
 
 /**
@@ -104,6 +104,8 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
       approvedIssueSnapshots: {},
       issue: null,
       phaseProcess: createIssueProcess(),
+      phaseTaskStageMs: addStageTimes(),
+      phaseTaskTimingPartial: false,
       updatedAt: new Date().toISOString(),
     };
     writeJsonAtomic(statePath, state);
@@ -115,6 +117,7 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
 
   let interruptedTiming = false;
   if (selectedMode === '--run') {
+    if (state && !state.phaseTaskStageMs && state.iterationsUsed > 0) state.phaseTaskTimingPartial = true;
     for (const process of [state?.issue?.process, state?.phaseProcess]) {
       if (!process?.activeTiming) continue;
       process.activeTiming = null;
@@ -215,13 +218,16 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
       if (!state) return;
       const identity = { scope: 'phase', runId: state.runId, phaseIndex: state.phaseIndex,
         issueNumber: null, ownerId: timingOwnerId };
-      state.phaseProcess = updateIssueProcess(state.phaseProcess, { ...event, atMs: now(), identity });
+      state.phaseProcess = updateIssueProcess(state.phaseProcess, { ...event, scope: 'phase', atMs: now(), identity });
       persist();
       publishLiveStatus({ type: 'process-change', timing: state.phaseProcess.activeTiming
         ? { ...identity, ...state.phaseProcess.activeTiming } : null });
     },
     clearIssue() {
-      if (!state) return;
+      if (!state?.issue) return;
+      const process = state.issue.process;
+      state.phaseTaskStageMs = addStageTimes(state.phaseTaskStageMs, process?.stageMs);
+      state.phaseTaskTimingPartial ||= !process?.stageMs || Boolean(process.timingPartial || process.activeTiming);
       state.issue = null;
       persist();
     },
@@ -341,6 +347,8 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
       }
       state.phaseIndex = nextConfig.phaseIndex;
       state.phaseProcess = createIssueProcess();
+      state.phaseTaskStageMs = addStageTimes();
+      state.phaseTaskTimingPartial = false;
       state.branch = nextConfig.branch;
       state.baseBranch = nextConfig.baseBranch;
       state.milestone = nextConfig.milestone;

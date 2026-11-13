@@ -15,6 +15,15 @@ export function createIssueProcess({ partial = false } = {}) {
     stageMs: unknownStageMs(), timingPartial: partial, activeTiming: null };
 }
 
+export function addStageTimes(left, right) {
+  return Object.fromEntries(timedStages.map(stage => {
+    const a = left?.[stage];
+    const b = right?.[stage];
+    const times = [a, b].filter(Number.isFinite);
+    return [stage, times.length ? times.reduce((sum, value) => sum + value, 0) : null];
+  }));
+}
+
 export function updateIssueProcess(previous, event) {
   const process = previous?.version === 1 ? structuredClone(previous) : createIssueProcess({ partial: true });
   process.timingPartial ??= !process.stageMs;
@@ -35,6 +44,9 @@ export function updateIssueProcess(previous, event) {
       process.current = event.stage === 'implementation' && process.correctionSource
         ? 'fixing' : event.stage;
       process.completed = process.completed.filter(stage => {
+        if (event.scope === 'phase' && event.stage === 'validation') {
+          return !['validation', 'publishing', 'review', 'done'].includes(stage);
+        }
         if (event.stage === 'implementation') return false;
         if (event.stage === 'validation') return stage === 'implementation' || stage === 'fixing';
         return stage !== event.stage && stage !== 'done';
@@ -134,6 +146,9 @@ export function phaseProcessSnapshot(state, options = {}) {
   if (!state) return null;
   const identity = state.phaseProcess?.timingIdentity;
   const timing = identity?.runId === state.runId && identity?.phaseIndex === state.phaseIndex ? options.timing : null;
-  return { ...issueProcessSnapshot({ process: state.phaseProcess, phase: options.operation ?? null },
-    { ...options, timing, scope: 'phase', identity }), scope: 'phase' };
+  const process = issueProcessSnapshot({ process: state.phaseProcess, phase: options.operation ?? null },
+    { ...options, timing, scope: 'phase', identity });
+  return { ...process, scope: 'phase',
+    stageMs: addStageTimes(state.phaseTaskStageMs, process.stageMs),
+    timingPartial: process.timingPartial || Boolean(state.phaseTaskTimingPartial) };
 }

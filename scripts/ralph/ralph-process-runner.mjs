@@ -342,12 +342,21 @@ const authenticatedGitCommands = new Set(['fetch', 'ls-remote', 'push']);
 
 function runCommand(name, args, options = {}) {
   const timeoutMs = options.timeoutMs ?? settings.commandTimeoutMs;
+  const idleTimeoutMs = options.idleTimeoutMs ?? settings.commandIdleTimeoutMs;
   const startedMs = Date.now();
-  publishLiveStatus({ type: 'operation-start', label: `${name} ${args[0] ?? ''}`.trim(), startedMs, timeoutMs });
+  let progressDirectory;
+  if (options.observeProgress) {
+    try { progressDirectory = mkdtempSync(path.join(tmpdir(), 'ralph-command-progress-')); }
+    catch { /* The command can still run without output timing. */ }
+  }
+  const progressPath = progressDirectory && path.join(progressDirectory, 'output');
+  publishLiveStatus({ type: 'operation-start', label: `${name} ${args[0] ?? ''}`.trim(),
+    displayLabel: options.operationLabel, startedMs, timeoutMs, idleTimeoutMs, progressPath });
   try {
-    return runObservedCommand(name, args, options, timeoutMs, startedMs);
+    return runObservedCommand(name, args, { ...options, progressPath }, timeoutMs, startedMs);
   } finally {
     publishLiveStatus({ type: 'operation-end', endedMs: Date.now() });
+    if (progressDirectory) removeTemporaryDirectory(progressDirectory);
   }
 }
 
@@ -382,6 +391,7 @@ function runObservedCommand(name, args, options, timeoutMs, startedAt) {
           input: options.input,
           timeoutMs,
           idleTimeoutMs: options.idleTimeoutMs ?? settings.commandIdleTimeoutMs,
+          progressPath: options.progressPath,
           env: childEnvironment,
           reportStatus: inheritOutput,
         }),

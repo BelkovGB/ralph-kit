@@ -12,8 +12,13 @@ test('empty queue exposes milestone review and subsequent verification as operat
       assert.equal(readLiveStatus().activity.kind, 'queue');
       return [];
     },
-    createPullRequest: () => {
+    validatePhaseForPullRequest: () => {
+      assert.equal(readLiveStatus().activity.kind, 'phase-validation');
+      return 'checked-head';
+    },
+    createPullRequest: (_config, _repository, checkedHead) => {
       assert.equal(readLiveStatus().activity.kind, 'pull-request');
+      assert.equal(checkedHead, 'checked-head');
       return { number: 227 };
     },
     runMilestoneReview: async () => {
@@ -41,6 +46,22 @@ test('failed milestone review exposes creation of followup tasks', async () => {
       throw stop;
     },
   })), (error) => error === stop);
+});
+
+test('failed phase validation records the checks failure and blocks PR publication', async () => {
+  resetLiveStatus();
+  let phaseProcess = createIssueProcess();
+  const stateStore = {
+    get state() { return { phaseProcess }; },
+    recordPhaseProcess(event) { phaseProcess = updateIssueProcess(phaseProcess, event); },
+  };
+  const failure = new Error('regression failed');
+  await assert.rejects(runContinuousLoop(context({ stateStore }), actions({
+    validatePhaseForPullRequest: () => { throw failure; },
+    createPullRequest: () => assert.fail('must wait for successful checks'),
+  })), (error) => error === failure && error.ralphFailureStep === 'pull-request');
+  assert.equal(phaseProcessSnapshot(stateStore.state).errorStage, 'validation');
+  assert.equal(phaseProcessSnapshot(stateStore.state).completed.includes('publishing'), false);
 });
 
 test('queue progress counts completed work in this run and separates parked issues', async () => {
@@ -100,7 +121,7 @@ test('phase review sees confirmed task completion and published PR before the ph
     },
     closeMilestone: () => {
       assert.deepEqual(phaseProcessSnapshot(stateStore.state).completed,
-        ['implementation', 'publishing', 'review']);
+        ['implementation', 'validation', 'publishing', 'review']);
     },
   }));
   assert.equal(phaseProcessSnapshot(stateStore.state).current, 'done');
