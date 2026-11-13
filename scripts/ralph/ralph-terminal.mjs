@@ -1,5 +1,5 @@
 import { stripVTControlCharacters } from 'node:util';
-import { renderProcessLines, renderProcessDashboard, colorTerminalFrame } from './ralph-terminal-process.mjs';
+import { compactPhaseTiming, renderProcessLines, renderProcessDashboard, colorTerminalFrame } from './ralph-terminal-process.mjs';
 import { issueProcessSnapshot, phaseProcessSnapshot } from './ralph-process.mjs';
 import { processCurrentStage } from './ralph-terminal-map.mjs';
 
@@ -201,14 +201,17 @@ export function renderTerminal(snapshot, events, columns, rows, view = {}) {
   }
   const footer = snapshot.process ? 'PgUp/PgDn круги · End последние · Tab лог · Ctrl+C стоп'
     : 'Tab лог · Ctrl+C остановить · run.log';
+  const commandTiming = groups.session.filter(line => /^(Время команды|Без вывода):/u.test(line));
+  const phaseTiming = snapshot.process ? compactPhaseTiming(snapshot.process) : [];
   if (stacked && snapshot.process) {
     const processRows = renderProcessLines(snapshot.process, width, { ...view, reviewLimit: 1, snapshot });
     const top = [
       `Фаза ${snapshot.phase ?? '—'} · ${snapshot.milestone ?? '—'}`,
       ...(snapshot.subject || snapshot.issue ? [snapshot.subject ?? snapshot.issue] : []), ...processRows,
-      `Прогон: ${snapshot.runTime ?? '—'}`,
       ...(snapshot.detail && snapshot.detail !== snapshot.issue ? [snapshot.detail] : []),
-      ...groups.session.filter(line => line.startsWith('Без вывода:')),
+      ...commandTiming,
+      `Прогон: ${snapshot.runTime ?? '—'}`,
+      ...phaseTiming,
     ];
     const room = Math.max(0, height - top.length - 3);
     return [header, ...top, '── События ──', ...(room ? events.slice(-room) : [])]
@@ -225,8 +228,12 @@ export function renderTerminal(snapshot, events, columns, rows, view = {}) {
   const right = width - left - 3;
   const processRows = snapshot.process ? [
     ...renderProcessLines(snapshot.process, right, { ...view, snapshot }),
+    ...phaseTiming,
     '',
   ] : [];
+  if (commandTiming.length && snapshot.process?.scope === 'phase') {
+    summary = [summary[1], ...commandTiming, ...summary.slice(2).filter(line => !commandTiming.includes(line))];
+  }
   const eventRoom = Math.max(0, height - 3 - processRows.length);
   const eventRows = [...processRows, 'СОБЫТИЯ', ...(eventRoom ? events.slice(-eventRoom) : [])];
   const lines = Array.from({ length: height - 2 }, (_, index) =>

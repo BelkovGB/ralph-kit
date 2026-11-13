@@ -43,6 +43,11 @@ export function updateIssueProcess(previous, event) {
     case 'stage-start':
       process.current = event.stage === 'implementation' && process.correctionSource
         ? 'fixing' : event.stage;
+      if (event.scope === 'phase' && event.stage === 'validation') {
+        process.failed = null;
+        process.errorStage = null;
+        process.correctionSource = null;
+      }
       process.completed = process.completed.filter(stage => {
         if (event.scope === 'phase' && event.stage === 'validation') {
           return !['validation', 'publishing', 'review', 'done'].includes(stage);

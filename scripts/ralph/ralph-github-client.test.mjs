@@ -12,7 +12,7 @@ import {
   verifyMilestones,
   verifyPullRequestTarget,
 } from './ralph-github-client.mjs';
-import { localGitHubRepository, syncPhaseBranchWithBase, verifyBaseHistory } from './ralph-git.mjs';
+import { localGitHubRepository, resetPinnedGitHubOrigin, syncPhaseBranchWithBase, verifyBaseHistory, verifyConfiguredGitHubOrigin } from './ralph-git.mjs';
 import { run } from './ralph-process-runner.mjs';
 import { withFakeGh } from './ralph-test-support.mjs';
 
@@ -59,6 +59,28 @@ test('base history reuses the startup fetch and still refreshes before publicati
   assert.equal(fetches.length, 1);
   assert.equal(verifyBaseHistory(config, dependencies), 'base-sha');
   assert.equal(fetches.length, 2);
+});
+
+test('Lisa parent validates the worker origin before using it for authenticated base fetch', () => {
+  const expectedRemoteUrl = 'https://github.com/owner/repo.git';
+  const config = { githubAccount: 'operator', baseBranch: 'main' };
+  let origin = 'https://github.com/owner/other.git';
+  const fetches = [];
+  const dependencies = {
+    expectedRemoteUrl,
+    run: (_command, args) => ({ status: 0, stdout: args[0] === 'remote' ? origin : 'base-sha' }),
+    runNetwork: (_command, args) => fetches.push(args),
+  };
+  try {
+    assert.throws(() => verifyConfiguredGitHubOrigin(config, dependencies), { code: 'RALPH_RECOVERY_BLOCKED' });
+    assert.equal(config.githubRemoteUrl, undefined);
+    origin = expectedRemoteUrl;
+    verifyConfiguredGitHubOrigin(config, dependencies);
+    assert.equal(verifyBaseHistory(config, dependencies), 'base-sha');
+    assert.equal(fetches[0][1], expectedRemoteUrl);
+  } finally {
+    resetPinnedGitHubOrigin();
+  }
 });
 
 /**

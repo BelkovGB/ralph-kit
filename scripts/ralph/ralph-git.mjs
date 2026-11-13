@@ -78,19 +78,20 @@ export function verifyConfiguredGitHubOrigin(config, dependencies = {}) {
     parsed.hash !== '' ||
     !validPath.test(parsed.pathname)
   ) {
-    fail(
+    throw Object.assign(new Error(
       'При заданном githubAccount origin должен быть HTTPS-адресом GitHub без credentials: ' +
         'https://github.com/owner/repository.git. Текущее значение скрыто, потому что может ' +
         'содержать credentials.',
-    );
+    ), { code: 'RALPH_RECOVERY_BLOCKED' });
   }
   const pinned = `${parsed.origin}${parsed.pathname.replace(/\/$/u, '')}`;
-  if (pinnedGitHubRemoteUrl !== null && pinnedGitHubRemoteUrl !== pinned) {
-    fail(
+  const knownUrls = [dependencies.expectedRemoteUrl, pinnedGitHubRemoteUrl];
+  if (knownUrls.some(url => url != null && url !== pinned)) {
+    throw Object.assign(new Error(
       'Адрес origin изменился во время прогона. Ralph остановлен до сетевой команды: ' +
         'ветку с токеном выбранного аккаунта отправили бы по новому адресу. ' +
         'Проверьте .git/config и запустите прогон заново.',
-    );
+    ), { code: 'RALPH_RECOVERY_BLOCKED' });
   }
   pinnedGitHubRemoteUrl ??= pinned;
   config.githubRemoteUrl = pinnedGitHubRemoteUrl;

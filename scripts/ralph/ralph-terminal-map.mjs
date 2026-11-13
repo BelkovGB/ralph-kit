@@ -43,9 +43,9 @@ export function processOperationNode(snapshot) {
   };
   const process = snapshot.process;
   if (process.scope === 'phase' && process.current === 'publishing' && process.operation === 'pull-request') return null;
-  if (process.current !== 'publishing' && !['pull-request', 'review-results', 'milestone-close'].includes(process.operation)) return null;
+  if (process.current !== 'publishing' && !['pull-request', 'pull-request-verify', 'review-results', 'milestone-close'].includes(process.operation)) return null;
   return { label: ({ staging: 'Подготовка коммита', committing: 'Подготовка коммита', committed: 'Отправка',
-    closing: 'Закрытие задачи', 'pull-request': 'Создание PR', 'review-results': 'Задачи замечаний',
+    closing: 'Закрытие задачи', 'pull-request': 'Создание PR', 'pull-request-verify': 'Проверка PR', 'review-results': 'Задачи замечаний',
     'milestone-close': 'Закрытие фазы' })[process.operation] ?? 'Git / GitHub',
   marker: process.errorStage === 'publishing' ? '!' : '>' };
 }

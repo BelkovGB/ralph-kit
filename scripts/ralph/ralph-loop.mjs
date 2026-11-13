@@ -1406,11 +1406,12 @@ export async function runContinuousLoop(context, actions) {
         stateStore?.recordPhaseProcess?.({ type: 'stage-start', stage });
         reportActivity(kind, label);
         try {
-          const result = await observedRepairStep('pull-request', work);
+          const result = await work();
           stateStore?.recordPhaseProcess?.({ type: 'stage-complete', stage });
           return result;
         } catch (error) {
           stateStore?.recordPhaseProcess?.({ type: 'stage-error', stage });
+          error.ralphFailureStep = 'pull-request';
           throw error;
         }
       };
@@ -1418,6 +1419,7 @@ export async function runContinuousLoop(context, actions) {
         () => actions.validatePhaseForPullRequest(config));
       const pullRequest = await phaseStep('publishing', 'pull-request', 'Публикация PR фазы',
         () => actions.createPullRequest(config, repository, checkedHead));
+      repairStepSucceeded('pull-request', stateStore?.state);
       // Телеметрия роли `milestone-review` снимается только внутри активной
       // записи, а между задачами её нет: без отдельной записи самая дорогая
       // сессия прогона не попадает в журнал вовсе. Запись без номера issue —
@@ -1456,7 +1458,7 @@ export async function runContinuousLoop(context, actions) {
           );
           continue;
         }
-        reportActivity('pull-request', `Проверка PR #${pullRequest.number} после ревью`);
+        reportActivity('pull-request-verify', `Проверка PR #${pullRequest.number} после ревью`);
         actions.verifyReviewedPullRequestHead(config, repository, pullRequest);
         // Отложенная issue открыта и невыполнена: закрывать milestone под неё
         // значило бы объявить фазу законченной, когда работа осталась.

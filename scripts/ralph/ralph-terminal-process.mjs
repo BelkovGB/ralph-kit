@@ -74,6 +74,13 @@ function elapsed(ms) {
   return `${Math.floor(seconds / 3600)}:${String(Math.floor(seconds / 60) % 60).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
 }
 
+export function compactPhaseTiming(process) {
+  const times = process.stageMs ?? {};
+  if (process.scope !== 'phase' || !Object.values(times).some(Number.isFinite)) return [];
+  return Object.keys(labels).filter(stage => stage !== 'done')
+    .map(stage => `${labels[stage]} ${elapsed(times[stage])}`);
+}
+
 function bar(value, limit, width) {
   if (!Number.isFinite(value) || !Number.isFinite(limit) || limit <= 0) return '';
   const filled = Math.min(width, Math.max(0, Math.round(value / limit * width)));

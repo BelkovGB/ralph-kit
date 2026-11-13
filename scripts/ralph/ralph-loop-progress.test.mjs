@@ -29,7 +29,7 @@ test('empty queue exposes milestone review and subsequent verification as operat
       assert.equal(typeof activity.startedMs, 'number');
       return { verdict: 'pass', findings: [] };
     },
-    verifyReviewedPullRequestHead: () => assert.equal(readLiveStatus().activity.kind, 'pull-request'),
+    verifyReviewedPullRequestHead: () => assert.equal(readLiveStatus().activity.kind, 'pull-request-verify'),
     closeMilestone: () => assert.equal(readLiveStatus().activity.kind, 'milestone-close'),
   }));
 });
@@ -62,6 +62,22 @@ test('failed phase validation records the checks failure and blocks PR publicati
   })), (error) => error === failure && error.ralphFailureStep === 'pull-request');
   assert.equal(phaseProcessSnapshot(stateStore.state).errorStage, 'validation');
   assert.equal(phaseProcessSnapshot(stateStore.state).completed.includes('publishing'), false);
+});
+
+test('a successful phase check does not prove that Lisa repaired PR publication', async () => {
+  resetLiveStatus();
+  const stateStore = { state: { runId: 'run', phaseIndex: 0, issue: null } };
+  const failure = new Error('push still fails');
+  await assert.rejects(runContinuousLoop(context({ stateStore }), actions({
+    validatePhaseForPullRequest: () => 'checked-head',
+    createPullRequest: () => {
+      assert.equal(readLiveStatus().lastPassedStep, undefined);
+      throw failure;
+    },
+  })), (error) => error === failure && error.ralphFailureStep === 'pull-request');
+  assert.equal(readLiveStatus().lastPassedStep, undefined);
+  await runContinuousLoop(context({ stateStore }), actions());
+  assert.equal(readLiveStatus().lastPassedStep.step, 'pull-request');
 });
 
 test('queue progress counts completed work in this run and separates parked issues', async () => {

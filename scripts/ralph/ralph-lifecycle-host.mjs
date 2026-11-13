@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { loadConfig, configForPhase, controlPlaneSnapshot } from './ralph-config.mjs';
 import { acquireRunLock, initializePersistentLog, readJsonFile, resolveRalphRuntimeDirectory, writeJsonAtomic } from './ralph-runtime.mjs';
 import { run, useTrustedCommandRunner } from './ralph-process-runner.mjs';
-import { verifyBaseHistory } from './ralph-git.mjs';
+import { verifyBaseHistory, verifyConfiguredGitHubOrigin } from './ralph-git.mjs';
 import { resolveIssueProcess } from './ralph-process-packs.mjs';
 import { createStateStore, setActiveStateStore } from './ralph-state-store.mjs';
 import { runReviewSession } from './ralph-agent-backends.mjs';
@@ -86,6 +86,7 @@ export async function runRalphLifecycleCli() {
       start: async () => {
         snapshot.assertUnchanged();
         if (accepted) {
+          verifyConfiguredGitHubOrigin(config, { expectedRemoteUrl: prepared.githubRemoteUrl });
           assertTrustedControlFilesUnchanged(accepted.controlPlane);
           if (lisaRepairTreeHash({ controlFiles: accepted.controlPlane.trustedControlFileHashes.keys() }) !== accepted.acceptedTreeHash ||
               lisaRepairIndexHash() !== accepted.acceptedIndexHash) {
@@ -189,6 +190,7 @@ export async function runRalphLifecycleCli() {
         let reportRepair;
         try {
           snapshot.assertUnchanged();
+          verifyConfiguredGitHubOrigin(repairConfig, { expectedRemoteUrl: prepared.githubRemoteUrl });
           context = captureLisaRepairContext(repairConfig, store, error, { repairId, statePath, failureStep });
           while (store.supervisorCalls < config.supervisor.maxInterventions && !controller.signal.aborted) {
             let call;
@@ -251,10 +253,13 @@ export async function runRalphLifecycleCli() {
                       priorCommit: issue.commit ?? previous?.priorCommit ?? null,
                     };
                   }
-                  const target = !issue && failureStep === 'pull-request'
-                    ? { scope: 'phase', baseCommit: verifyBaseHistory(candidate), skipPreflight: Boolean(candidate.validationProfiles) }
-                    : { scope: 'issue', baseCommit: issue?.startingCommit, issueNumber: issue?.number };
+                  let target = { scope: 'issue', baseCommit: issue?.startingCommit, issueNumber: issue?.number };
+                  if (!issue && failureStep === 'pull-request') {
+                    verifyConfiguredGitHubOrigin(candidate, { expectedRemoteUrl: prepared.githubRemoteUrl });
+                    target = { scope: 'phase', baseCommit: verifyBaseHistory(candidate), skipPreflight: Boolean(candidate.validationProfiles) };
+                  }
                   runConfiguredValidation(candidate, { ...target, validationPathDirectories: paths });
+                  verifyConfiguredGitHubOrigin(candidate, { expectedRemoteUrl: prepared.githubRemoteUrl });
                 },
               });
               snapshot.assertUnchanged();

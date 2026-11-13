@@ -377,7 +377,7 @@ export function runConfiguredScripts(config, scripts, label, options = {}) {
         env: environment,
         ...(options.scope === 'phase' && {
           observeProgress: true,
-          operationLabel: stage === 'preflight' ? 'Подготовка проверок фазы' : 'Проверки фазы',
+          operationLabel: script,
         }),
       });
       passed = true;

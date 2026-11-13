@@ -194,5 +194,10 @@ test('queue, preparation and validation retain the phase map and accumulated tas
   assert.match(frame, /Команда: Проверки фазы/);
   assert.doesNotMatch(frame, /cmd \/d/);
   assert.doesNotMatch(frame, /\[>\] PR фазы/);
-  assert.match(renderTerminal(checking, [], 60, 16), /Без вывода: 0:00:02 \/ 0:00:20/);
+  for (const [columns, rows] of [[60, 16], [100, 20]]) {
+    const compact = renderTerminal(checking, [], columns, rows);
+    assert.match(compact, /Без вывода: 0:00:02 \/ 0:00:20/);
+    assert.match(compact, /Время команды:/);
+    assert.match(compact, /Исправления 0:00:01/);
+  }
 });
