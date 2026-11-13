@@ -1065,7 +1065,7 @@ function createPullRequest(config, repository, checkedHead) {
     fail(`В ветке ${config.branch} нет коммитов поверх origin/${config.baseBranch}.`);
   }
 
-  pushBranchAndVerify(config, { expectedHead: checkedHead });
+  pushBranchAndVerify(config, { expectedHead: checkedHead, trackBranch: true });
 
   const pullRequest = ensurePullRequestForBranch(config, repository);
   if (checkedHead && pullRequest.headRefOid !== checkedHead) {
@@ -1403,7 +1403,7 @@ export async function runContinuousLoop(context, actions) {
         stateStore?.recordPhaseProcess?.({ type: 'stage-complete', stage: 'implementation' });
       }
       const phaseStep = async (stage, kind, label, work, measured = true) => {
-        if (measured) stateStore?.recordPhaseProcess?.({ type: 'stage-start', stage });
+        stateStore?.recordPhaseProcess?.({ type: 'stage-start', stage, skipped: !measured });
         reportActivity(kind, label);
         try {
           const result = await work();

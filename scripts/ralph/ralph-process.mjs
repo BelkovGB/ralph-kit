@@ -44,6 +44,7 @@ export function updateIssueProcess(previous, event) {
       process.current = event.stage === 'implementation' && process.correctionSource
         ? 'fixing' : event.stage;
       if (event.scope === 'phase' && event.stage === 'validation') {
+        if (event.skipped) process.current = null;
         process.failed = null;
         process.errorStage = null;
         process.correctionSource = null;
@@ -112,7 +113,7 @@ export function updateIssueProcess(previous, event) {
       throw new Error(`Unknown process event: ${event.type}`);
   }
   const startedStage = event.type === 'review-start' ? 'review'
-    : event.type === 'stage-start' ? process.current : null;
+    : event.type === 'stage-start' && !event.skipped ? process.current : null;
   if (timedStages.includes(startedStage) && Number.isFinite(event.atMs)) {
     process.activeTiming = { stage: startedStage, startedMs: event.atMs };
   }

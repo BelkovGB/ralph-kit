@@ -81,15 +81,20 @@ test('a successful phase check does not prove that Lisa repaired PR publication'
 });
 
 test('a phase without configured checks does not record a validation pass', async () => {
-  let phaseProcess = createIssueProcess();
+  let phaseProcess = { ...createIssueProcess(), completed: ['implementation', 'validation', 'publishing', 'review'] };
   const stateStore = {
-    recordPhaseProcess(event) { phaseProcess = updateIssueProcess(phaseProcess, event); },
+    recordPhaseProcess(event) { phaseProcess = updateIssueProcess(phaseProcess, { ...event, scope: 'phase', atMs: 1000 }); },
   };
   await runContinuousLoop(context({ stateStore }), actions({
     hasPhaseValidation: () => false,
     validatePhaseForPullRequest: () => {
       assert.match(readLiveStatus().activity.label, /проверки не заданы/u);
+      assert.equal(phaseProcess.activeTiming, null);
       return 'checked-head';
+    },
+    runMilestoneReview: async () => {
+      assert.deepEqual(phaseProcess.completed, ['implementation', 'publishing']);
+      return { verdict: 'pass', findings: [] };
     },
   }));
   assert.equal(phaseProcess.completed.includes('validation'), false);

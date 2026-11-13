@@ -690,5 +690,10 @@ export function pushBranchAndVerify(config, dependencies = {}) {
       throw pushError;
     }
   }
-  return verify(config, localHead);
+  const verifiedHead = verify(config, localHead);
+  if (dependencies.trackBranch && config.githubAccount == null && expectedHead) {
+    // Git does not set upstream when the source refspec is a bare SHA.
+    execute('git', ['branch', '--set-upstream-to', `origin/${config.branch}`, config.branch], { allowFailure: true });
+  }
+  return verifiedHead;
 }
