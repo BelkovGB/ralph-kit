@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -43,6 +43,21 @@ test('phase metrics retain measured issue stages across queue refresh and restar
     resumed.recordPhaseProcess({ type: 'stage-start', stage: 'publishing' });
     assert.deepEqual(phaseProcessSnapshot(resumed.state, { timing: readLiveStatus().processTiming, now: 17000 }).stageMs,
       { implementation: 1000, validation: 7000, review: 3000, fixing: 4000, publishing: 1000 });
+  } finally { f.close(); }
+});
+
+test('legacy combined phase checks and publication are marked incomplete on restart', () => {
+  const f = fixture();
+  try {
+    const oldState = structuredClone(f.store.state);
+    delete oldState.phaseTaskStageMs;
+    delete oldState.phaseTaskTimingPartial;
+    oldState.phaseProcess.stageMs.publishing = 32_000;
+    writeFileSync(f.statePath, JSON.stringify(oldState));
+    const resumed = createStateStore(f.config, '--run', f.statePath, f.options);
+    const phase = phaseProcessSnapshot(resumed.state);
+    assert.equal(phase.stageMs.publishing, null);
+    assert.equal(phase.timingPartial, true);
   } finally { f.close(); }
 });
 

@@ -124,7 +124,7 @@ import {
 } from './ralph-issue-contract.mjs';
 
 import { buildIndependentReviewPrompt, renderPrompt } from './ralph-prompts.mjs';
-import { assertProcessReport, resolveIssueProcess } from './ralph-process-packs.mjs';
+import { assertProcessReport, resolveIssueProcess, validationScriptsFor } from './ralph-process-packs.mjs';
 
 import {
   analyzeRecovery, applyRecoveryPlan, committedRecoveryPhases, committedValidationFailurePatch,
@@ -1402,12 +1402,12 @@ export async function runContinuousLoop(context, actions) {
       if (parkedIssueNumbers.size === 0) {
         stateStore?.recordPhaseProcess?.({ type: 'stage-complete', stage: 'implementation' });
       }
-      const phaseStep = async (stage, kind, label, work) => {
-        stateStore?.recordPhaseProcess?.({ type: 'stage-start', stage });
+      const phaseStep = async (stage, kind, label, work, measured = true) => {
+        if (measured) stateStore?.recordPhaseProcess?.({ type: 'stage-start', stage });
         reportActivity(kind, label);
         try {
           const result = await work();
-          stateStore?.recordPhaseProcess?.({ type: 'stage-complete', stage });
+          if (measured) stateStore?.recordPhaseProcess?.({ type: 'stage-complete', stage });
           return result;
         } catch (error) {
           stateStore?.recordPhaseProcess?.({ type: 'stage-error', stage });
@@ -1415,8 +1415,10 @@ export async function runContinuousLoop(context, actions) {
           throw error;
         }
       };
-      const checkedHead = await phaseStep('validation', 'phase-validation', 'Проверки фазы перед PR',
-        () => actions.validatePhaseForPullRequest(config));
+      const phaseChecks = actions.hasPhaseValidation?.(config) ?? true;
+      const checkedHead = await phaseStep('validation', 'phase-validation',
+        phaseChecks ? 'Проверки фазы перед PR' : 'Подготовка PR фазы · проверки не заданы',
+        () => actions.validatePhaseForPullRequest(config), phaseChecks);
       const pullRequest = await phaseStep('publishing', 'pull-request', 'Публикация PR фазы',
         () => actions.createPullRequest(config, repository, checkedHead));
       repairStepSucceeded('pull-request', stateStore?.state);
@@ -1694,6 +1696,7 @@ function defaultActions() {
     runPreflight,
     runAgentOnIssue,
     resumeAcceptedIssue,
+    hasPhaseValidation: config => validationScriptsFor(config, 'phase').length > 0,
     validatePhaseForPullRequest,
     createPullRequest,
     runMilestoneReview,

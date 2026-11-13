@@ -202,7 +202,6 @@ export function renderTerminal(snapshot, events, columns, rows, view = {}) {
   const footer = snapshot.process ? 'PgUp/PgDn круги · End последние · Tab лог · Ctrl+C стоп'
     : 'Tab лог · Ctrl+C остановить · run.log';
   const commandTiming = groups.session.filter(line => /^(Время команды|Без вывода):/u.test(line));
-  const phaseTiming = snapshot.process ? compactPhaseTiming(snapshot.process) : [];
   if (stacked && snapshot.process) {
     const processRows = renderProcessLines(snapshot.process, width, { ...view, reviewLimit: 1, snapshot });
     const top = [
@@ -211,7 +210,7 @@ export function renderTerminal(snapshot, events, columns, rows, view = {}) {
       ...(snapshot.detail && snapshot.detail !== snapshot.issue ? [snapshot.detail] : []),
       ...commandTiming,
       `Прогон: ${snapshot.runTime ?? '—'}`,
-      ...phaseTiming,
+      ...compactPhaseTiming(snapshot.process, width),
     ];
     const room = Math.max(0, height - top.length - 3);
     return [header, ...top, '── События ──', ...(room ? events.slice(-room) : [])]
@@ -228,7 +227,7 @@ export function renderTerminal(snapshot, events, columns, rows, view = {}) {
   const right = width - left - 3;
   const processRows = snapshot.process ? [
     ...renderProcessLines(snapshot.process, right, { ...view, snapshot }),
-    ...phaseTiming,
+    ...compactPhaseTiming(snapshot.process, right),
     '',
   ] : [];
   if (commandTiming.length && snapshot.process?.scope === 'phase') {

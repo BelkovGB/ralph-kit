@@ -80,6 +80,21 @@ test('a successful phase check does not prove that Lisa repaired PR publication'
   assert.equal(readLiveStatus().lastPassedStep.step, 'pull-request');
 });
 
+test('a phase without configured checks does not record a validation pass', async () => {
+  let phaseProcess = createIssueProcess();
+  const stateStore = {
+    recordPhaseProcess(event) { phaseProcess = updateIssueProcess(phaseProcess, event); },
+  };
+  await runContinuousLoop(context({ stateStore }), actions({
+    hasPhaseValidation: () => false,
+    validatePhaseForPullRequest: () => {
+      assert.match(readLiveStatus().activity.label, /проверки не заданы/u);
+      return 'checked-head';
+    },
+  }));
+  assert.equal(phaseProcess.completed.includes('validation'), false);
+});
+
 test('queue progress counts completed work in this run and separates parked issues', async () => {
   resetLiveStatus();
   const observed = [];

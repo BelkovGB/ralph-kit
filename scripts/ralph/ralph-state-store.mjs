@@ -117,7 +117,16 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
 
   let interruptedTiming = false;
   if (selectedMode === '--run') {
-    if (state && !state.phaseTaskStageMs && state.iterationsUsed > 0) state.phaseTaskTimingPartial = true;
+    if (state && !state.phaseTaskStageMs) {
+      state.phaseTaskStageMs = addStageTimes();
+      const previousPhaseTime = state.phaseProcess?.stageMs;
+      if (Number.isFinite(previousPhaseTime?.publishing)) {
+        // Старый интервал включал и проверки, и публикацию.
+        previousPhaseTime.publishing = null;
+        interruptedTiming = true;
+      }
+      state.phaseTaskTimingPartial = interruptedTiming || state.iterationsUsed > 0;
+    }
     for (const process of [state?.issue?.process, state?.phaseProcess]) {
       if (!process?.activeTiming) continue;
       process.activeTiming = null;

@@ -74,11 +74,23 @@ function elapsed(ms) {
   return `${Math.floor(seconds / 3600)}:${String(Math.floor(seconds / 60) % 60).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
 }
 
-export function compactPhaseTiming(process) {
+export function compactPhaseTiming(process, width) {
   const times = process.stageMs ?? {};
   if (process.scope !== 'phase' || !Object.values(times).some(Number.isFinite)) return [];
-  return Object.keys(labels).filter(stage => stage !== 'done')
-    .map(stage => `${labels[stage]} ${elapsed(times[stage])}`);
+  const lines = [];
+  let line = '';
+  for (const [stage, label] of Object.entries(labels)) {
+    if (stage === 'done') continue;
+    const value = `${label} ${elapsed(times[stage])}`;
+    if (line && line.length + value.length + 3 > width) {
+      lines.push(line);
+      line = '';
+    }
+    line += line ? ` · ${value}` : value;
+  }
+  if (line) lines.push(line);
+  if (process.timingPartial) lines.push('Время измерено частично');
+  return lines;
 }
 
 function bar(value, limit, width) {
