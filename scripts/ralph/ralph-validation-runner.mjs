@@ -375,6 +375,10 @@ export function runConfiguredScripts(config, scripts, label, options = {}) {
         echoOutput: true,
         timeoutMs: remainingMs,
         env: environment,
+        ...(options.scope === 'phase' && {
+          observeProgress: true,
+          operationLabel: script,
+        }),
       });
       passed = true;
     } finally {

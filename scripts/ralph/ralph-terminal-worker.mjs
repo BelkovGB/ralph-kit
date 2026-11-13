@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { createTerminal, terminalSnapshot } from './ralph-terminal.mjs';
 
 let raw;
@@ -7,7 +7,14 @@ let snapshotPath;
 const readSnapshot = () => {
   // При одновременной записи оставляем последний целый снимок до следующего кадра.
   try { raw = JSON.parse(readFileSync(snapshotPath, 'utf8')); } catch { /* Повтор на следующем кадре. */ }
-  return terminalSnapshot(raw?.store, raw?.metrics, raw?.startedMs ?? Date.now(), Date.now(), raw?.live);
+  const live = raw?.live;
+  const operation = live?.operation;
+  let lastOutputMs;
+  if (operation?.active && operation.progressPath) {
+    try { lastOutputMs = statSync(operation.progressPath).mtimeMs; } catch { /* No output yet. */ }
+  }
+  return terminalSnapshot(raw?.store, raw?.metrics, raw?.startedMs ?? Date.now(), Date.now(),
+    live, lastOutputMs);
 };
 let terminal;
 let stopping = false;

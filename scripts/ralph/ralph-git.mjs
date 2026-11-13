@@ -78,19 +78,20 @@ export function verifyConfiguredGitHubOrigin(config, dependencies = {}) {
     parsed.hash !== '' ||
     !validPath.test(parsed.pathname)
   ) {
-    fail(
+    throw Object.assign(new Error(
       'При заданном githubAccount origin должен быть HTTPS-адресом GitHub без credentials: ' +
         'https://github.com/owner/repository.git. Текущее значение скрыто, потому что может ' +
         'содержать credentials.',
-    );
+    ), { code: 'RALPH_RECOVERY_BLOCKED' });
   }
   const pinned = `${parsed.origin}${parsed.pathname.replace(/\/$/u, '')}`;
-  if (pinnedGitHubRemoteUrl !== null && pinnedGitHubRemoteUrl !== pinned) {
-    fail(
+  const knownUrls = [dependencies.expectedRemoteUrl, pinnedGitHubRemoteUrl];
+  if (knownUrls.some(url => url != null && url !== pinned)) {
+    throw Object.assign(new Error(
       'Адрес origin изменился во время прогона. Ralph остановлен до сетевой команды: ' +
         'ветку с токеном выбранного аккаунта отправили бы по новому адресу. ' +
         'Проверьте .git/config и запустите прогон заново.',
-    );
+    ), { code: 'RALPH_RECOVERY_BLOCKED' });
   }
   pinnedGitHubRemoteUrl ??= pinned;
   config.githubRemoteUrl = pinnedGitHubRemoteUrl;
@@ -689,5 +690,10 @@ export function pushBranchAndVerify(config, dependencies = {}) {
       throw pushError;
     }
   }
-  return verify(config, localHead);
+  const verifiedHead = verify(config, localHead);
+  if (dependencies.trackBranch && config.githubAccount == null && expectedHead) {
+    // Git does not set upstream when the source refspec is a bare SHA.
+    execute('git', ['branch', '--set-upstream-to', `origin/${config.branch}`, config.branch], { allowFailure: true });
+  }
+  return verifiedHead;
 }

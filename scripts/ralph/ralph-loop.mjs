@@ -124,7 +124,7 @@ import {
 } from './ralph-issue-contract.mjs';
 
 import { buildIndependentReviewPrompt, renderPrompt } from './ralph-prompts.mjs';
-import { assertProcessReport, resolveIssueProcess } from './ralph-process-packs.mjs';
+import { assertProcessReport, resolveIssueProcess, validationScriptsFor } from './ralph-process-packs.mjs';
 
 import {
   analyzeRecovery, applyRecoveryPlan, committedRecoveryPhases, committedValidationFailurePatch,
@@ -1041,12 +1041,11 @@ function verifyReviewedPullRequestHead(config, repository, pullRequest) {
   return refreshed;
 }
 
-function createPullRequest(config, repository) {
+function validatePhaseForPullRequest(config) {
   assertCleanTree('Нельзя создать PR: в рабочем дереве есть незакоммиченные изменения.');
 
   const phaseBase = verifyBaseHistory(config);
-  const checkedHead = config.browserValidationScripts?.length
-    ? run('git', ['rev-parse', 'HEAD']).stdout : undefined;
+  const checkedHead = run('git', ['rev-parse', 'HEAD']).stdout;
   runConfiguredValidation(config, {
     scope: 'phase', baseCommit: phaseBase,
     skipPreflight: Boolean(config.validationProfiles),
@@ -1055,6 +1054,10 @@ function createPullRequest(config, repository) {
     '',
     'Нельзя обновить PR: проектные проверки изменили чистое рабочее дерево.',
   );
+  return checkedHead;
+}
+
+function createPullRequest(config, repository, checkedHead) {
   const commitCount = Number(
     run('git', ['rev-list', '--count', `origin/${config.baseBranch}..HEAD`]).stdout,
   );
@@ -1062,7 +1065,7 @@ function createPullRequest(config, repository) {
     fail(`В ветке ${config.branch} нет коммитов поверх origin/${config.baseBranch}.`);
   }
 
-  pushBranchAndVerify(config, { expectedHead: checkedHead });
+  pushBranchAndVerify(config, { expectedHead: checkedHead, trackBranch: true });
 
   const pullRequest = ensurePullRequestForBranch(config, repository);
   if (checkedHead && pullRequest.headRefOid !== checkedHead) {
@@ -1399,10 +1402,26 @@ export async function runContinuousLoop(context, actions) {
       if (parkedIssueNumbers.size === 0) {
         stateStore?.recordPhaseProcess?.({ type: 'stage-complete', stage: 'implementation' });
       }
-      stateStore?.recordPhaseProcess?.({ type: 'stage-start', stage: 'publishing' });
-      reportActivity('pull-request', 'Подготовка pull request фазы');
-      const pullRequest = await observedRepairStep('pull-request', () => actions.createPullRequest(config, repository));
-      stateStore?.recordPhaseProcess?.({ type: 'stage-complete', stage: 'publishing' });
+      const phaseStep = async (stage, kind, label, work, measured = true) => {
+        stateStore?.recordPhaseProcess?.({ type: 'stage-start', stage, skipped: !measured });
+        reportActivity(kind, label);
+        try {
+          const result = await work();
+          if (measured) stateStore?.recordPhaseProcess?.({ type: 'stage-complete', stage });
+          return result;
+        } catch (error) {
+          stateStore?.recordPhaseProcess?.({ type: 'stage-error', stage });
+          error.ralphFailureStep = 'pull-request';
+          throw error;
+        }
+      };
+      const phaseChecks = actions.hasPhaseValidation?.(config) ?? true;
+      const checkedHead = await phaseStep('validation', 'phase-validation',
+        phaseChecks ? 'Проверки фазы перед PR' : 'Подготовка PR фазы · проверки не заданы',
+        () => actions.validatePhaseForPullRequest(config), phaseChecks);
+      const pullRequest = await phaseStep('publishing', 'pull-request', 'Публикация PR фазы',
+        () => actions.createPullRequest(config, repository, checkedHead));
+      repairStepSucceeded('pull-request', stateStore?.state);
       // Телеметрия роли `milestone-review` снимается только внутри активной
       // записи, а между задачами её нет: без отдельной записи самая дорогая
       // сессия прогона не попадает в журнал вовсе. Запись без номера issue —
@@ -1441,7 +1460,7 @@ export async function runContinuousLoop(context, actions) {
           );
           continue;
         }
-        reportActivity('pull-request', `Проверка PR #${pullRequest.number} после ревью`);
+        reportActivity('pull-request-verify', `Проверка PR #${pullRequest.number} после ревью`);
         actions.verifyReviewedPullRequestHead(config, repository, pullRequest);
         // Отложенная issue открыта и невыполнена: закрывать milestone под неё
         // значило бы объявить фазу законченной, когда работа осталась.
@@ -1677,6 +1696,8 @@ function defaultActions() {
     runPreflight,
     runAgentOnIssue,
     resumeAcceptedIssue,
+    hasPhaseValidation: config => validationScriptsFor(config, 'phase').length > 0,
+    validatePhaseForPullRequest,
     createPullRequest,
     runMilestoneReview,
     createOrReopenReviewIssues,
@@ -1785,8 +1806,10 @@ async function main(lifecycle = null) {
       // Экрану не нужны тела issues, одобрения, prompts и телеметрия сессий.
       return {
         store: store ? { phaseIndex: store.phaseIndex, phaseCount: store.phaseCount,
-          state: state ? { phaseIndex: state.phaseIndex, milestone: state.milestone, iterationsUsed: state.iterationsUsed,
-            supervisorCalls: store.supervisorCalls, phaseProcess: state.phaseProcess } : null,
+          state: state ? { phaseIndex: state.phaseIndex, runId: state.runId, milestone: state.milestone,
+            iterationsUsed: state.iterationsUsed, supervisorCalls: store.supervisorCalls,
+            phaseProcess: state.phaseProcess, phaseTaskStageMs: state.phaseTaskStageMs,
+            phaseTaskTimingPartial: state.phaseTaskTimingPartial } : null,
           issue: issue ? { number: issue.number, title: issue.title, phase: issue.phase,
             validationFixAttempts: issue.validationFixAttempts, reviewFixAttempts: issue.reviewFixAttempts,
             process: issue.process } : null } : null,

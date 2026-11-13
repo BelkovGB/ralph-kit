@@ -221,6 +221,7 @@ export async function runMilestoneReview(config, repository, milestone, pullRequ
   }
 
   if (milestonePassWasPublished(config, repository, milestone, pullRequest)) {
+    activeStateStore()?.recordPhaseProcess?.({ type: 'stage-complete', stage: 'review' });
     console.log(
       `Milestone уже проверен моделью ${config.milestoneReview.model} для commit ${pullRequest.headRefOid}.`,
     );

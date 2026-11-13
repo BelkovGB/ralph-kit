@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { mkdtempSync, rmSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import { run } from './ralph-process-runner.mjs';
 
@@ -29,6 +32,19 @@ test('stdout and stderr progress reset the idle deadline', async () => {
   assert.equal(result.code, 0);
   assert.match(result.stdout, /progress/);
   assert.match(result.stderr, /progress/);
+});
+
+test('the command helper publishes output timing while the caller is blocked', async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), 'ralph-output-clock-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const progressPath = join(directory, 'activity');
+  const started = Date.now();
+  const result = await command("console.log('first'); setTimeout(() => console.error('last'), 1250)", {
+    progressPath, idleTimeoutMs: 4000,
+  });
+  assert.equal(result.code, 0, result.stderr);
+  assert.ok(statSync(progressPath).mtimeMs >= started + 1250);
+  assert.equal(statSync(progressPath).size, 0);
 });
 
 test('progress cannot evade the total deadline', async () => {

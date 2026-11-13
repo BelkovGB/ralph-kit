@@ -12,8 +12,13 @@ test('empty queue exposes milestone review and subsequent verification as operat
       assert.equal(readLiveStatus().activity.kind, 'queue');
       return [];
     },
-    createPullRequest: () => {
+    validatePhaseForPullRequest: () => {
+      assert.equal(readLiveStatus().activity.kind, 'phase-validation');
+      return 'checked-head';
+    },
+    createPullRequest: (_config, _repository, checkedHead) => {
       assert.equal(readLiveStatus().activity.kind, 'pull-request');
+      assert.equal(checkedHead, 'checked-head');
       return { number: 227 };
     },
     runMilestoneReview: async () => {
@@ -24,7 +29,7 @@ test('empty queue exposes milestone review and subsequent verification as operat
       assert.equal(typeof activity.startedMs, 'number');
       return { verdict: 'pass', findings: [] };
     },
-    verifyReviewedPullRequestHead: () => assert.equal(readLiveStatus().activity.kind, 'pull-request'),
+    verifyReviewedPullRequestHead: () => assert.equal(readLiveStatus().activity.kind, 'pull-request-verify'),
     closeMilestone: () => assert.equal(readLiveStatus().activity.kind, 'milestone-close'),
   }));
 });
@@ -41,6 +46,58 @@ test('failed milestone review exposes creation of followup tasks', async () => {
       throw stop;
     },
   })), (error) => error === stop);
+});
+
+test('failed phase validation records the checks failure and blocks PR publication', async () => {
+  resetLiveStatus();
+  let phaseProcess = createIssueProcess();
+  const stateStore = {
+    get state() { return { phaseProcess }; },
+    recordPhaseProcess(event) { phaseProcess = updateIssueProcess(phaseProcess, event); },
+  };
+  const failure = new Error('regression failed');
+  await assert.rejects(runContinuousLoop(context({ stateStore }), actions({
+    validatePhaseForPullRequest: () => { throw failure; },
+    createPullRequest: () => assert.fail('must wait for successful checks'),
+  })), (error) => error === failure && error.ralphFailureStep === 'pull-request');
+  assert.equal(phaseProcessSnapshot(stateStore.state).errorStage, 'validation');
+  assert.equal(phaseProcessSnapshot(stateStore.state).completed.includes('publishing'), false);
+});
+
+test('a successful phase check does not prove that Lisa repaired PR publication', async () => {
+  resetLiveStatus();
+  const stateStore = { state: { runId: 'run', phaseIndex: 0, issue: null } };
+  const failure = new Error('push still fails');
+  await assert.rejects(runContinuousLoop(context({ stateStore }), actions({
+    validatePhaseForPullRequest: () => 'checked-head',
+    createPullRequest: () => {
+      assert.equal(readLiveStatus().lastPassedStep, undefined);
+      throw failure;
+    },
+  })), (error) => error === failure && error.ralphFailureStep === 'pull-request');
+  assert.equal(readLiveStatus().lastPassedStep, undefined);
+  await runContinuousLoop(context({ stateStore }), actions());
+  assert.equal(readLiveStatus().lastPassedStep.step, 'pull-request');
+});
+
+test('a phase without configured checks does not record a validation pass', async () => {
+  let phaseProcess = { ...createIssueProcess(), completed: ['implementation', 'validation', 'publishing', 'review'] };
+  const stateStore = {
+    recordPhaseProcess(event) { phaseProcess = updateIssueProcess(phaseProcess, { ...event, scope: 'phase', atMs: 1000 }); },
+  };
+  await runContinuousLoop(context({ stateStore }), actions({
+    hasPhaseValidation: () => false,
+    validatePhaseForPullRequest: () => {
+      assert.match(readLiveStatus().activity.label, /проверки не заданы/u);
+      assert.equal(phaseProcess.activeTiming, null);
+      return 'checked-head';
+    },
+    runMilestoneReview: async () => {
+      assert.deepEqual(phaseProcess.completed, ['implementation', 'publishing']);
+      return { verdict: 'pass', findings: [] };
+    },
+  }));
+  assert.equal(phaseProcess.completed.includes('validation'), false);
 });
 
 test('queue progress counts completed work in this run and separates parked issues', async () => {
@@ -100,7 +157,7 @@ test('phase review sees confirmed task completion and published PR before the ph
     },
     closeMilestone: () => {
       assert.deepEqual(phaseProcessSnapshot(stateStore.state).completed,
-        ['implementation', 'publishing', 'review']);
+        ['implementation', 'validation', 'publishing', 'review']);
     },
   }));
   assert.equal(phaseProcessSnapshot(stateStore.state).current, 'done');
