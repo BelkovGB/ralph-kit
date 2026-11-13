@@ -288,7 +288,7 @@ function changedTreePaths(before, after) {
 
 const namedMutatedPathLimit = 10;
 
-function hostShellCommand(script, platform = process.platform) {
+export function hostShellCommand(script, platform = process.platform) {
   if (platform === 'win32') {
     return {
       command: 'cmd',

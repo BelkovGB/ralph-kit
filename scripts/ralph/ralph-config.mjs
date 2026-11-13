@@ -663,6 +663,15 @@ function validateApprovedIssueSnapshots(config) {
 const maxValidationCommandLength = 500;
 const commandControlOperators = /[;&|`]/u;
 
+export function hasValidationCommandShape(command) {
+  return typeof command === 'string' && command.trim() !== ''
+    && command.length <= maxValidationCommandLength && !/[\r\n\0]/u.test(command);
+}
+
+export function usesValidationControlOperator(command) {
+  return commandControlOperators.test(command);
+}
+
 export function isGitWorktreeMarkerPath(relativePath) {
   const marker = path.posix.normalize(relativePath.replaceAll('\\', '/')).split('/')[0];
   return process.platform === 'win32'
@@ -695,24 +704,12 @@ function validateValidationCommands(config) {
   //
   // Перевод строки запрещён по тому же доводу: оболочка выполнила бы такую
   // строку как несколько команд, и отчёт назвал бы не тот шаг.
-  if (
-    allCommands.some(
-      (command) =>
-        typeof command !== 'string' ||
-        command.trim() === '' ||
-        command.length > maxValidationCommandLength ||
-        /[\r\n]/.test(command),
-    )
-  ) {
+  if (!allCommands.every(hasValidationCommandShape)) {
     fail(
       `Каждая команда проверки или подготовки должна занимать одну строку длиной от 1 до ${maxValidationCommandLength} символов.`,
     );
   }
-  if (
-    allCommands.some((command) =>
-      commandControlOperators.test(command),
-    )
-  ) {
+  if (allCommands.some(usesValidationControlOperator)) {
     fail(
       'Проверка принимает одну команду на элемент и не допускает управляющие ' +
         'операторы ; & | `. Разнесите цепочку по отдельным строкам.',
@@ -1054,6 +1051,7 @@ function collectTrustedControlFileHashes(config) {
     path.join(scriptDirectory, 'ralph-live-status.mjs'),
     path.join(scriptDirectory, 'ralph-process.mjs'),
     path.join(scriptDirectory, 'ralph-scope.mjs'),
+    path.join(scriptDirectory, 'ralph-scoped-validation.mjs'),
     path.join(scriptDirectory, 'ralph-state-store.mjs'),
     path.join(scriptDirectory, 'ralph-supervisor.mjs'),
     path.join(scriptDirectory, 'ralph-lifecycle.mjs'),
