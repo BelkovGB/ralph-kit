@@ -10,7 +10,7 @@ import { verifyBaseHistory } from './ralph-git.mjs';
 import { resolveIssueProcess } from './ralph-process-packs.mjs';
 import { createStateStore, setActiveStateStore } from './ralph-state-store.mjs';
 import { runReviewSession } from './ralph-agent-backends.mjs';
-import { requestLisa, supervisorAgentConfig, supervisorPhaseConfig, prepareLisaResume, lisaValidationPathDirectories } from './ralph-supervisor.mjs';
+import { proposalRetry, requestLisa, supervisorAgentConfig, supervisorPhaseConfig, prepareLisaResume, lisaValidationPathDirectories } from './ralph-supervisor.mjs';
 import { validatedLisaPathDirectories, runConfiguredValidation, assertTrustedControlFilesUnchanged } from './ralph-validation-runner.mjs';
 import { captureLisaRepairContext, assessLisaRepair, acceptLisaRepair,
   createTrustedRepairRuntime, updateLisaRepairContextState, lisaFailureFingerprint, lisaRepairTreeHash, lisaRepairIndexHash } from './ralph-lisa-repair.mjs';
@@ -187,6 +187,7 @@ export async function runRalphLifecycleCli() {
           accepted: false, restarted: false, proved: false, feedback: repairFeedback };
         let context;
         let reportRepair;
+        let proposalRetryUsed = false;
         try {
           snapshot.assertUnchanged();
           context = captureLisaRepairContext(repairConfig, store, error, { repairId, statePath, failureStep });
@@ -200,11 +201,25 @@ export async function runRalphLifecycleCli() {
               reportActivity('supervisor', `Lisa: вызов ${call}/${config.supervisor.maxInterventions}.`);
               publishLiveStatus({ type: 'supervisor-call' });
               lisaCallsThisRun += 1;
-              const answer = await requestLisa(repairConfig, store, error, call, {
-                proposalOnly: true, signal: controller.signal, repairFeedback,
-              });
+              let answer;
+              let proposalError;
+              try {
+                answer = await requestLisa(repairConfig, store, error, call, {
+                  proposalOnly: true, signal: controller.signal, repairFeedback,
+                });
+              } catch (cause) { proposalError = cause; }
+              const retry = proposalRetry(proposalError, answer, proposalRetryUsed);
+              if (retry && !controller.signal.aborted && store.supervisorCalls < config.supervisor.maxInterventions) {
+                snapshot.assertUnchanged();
+                proposalRetryUsed = true;
+                const reason = [proposalError?.message ?? answer.reason, retry].join(' ');
+                repairFeedback.push({ stage: 'proposal', reason });
+                recordLisaRepairOutcome(repairConfig, store, { repairId, verdict: 'retry', reason, eventId: String(call) });
+                continue;
+              }
+              if (proposalError) throw proposalError;
               if (controller.signal.aborted) return { verdict: 'human', reason: 'Остановлено пользователем.' };
-              if (answer.verdict !== 'resume') throw new Error(answer.reason);
+              if (answer.verdict !== 'resume') throw new Error([answer.reason, answer.operatorAction].filter(Boolean).join(' '));
               const paths = validatedLisaPathDirectories([...store.validationPathDirectories, ...lisaValidationPathDirectories(answer)]);
               updateLisaRepairContextState(context, () => updateRepair(repairId, { status: 'checking' }));
               const assessment = await assessLisaRepair(context, {

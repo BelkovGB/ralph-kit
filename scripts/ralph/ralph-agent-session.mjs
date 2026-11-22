@@ -172,7 +172,7 @@ async function runObservedAgentSession(backend, args, options, sessionStartedMs)
   try {
     child = spawn(command, commandArgs, {
       cwd: options.workingDirectory ?? agentProjectRoot,
-      env: childEnvironment.env,
+      env: { ...childEnvironment.env, RALPH_AGENT_ROLE: options.agentRole ?? "development" },
       stdio: ['pipe', 'pipe', 'pipe'],
       detached: process.platform !== 'win32',
       windowsHide: true,

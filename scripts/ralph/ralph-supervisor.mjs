@@ -19,11 +19,24 @@ const humanOnlyCodes = new Set([
   'RALPH_RECOVERY_BLOCKED',
 ]);
 
+export function proposalRetry(cause, answer, used) {
+  if (used) return null;
+  if (cause?.code === 'RALPH_AGENT_IDLE_TIMEOUT')
+    return 'Предыдущая сессия перестала присылать события. Начни с git status --short и продолжи с сохранённого diff.';
+  if (!cause && answer?.verdict === 'human' && (typeof answer.operatorAction !== 'string' || !answer.operatorAction.trim()))
+    return 'Назови конкретное необходимое действие оператора либо исправь оставшийся дефект и проверь его.';
+  return null;
+}
+
 export function supervisorPrompt(config, state, error, call, options = {}) {
   const issue = state?.issue;
   const failure = error?.message ?? 'Задача отложена после повторных отказов ревью.';
   return [
     'Ты Lisa, супервизор Ralph Loop. Разбери остановку и помоги Ralph продолжить текущую задачу.',
+    'Полный набор допустим только в крайнем случае. Назови конкретный сбой, пройденные адресные проверки и причину полного прогона. Используй --full LisaEmergency с этим обоснованием.',
+    'Для human обязательно поле operatorAction: одна конкретная операция человека или решение, без которого нельзя продолжить. Незавершённый diff или отсутствие проверки сами по себе не требуют человека.',
+    error?.code === 'RALPH_VALIDATION_SCOPE_UNKNOWN' && issue?.startingCommit
+      ? 'Сначала проверь только план: node scripts/ralph/ralph-scoped-validation.mjs --plan .agents/validation-rules.json ' + issue.startingCommit + ' issue. Исправь маршрутизацию UNKNOWN и повтори план перед тестами.' : '',
     `Вызов ${call}. Ветка: ${config.branch}. Milestone: ${config.milestone}.`,
     `Issue: ${issue ? `#${issue.number} «${issue.title ?? ''}», этап ${issue.phase}` : 'нет сохранённой issue'}.`,
     `Причина остановки: ${failure}`,
@@ -51,7 +64,7 @@ export function supervisorPrompt(config, state, error, call, options = {}) {
       : 'Настройки Ralph и доверенные инструкции оставь неизменными.',
     'Не удаляй незавершённую работу, не меняй индекс Git, не создавай commit и не переключай ветку. Не запускай второй Ralph Loop: оболочка продолжит его после твоего ответа.',
     'Если нужен доступ, согласование, решение за пределами задачи или безопасное исправление невозможно, запроси человека.',
-    'Последним сообщением верни только JSON: {"verdict":"resume"|"human","reason":"краткая причина","validationPathDirectories":["абсолютный путь"],"recommendations":["неблокирующая рекомендация"]}. Последние два поля необязательны. recommendations: не более десяти непустых однострочных рекомендаций до 1000 символов каждая. resume предлагает ремонт для независимой проверки; он не объявляет задачу принятой.',
+    'Последним сообщением верни только JSON: {"verdict":"resume"|"human","reason":"краткая причина","operatorAction":"для human: необходимое действие","validationPathDirectories":["абсолютный путь"],"recommendations":["неблокирующая рекомендация"]}. Последние два поля необязательны. recommendations: не более десяти непустых однострочных рекомендаций до 1000 символов каждая. resume предлагает ремонт для независимой проверки; он не объявляет задачу принятой.',
   ].filter(Boolean).join('\n\n');
 }
 

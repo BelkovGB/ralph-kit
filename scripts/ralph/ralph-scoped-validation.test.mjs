@@ -66,28 +66,28 @@ test('combines checks for committed, staged, unstaged and untracked changes', (t
   assert.doesNotMatch(result.stdout, /ignored\.log/u);
 });
 
-test('keeps a local change on the short path but runs full checks for an unknown or removed path', (t) => {
+test('keeps a local change on the short path rejects unknown paths and scopes deletions', (t) => {
   const f = fixture(t);
   f.write('src/api/route.js', 'changed\n');
   assert.deepEqual(commandsRun(f.run()), ['ran-api', 'ran-shared']);
   f.write('web/config.js', 'unknown\n');
-  assert.deepEqual(commandsRun(f.run()), ['ran-full']);
+  assert.deepEqual(commandsRun(f.run(), 79), []);
   rmSync(join(f.cwd, 'web/config.js'));
   f.write('.gitignore', '*.tmp\n');
   f.git('add', '.gitignore');
   f.write('.gitignore', '*.log\n');
-  assert.deepEqual(commandsRun(f.run()), ['ran-full']);
+  assert.deepEqual(commandsRun(f.run(), 79), []);
   f.git('restore', '--staged', '.gitignore');
   renameSync(join(f.cwd, 'web/page.js'), join(f.cwd, 'src/api/page.js'));
-  assert.deepEqual(commandsRun(f.run()), ['ran-full']);
+  assert.deepEqual(commandsRun(f.run()), ['ran-api', 'ran-shared', 'ran-browser']);
 });
 
-test('runs full checks for an empty issue diff and rejects other scopes', (t) => {
+test('rejects empty issue diffs and scopes phase and baseSync', (t) => {
   const f = fixture(t);
-  assert.deepEqual(commandsRun(f.run()), ['ran-full']);
+  assert.deepEqual(commandsRun(f.run(), 79), []);
   f.write('src/api/route.js', 'changed\n');
-  assert.deepEqual(commandsRun(f.run('phase'), 79), []);
-  assert.deepEqual(commandsRun(f.run('baseSync'), 79), []);
+  assert.deepEqual(commandsRun(f.run('phase')), ['ran-api', 'ran-shared']);
+  assert.deepEqual(commandsRun(f.run('baseSync')), ['ran-api', 'ran-shared']);
 });
 
 test('validates inputs and never runs commands from an uncommitted rules file', (t) => {
@@ -122,4 +122,35 @@ test('rejects shell chains that could hide a failed command', (t) => {
     rules: config.rules,
   });
   assert.deepEqual(commandsRun(f.run(), 79), []);
+});
+
+test('preview, emergency permission and once-per-commit acceptance', t => {
+  const f = fixture(t);
+  const run = (entry, args, env = {}) => spawnSync(process.execPath, [entry, ...args], {
+    cwd: f.cwd, encoding: 'utf8', env: { ...process.env, ...env },
+  });
+  const accept = fileURLToPath(new URL('./ralph-final-acceptance.mjs', import.meta.url));
+  f.write('prd.md', '# Example\n');
+  f.git('add', 'prd.md');
+  f.git('commit', '-qm', 'add example PRD');
+  const sha = f.git('rev-parse', 'HEAD');
+  f.write('src/api/route.js', 'changed');
+  const plan = run(cli, ['--plan', configFile, sha, 'issue']);
+  assert.deepEqual(commandsRun(plan), []);
+  assert.match(plan.stdout, /echo ran-api/u);
+  const emergency = ['--full', 'LisaEmergency', configFile, 'targeted checks passed, failure still unexplained'];
+  for (const role of ['development', 'review', '']) {
+    assert.deepEqual(commandsRun(run(cli, emergency, {RALPH_AGENT_ROLE:role}), 79), []);
+  }
+  assert.deepEqual(commandsRun(run(cli, emergency, {RALPH_AGENT_ROLE:'supervisor'})), ['ran-full']);
+  assert.deepEqual(commandsRun(run(cli, emergency.slice(0,3), {RALPH_AGENT_ROLE:'supervisor'}),79), []);
+  assert.deepEqual(commandsRun(run(cli, emergency, {RALPH_AGENT_ROLE:'supervisor', RALPH_VALIDATION_SCOPE:'phase'}),79), []);
+  f.write('src/api/route.js', 'before\n');
+  assert.deepEqual(commandsRun(run(accept, ['prd.md', configFile], {RALPH_AGENT_ROLE:'development'}),79), []);
+  assert.deepEqual(commandsRun(run(accept, ['prd.md', configFile])), ['ran-full']);
+  assert.deepEqual(commandsRun(run(accept, ['prd.md', configFile])), []);
+  f.write(configFile, JSON.stringify({full:['echo ran-failing', '"'+process.execPath+'" -e "process.exit(7)"'], rules:config.rules}));
+  f.git('commit','-qam','change acceptance fixture');
+  assert.deepEqual(commandsRun(run(accept, ['prd.md', configFile]),7), ['ran-failing']);
+  assert.deepEqual(commandsRun(run(accept, ['prd.md', configFile]),7), []);
 });
