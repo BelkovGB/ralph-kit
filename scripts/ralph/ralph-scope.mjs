@@ -115,6 +115,31 @@ export function scopeReviewToProduct(review, label = 'Review') {
   };
 }
 
+function issueReviewNeedsClarification(review) {
+  return review.verdict === 'fail' && review.findings.length > 0 &&
+    review.findings.every((finding) => isRalphInfrastructurePath(finding.file));
+}
+
+export async function clarifyIssueReview(askReviewer, prompt, label) {
+  const review = await askReviewer(prompt);
+  if (!issueReviewNeedsClarification(review)) return review;
+
+  console.log(`${label}: все замечания ссылаются на инфраструктуру Ralph. Запрашиваю уточнение.`);
+  const clarified = await askReviewer(
+    prompt + '\n\nA previous review returned FAIL but cited only Ralph infrastructure. ' +
+      'Recheck whether the issue is implemented at this HEAD. Report missing product work against ' +
+      'the relevant product file or the expected product path for a missing file. ' +
+      'Return PASS only if the product requirements are satisfied.\n' +
+      `Previous review summary: ${review.summary}`,
+  );
+  if (issueReviewNeedsClarification(clarified)) {
+    throw Object.assign(new Error(
+      `${label}: после уточнения все замечания по-прежнему ссылаются на инфраструктуру. ${clarified.summary}`,
+    ), { code: 'RALPH_NEEDS_HUMAN', nonRetryable: true });
+  }
+  return clarified;
+}
+
 /**
  * Порог важности, ниже которого замечание не блокирует работу.
  *

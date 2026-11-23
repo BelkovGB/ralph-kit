@@ -24,6 +24,9 @@ test(`real CLI repair lifecycle: ${scenario}`, async () => {
     Object.assign(config, { active: true, agentCli: 'codex', syncBaseBranch: false,
       phases: [{ milestone: 'Repair', branch: 'phase' }], validationScripts: [], preflightScripts: [],
       validationArtifactPaths: [], supervisor: { ...config.supervisor, enabled: true, agentCli: 'codex' } });
+    // The fixture supplies all validation below. Installed project profiles take
+    // precedence over validationScripts and would read unrelated project rules.
+    delete config.validationProfiles;
     if (scenario.startsWith('config-')) {
       config.validationScripts = ['node wrong-check.mjs'];
       writeFileSync(path.join(root, 'fixed-check.mjs'), "console.log('CANDIDATE_VALIDATION');\n");

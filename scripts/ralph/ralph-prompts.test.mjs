@@ -19,6 +19,7 @@ import {
   isRalphInfrastructureIssue,
   isRalphInfrastructurePath,
   applySeverityFloor,
+  clarifyIssueReview,
   findingBlocks,
   scopeMilestoneReviewToProduct,
   scopeReviewToProduct,
@@ -579,6 +580,36 @@ test('замечания к control plane выбрасываются из рев
   );
   assert.equal(infrastructureOnly.verdict, 'pass');
   assert.deepEqual(infrastructureOnly.findings, []);
+});
+
+test('issue review clarifies infrastructure-only FAIL before applying the filter', async () => {
+  const infrastructure = {
+    verdict: 'fail', summary: 'The migration is missing.',
+    findings: [{ file: '.agents/ralph-rules.md' }],
+  };
+  const product = {
+    ...infrastructure,
+    findings: [{ file: 'product/database/migrations/category-mutations.cjs' }],
+  };
+  const prompts = [];
+  const clarify = async (prompt) => {
+    prompts.push(prompt);
+    return prompts.length === 1 ? infrastructure : product;
+  };
+  assert.equal(await clarifyIssueReview(clarify, 'review HEAD', 'Review issue #298'), product);
+  assert.equal(prompts[0], 'review HEAD');
+  assert.match(prompts[1], /expected product path for a missing file/);
+  assert.match(prompts[1], /The migration is missing/);
+
+  await assert.rejects(clarifyIssueReview(async () => infrastructure, 'review HEAD', 'Review issue #298'),
+    { code: 'RALPH_NEEDS_HUMAN', nonRetryable: true });
+  const pass = { verdict: 'pass', summary: 'Requirements verified.', findings: [] };
+  let calls = 0;
+  assert.equal(await clarifyIssueReview(async () => {
+    calls += 1;
+    return pass;
+  }, 'review HEAD', 'Review issue #298'), pass);
+  assert.equal(calls, 1);
 });
 
 test('порог важности убирает право останавливать работу, но не сам отчёт', () => {

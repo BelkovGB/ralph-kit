@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { closeIssueOnce, ensurePullRequestForBranch } from './ralph-github-client.mjs';
 import { runContinuousLoop } from './ralph-loop.mjs';
-import { committedValidationFailurePatch, hasAcceptedLisaIssueRepair } from './ralph-recovery.mjs';
+import {
+  committedValidationFailurePatch, hasAcceptedLisaIssueRepair, hasAcceptedLisaProductRepair,
+} from './ralph-recovery.mjs';
 import { actions, context, withFakeGh } from './ralph-test-support.mjs';
 import { run } from './ralph-process-runner.mjs';
 
@@ -58,6 +60,17 @@ test('receipt cannot authorize a different issue or a different run', () => {
   store.state.lisaRepair.issueNumber = 12;
   store.state.lisaRepair.runId = 'other';
   assert.equal(hasAcceptedLisaIssueRepair(store.state), false);
+});
+
+test('Lisa ownership of a product fix requires a product change in the repair receipt', () => {
+  const { state } = repairStore();
+  for (const paths of [[], ['.agents/ralph-rules.md', '.claude/scripts/check.ps1']]) {
+    state.lisaRepair.changedPaths = paths;
+    assert.equal(hasAcceptedLisaIssueRepair(state), true);
+    assert.equal(hasAcceptedLisaProductRepair(state), false);
+  }
+  state.lisaRepair.changedPaths = ['.agents/ralph-rules.md', 'product/database/migration.cjs'];
+  assert.equal(hasAcceptedLisaProductRepair(state), true);
 });
 
 test('closed issue keeps its accepted dirty repair in the current queue', async () => {
@@ -144,6 +157,20 @@ test('review failure after an accepted repair returns directly to Lisa', async (
   assert.equal(result.verdict, 'parked');
   assert.equal(iterations, 0);
   assert.equal(store.issue.commit, 'reviewed-head');
+});
+
+test('review failure after an infrastructure repair returns to the ordinary developer', async () => {
+  const store = repairStore();
+  Object.assign(store.issue, { phase: 'review-failed', commit: 'reviewed-head' });
+  store.state.lisaRepair.changedPaths = ['.claude/scripts/check.ps1'];
+  let iterations = 0;
+  store.reserveIteration = () => ++iterations;
+  const result = await runContinuousLoop(context({ config: { stopAfterFirstIssue: true }, stateStore: store }), actions({
+    openIssues: () => [store.issue], issueState: () => 'OPEN',
+    runAgentOnIssue: async () => { store.clearIssue(); return { completed: true }; },
+  }));
+  assert.equal(result.completed, 1);
+  assert.equal(iterations, 1);
 });
 
 test('a ready accepted Lisa repair passes the exhausted development budget without reserving an iteration', async () => {

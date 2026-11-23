@@ -16,7 +16,9 @@ import {
 import {
   applySeverityFloor,
   fail,
+  isRalphInfrastructureGitPath,
   isRalphInfrastructureIssue,
+  clarifyIssueReview,
   scopeReviewToProduct,
 } from './ralph-scope.mjs';
 
@@ -128,7 +130,7 @@ import { assertProcessReport, resolveIssueProcess } from './ralph-process-packs.
 
 import {
   analyzeRecovery, applyRecoveryPlan, committedRecoveryPhases, committedValidationFailurePatch,
-  hasAcceptedLisaIssueRepair, prepareRecovery, resumeAcceptedIssue, savedIssueReview,
+  hasAcceptedLisaIssueRepair, hasAcceptedLisaProductRepair, prepareRecovery, resumeAcceptedIssue, savedIssueReview,
 } from './ralph-recovery.mjs';
 
 import { KIT_VERSION } from './ralph-version.mjs';
@@ -330,19 +332,19 @@ async function runIndependentReview(config, issue, commit, expectedHead) {
   console.log(`\n=== Independent review for issue #${issue.number} ===\n`);
 
   const reviewLabel = `Review issue #${issue.number}`;
-  const candidate = await runReviewSession(config, config.review, {
-    input: reviewPrompt,
-    maxTurns: config.maxTurns,
-    timeoutMs: config.runtime.agentTimeoutMs,
-    label: reviewLabel,
-  });
-
-  assertReviewPayloadShape(candidate, reviewLabel);
-  const review = applySeverityFloor(
-    scopeReviewToProduct(normalizeReviewResult(candidate), reviewLabel),
-    config.reviewSeverityFloor,
-    reviewLabel,
-  );
+  const askReviewer = async (input) => {
+    const candidate = await runReviewSession(config, config.review, {
+      input,
+      maxTurns: config.maxTurns,
+      timeoutMs: config.runtime.agentTimeoutMs,
+      label: reviewLabel,
+    });
+    assertReviewPayloadShape(candidate, reviewLabel);
+    return normalizeReviewResult(candidate);
+  };
+  const assessment = await clarifyIssueReview(askReviewer, reviewPrompt, reviewLabel);
+  const review = applySeverityFloor(scopeReviewToProduct(assessment, reviewLabel),
+    config.reviewSeverityFloor, reviewLabel);
 
   const changes = run('git', ['status', '--porcelain']).stdout;
   const headAfterReview = run('git', ['rev-parse', 'HEAD']).stdout;
@@ -556,7 +558,7 @@ async function reviewAndCloseCommittedIssue(config, repository, issue, commit, e
       console.error(`Issue #${issue.number}: замечания сохранены локально, GitHub недоступен. ${error.message}`);
     }
 
-    const lisaOwnsIssue = hasAcceptedLisaIssueRepair(store?.state, issue);
+    const lisaOwnsIssue = hasAcceptedLisaProductRepair(store?.state, issue);
     if (lisaOwnsIssue || reviewFixAttempts >= config.maxReviewFixAttempts) {
       console.error(
         `Issue #${issue.number}: ревью отклонило работу ${reviewFixAttempts} раз подряд. ` +
@@ -652,7 +654,7 @@ function retryIssueValidation(config, issue, error) {
 }
 
 function shouldCommitAcceptedRepair(state, issue) {
-  return hasAcceptedLisaIssueRepair(state, issue) && !state.issue.commit &&
+  return hasAcceptedLisaProductRepair(state, issue) && !state.issue.commit &&
     !state.issue.processReportRepair?.needsDevelopment;
 }
 
@@ -689,6 +691,15 @@ async function commitAndCompleteIssue(config, repository, issue, startingCommit,
         `изменённых до начала задачи: ${untouchedForeign.slice(0, 5).join(', ')}` +
         `${untouchedForeign.length > 5 ? ' и другие' : ''}.`,
     );
+  }
+
+  const recoveryState = activeStateStore()?.state;
+  if (agentEntries.length > 0 && hasAcceptedLisaIssueRepair(recoveryState, issue) &&
+      !hasAcceptedLisaProductRepair(recoveryState, issue) &&
+      agentEntries.flatMap(workingTreeEntryPaths).every(isRalphInfrastructureGitPath)) {
+    throw Object.assign(new Error(
+      `Issue #${issue.number}: после ремонта окружения или инструкций нет продуктовых изменений.`,
+    ), { code: 'RALPH_NEEDS_HUMAN' });
   }
 
   if (agentEntries.length === 0) {
@@ -1536,7 +1547,7 @@ export async function runContinuousLoop(context, actions) {
       stateStore?.issue?.number === currentIssue.number ? stateStore.issue.phase : null;
     const linkedCommit = storedPhase ? null : actions.linkedCommitForIssue?.(currentIssue);
     if (linkedCommit) currentIssue.linkedCommit = linkedCommit;
-    if (storedPhase === 'review-failed' && hasAcceptedLisaIssueRepair(stateStore?.state, currentIssue)) {
+    if (storedPhase === 'review-failed' && hasAcceptedLisaProductRepair(stateStore?.state, currentIssue)) {
       return { mode: 'run', verdict: 'parked', parkedIssues: [currentIssue.number] };
     }
     const needsDevelopmentIteration =

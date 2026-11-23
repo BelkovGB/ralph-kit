@@ -55,6 +55,12 @@ export function hasAcceptedLisaIssueRepair(state, issue = state?.issue) {
     ['accepted', 'resuming'].includes(repair.status));
 }
 
+export function hasAcceptedLisaProductRepair(state, issue = state?.issue) {
+  return hasAcceptedLisaIssueRepair(state, issue) &&
+    (state.lisaRepair.changedPaths === undefined ||
+      state.lisaRepair.changedPaths.some((file) => !isRalphInfrastructureGitPath(file)));
+}
+
 function blocked(message) {
   throw Object.assign(new Error(message), { code: 'RALPH_RECOVERY_BLOCKED' });
 }
