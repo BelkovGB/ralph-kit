@@ -270,6 +270,10 @@ async function runObservedAgentSession(backend, args, options, sessionStartedMs)
       return;
     }
 
+    if (event.sessionStarted) {
+      console.log(`${options.label}: ${event.sessionStarted}, ожидается ответ Codex.`);
+      return;
+    }
     markAgentActivity();
 
     if (event.agentMessage) lastAgentMessage = event.agentMessage;

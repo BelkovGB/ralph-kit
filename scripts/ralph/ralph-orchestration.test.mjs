@@ -285,8 +285,8 @@ test(
   'Codex first-event watchdog stops a process that never starts its event stream',
   { concurrency: false },
   async () => {
-    const fakeSource = 'setInterval(() => {}, 1_000);\n';
-    const firstEventTimeoutMs = 100;
+    const fakeSource = 'console.log(JSON.stringify({ type: "thread.started" })); setInterval(() => {}, 1_000);\n';
+    const firstEventTimeoutMs = 1_000;
 
     applyRuntimeSettings({
       ...defaultRuntimeSettings,
@@ -309,7 +309,7 @@ test(
             assert.equal(error.timeoutMs, firstEventTimeoutMs);
             assert.equal(error.idlePhase, 'first-event');
             assert.equal(error.turns, 0);
-            assert.match(error.message, /первое событие.*100 ms/u);
+            assert.match(error.message, /первое событие.*1000 ms/u);
             return true;
           },
         );

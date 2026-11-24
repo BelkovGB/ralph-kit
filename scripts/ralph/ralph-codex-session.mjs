@@ -256,6 +256,9 @@ export function readCodexEvent(line) {
       },
     };
   }
+  if (event.type === 'thread.started' || event.type === 'turn.started') {
+    return { sessionStarted: event.type };
+  }
   if (!item) return {};
   if (item.type === 'error') return { errorLog: item.message };
 
