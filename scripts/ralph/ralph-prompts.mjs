@@ -21,7 +21,7 @@ export function renderPrompt(config, issue, rules) {
     '{issue_number}': String(issue.number),
     '{issue_title}': issue.title,
     '{issue_url}': issue.url,
-    '{max_turns}': String(config.maxTurns),
+    '{max_turns}': String(config.developmentMaxTurns ?? config.maxTurns),
     '{max_test_fix_attempts}': String(config.maxTestFixAttempts),
   };
 

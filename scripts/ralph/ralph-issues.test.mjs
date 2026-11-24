@@ -927,6 +927,20 @@ test('phase push sends only the verified SHA and rejects a changed local HEAD', 
   ]]);
 });
 
+test('developmentMaxTurns inherits maxTurns and accepts only a positive integer override', () => {
+  withPatchedRalphConfig({ maxTurns: 6, developmentMaxTurns: undefined }, (config) => {
+    assert.equal(config.developmentMaxTurns, 6);
+  });
+  withPatchedRalphConfig({ maxTurns: 6, developmentMaxTurns: 9 }, (config) => {
+    assert.equal(config.developmentMaxTurns, 9);
+    assert.equal(config.maxTurns, 6);
+  });
+  for (const value of [0, -1, 1.5, '9']) {
+    assert.throws(() => withPatchedRalphConfig({ developmentMaxTurns: value }, () => {}),
+      /developmentMaxTurns/);
+  }
+});
+
 test('reasoning effort falls back to medium/medium/high when the config omits it', () => {
   const original = JSON.parse(readFileSync(ralphConfigPath, 'utf8'));
   const { effort: _review, ...review } = original.review;

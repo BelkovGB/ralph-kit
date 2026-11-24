@@ -331,6 +331,7 @@ const configFields = new Set([
   'developmentEffort',
   'developmentFast',
   'developmentModel',
+  'developmentMaxTurns',
   'developmentSkills',
   'draftPullRequest',
   'githubAccount',
@@ -434,6 +435,7 @@ function applyLoopDefaults(config) {
   config.supervisor.maxAdditionalIterations ??= 3;
   config.supervisor.maxTurns ??= 50;
   config.maxTurns ??= 50;
+  config.developmentMaxTurns ??= config.maxTurns;
   config.maxTestFixAttempts ??= 5;
   // Сколько раз подряд ревью может отклонить одну issue, прежде чем она уйдёт
   // из очереди прогона. Меньше, чем у тестов: провал теста называет конкретную
@@ -614,6 +616,9 @@ function validateLoopFields(config) {
   }
   if (!Number.isInteger(config.maxTurns) || config.maxTurns < 1) {
     fail('Поле "maxTurns" должно быть целым числом больше 0.');
+  }
+  if (!Number.isInteger(config.developmentMaxTurns) || config.developmentMaxTurns < 1) {
+    fail('Поле "developmentMaxTurns" должно быть целым числом больше 0.');
   }
   if (!Number.isInteger(config.maxReviewFixAttempts) || config.maxReviewFixAttempts < 1) {
     fail('Поле "maxReviewFixAttempts" должно быть целым числом больше 0.');

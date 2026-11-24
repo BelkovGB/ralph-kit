@@ -981,7 +981,7 @@ export async function runAgentOnIssue(config, repository, issue, rules) {
   try {
     codexResult = await observedRepairStep('development', () => runDevelopmentSession(config, {
       input: renderPrompt(config, issue, rules) + continuationPrompt,
-      maxTurns: config.maxTurns,
+      maxTurns: config.developmentMaxTurns ?? config.maxTurns,
       timeoutMs: config.runtime.agentTimeoutMs,
       label: `${config.agentCli} issue #${issue.number}`,
     }));
@@ -1137,7 +1137,7 @@ export function printCheck(
   console.log(
     `Итерации: использовано ${budget.used}/${budget.limit}, осталось ${budget.remaining}`,
   );
-  console.log(`Лимит шагов на сессию: ${config.maxTurns}`);
+  console.log(`Лимит шагов реализации: ${config.developmentMaxTurns ?? config.maxTurns}, ревью issue: ${config.maxTurns}`);
   console.log(`Лимит исправлений тестов: ${config.maxTestFixAttempts}`);
   console.log(`Модель разработки: ${config.developmentModel} (effort=${config.developmentEffort})`);
   if (config.supervisor?.enabled) {

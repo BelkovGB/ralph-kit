@@ -90,7 +90,9 @@ README перечисляет, что переписать. Ниже — то, �
    minimal/low/medium/high/xhigh/max/ultra; для Claude Code —
    low/medium/high/xhigh/max. `maxTurns` между
    CLI тоже не переносится числом: Codex считает каждый item, включая
-   выполненные команды, Claude — ответы модели.
+   выполненные команды, Claude — ответы модели. Ревью issue использует `maxTurns`.
+   Реализация и исправление issue используют `developmentMaxTurns`, который по
+   умолчанию равен `maxTurns`.
    `developmentFast`, `review.fast` и `milestoneReview.fast` включают быстрый
    режим отдельно для этих ролей; `supervisor.fast` задаёт его для Lisa.
 6. **Скиллы прогона.** `developmentSkills` — имена скиллов проекта из

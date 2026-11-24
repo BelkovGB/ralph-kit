@@ -17,7 +17,7 @@ hints, варианты, единицы. Импорт не запускает GU
 `prepareConfig`. Программа ниже не зависит от GUI. Умолчания в метаданных формы могут быть
 условными: **значение бери из `prepareConfig`, не из `field.default`**.
 Например, `supervisor.timeoutMs` наследует `runtime.agentTimeoutMs`, а
-`milestoneReview.maxTurns` — `maxTurns`.
+`developmentMaxTurns` и `milestoneReview.maxTurns` наследуют `maxTurns`.
 
 Для компактного снимка лимитов выполни из корня следующую JS-программу через
 `node --input-type=module` в синтаксисе текущей оболочки. Она не печатает токены,
@@ -29,7 +29,7 @@ import { prepareConfig } from './scripts/ralph/ralph-config.mjs';
 const raw = JSON.parse(readFileSync('.agents/ralph.config.json', 'utf8'));
 const effective = prepareConfig(structuredClone(raw), { captureControlPlane: false });
 const get = (object, key) => key.split('.').reduce((value, part) => value?.[part], object);
-const keys = ['maxIterations', 'maxTurns', 'maxTestFixAttempts', 'maxReviewFixAttempts'];
+const keys = ['maxIterations', 'maxTurns', 'developmentMaxTurns', 'maxTestFixAttempts', 'maxReviewFixAttempts'];
 for (const group of ['runtime', 'supervisor', 'milestoneReview']) {
   for (const [key, value] of Object.entries(effective[group])) {
     if (typeof value === 'number') keys.push(`${group}.${key}`);
@@ -54,7 +54,8 @@ for (const key of keys) {
 | Ключ | Область и поведение |
 | --- | --- |
 | `maxIterations` | Сессии разработки на фазу, включая повторы; бюджет переживает перезапуск. |
-| `maxTurns` | Одна сессия разработки или ревью issue. У Claude шаг — ответ модели, у Codex — элемент сессии, включая команды. |
+| `maxTurns` | Шаги одной сессии ревью issue и исходный лимит разработки и ревью фазы. У Claude шаг — ответ модели, у Codex — элемент сессии, включая команды. |
+| `developmentMaxTurns` | Шаги одной сессии реализации или исправления issue. При отсутствии значения действует `maxTurns`. |
 | `maxTestFixAttempts` | Неудачные проверки задачи до остановки; 1 означает остановку на первой неудаче. |
 | `maxReviewFixAttempts` | Отказы ревью подряд; на пределе локальный коммит сохраняется, публикация блокируется до исправления. Уже опубликованную issue Ralph может отложить; включённая Lisa получает задачу. |
 | `milestoneReview.maxTurns` | Шаги одной сессии ревью фазы. |
