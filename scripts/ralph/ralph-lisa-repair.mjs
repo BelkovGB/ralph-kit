@@ -17,7 +17,7 @@ const contexts = new WeakMap();
 const assessments = new WeakMap();
 const repairReviewVerdicts = ['pass', 'retry', 'human'];
 const externalRepairFailureCodes = new Set([
-  'RALPH_AGENT_STARTUP_EXHAUSTED', 'RALPH_AGENT_AUTH', 'RALPH_AGENT_WRITE_ACCESS', 'RALPH_CONTROL_PLANE_CHANGED',
+  'RALPH_RUNTIME_STORAGE', 'RALPH_AGENT_STARTUP_EXHAUSTED', 'RALPH_AGENT_AUTH', 'RALPH_AGENT_WRITE_ACCESS', 'RALPH_CONTROL_PLANE_CHANGED',
   'RALPH_RECOVERY_BLOCKED', 'RALPH_NEEDS_HUMAN', 'RALPH_PROCESS_CONFIG', 'RALPH_PROCESS_EVIDENCE',
   'EACCES', 'EPERM',
 ]);
@@ -81,6 +81,10 @@ export function lisaFailureFingerprint(error, step) {
   return digest(JSON.stringify([step, error?.code ?? null, message]));
 }
 
+export function isPhaseValidationFailure(step, code) {
+  return step === 'pull-request' && phaseValidationFailures.has(code);
+}
+
 export function captureLisaRepairContext(config, store, error, options = {}) {
   const root = path.resolve(options.projectRoot ?? projectRoot);
   const workspace = identity(options);
@@ -97,7 +101,7 @@ export function captureLisaRepairContext(config, store, error, options = {}) {
   }
   const state = structuredClone(store.state);
   const step = options.failureStep ?? state?.issue?.phase ?? 'phase';
-  const phaseRepair = !state?.issue && step === 'pull-request' && phaseValidationFailures.has(error?.code);
+  const phaseRepair = !state?.issue && isPhaseValidationFailure(step, error?.code);
   let phaseBaseHead;
   if (phaseRepair) {
     const git = (...args) => (options.run ?? run)('git', args).stdout;

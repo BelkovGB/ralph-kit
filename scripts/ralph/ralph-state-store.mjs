@@ -139,10 +139,19 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
     publishLiveStatus({ type: 'process-change', timing: null });
   }
 
+  // Failed mutations exist only in memory. A catch/finally handler must not
+  // publish them through a later metrics or error checkpoint in the same worker.
+  let persistError;
   const persist = () => {
+    if (persistError) throw persistError;
     if (!state) return;
     state.updatedAt = new Date().toISOString();
-    writeJsonAtomic(statePath, state);
+    try {
+      writeJsonAtomic(statePath, state);
+    } catch (error) {
+      persistError = error;
+      throw error;
+    }
   };
 
   return {
@@ -315,6 +324,7 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
         fail('Lisa: неизвестный контекст ремонта.');
       }
       state.lisaRepair = null;
+      state.supervisorActive = false;
       persist();
     },
     grantSupervisorIteration() {
@@ -371,8 +381,9 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
       return true;
     },
     finish() {
-      state = null;
+      if (persistError) throw persistError;
       removeFileIfExists(statePath);
+      state = null;
     },
   };
 }

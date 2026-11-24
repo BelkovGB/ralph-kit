@@ -219,7 +219,12 @@ function rotatePersistentLog(logPath, startedAt, uniqueSuffix = randomUUID().sli
   const stamp = startedAt.replaceAll(':', '-').replaceAll('.', '-');
   const namePrefix = `${prefix}${stamp}-`;
   const sequence = nextRotationSequence(directory, namePrefix);
-  renameSync(logPath, path.join(directory, `${namePrefix}${sequence}-${uniqueSuffix}.log`));
+  const archive = path.join(directory, `${namePrefix}${sequence}-${uniqueSuffix}.log`);
+  try {
+    retryWindowsFileLock(() => renameSync(logPath, archive));
+  } catch (error) {
+    throw runtimeStorageError(logPath, error);
+  }
 
   const archived = readdirSync(directory)
     .filter((name) => name.startsWith(prefix) && name.endsWith('.log'))
@@ -344,32 +349,58 @@ function initializeLogOutput(append, sink) {
   };
 }
 
+const windowsSharingErrors = new Set(['EPERM', 'EACCES', 'EBUSY']);
+
+// Readers on Windows may hold an open handle without delete sharing. Retry
+// the same filesystem operation, with no changes to the run or agent budgets.
+function retryWindowsFileLock(operation, { platform = process.platform, sleep = waitSync } = {}) {
+  for (let retry = 0; ; retry++) {
+    try {
+      return operation();
+    } catch (error) {
+      if (platform !== 'win32' || !windowsSharingErrors.has(error.code) || retry >= 5) throw error;
+      sleep(100);
+    }
+  }
+}
+
+function runtimeStorageError(filePath, cause) {
+  return Object.assign(new Error(`Ошибка доступа к служебному файлу Ralph ${filePath}: ${cause.message}`, { cause }),
+    { code: 'RALPH_RUNTIME_STORAGE', nonRetryable: true });
+}
+
 function readJsonFile(filePath, fallback = null) {
-  if (!existsSync(filePath)) return fallback;
-  return JSON.parse(readFileSync(filePath, 'utf8'));
+  try {
+    return JSON.parse(retryWindowsFileLock(() => readFileSync(filePath, 'utf8')));
+  } catch (error) {
+    if (error.code === 'ENOENT') return fallback;
+    throw runtimeStorageError(filePath, error);
+  }
 }
 
 function writeJsonAtomic(filePath, value) {
   writeTextAtomic(filePath, `${JSON.stringify(value, null, 2)}\n`);
 }
 
-function writeTextAtomic(filePath, text) {
-  mkdirSync(path.dirname(filePath), { recursive: true });
+function writeTextAtomic(filePath, text, options = {}) {
+  const rename = options.rename ?? renameSync;
   const temporaryPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
   try {
+    mkdirSync(path.dirname(filePath), { recursive: true });
     writeFileSync(temporaryPath, text, 'utf8');
-    renameSync(temporaryPath, filePath);
+    retryWindowsFileLock(() => rename(temporaryPath, filePath), options);
   } catch (error) {
-    removeFileIfExists(temporaryPath);
-    throw error;
+    // An independent lock on the temporary file must not mask the original error.
+    try { removeFileIfExists(temporaryPath); } catch { /* best-effort cleanup */ }
+    throw runtimeStorageError(filePath, error);
   }
 }
 
 function removeFileIfExists(filePath) {
   try {
-    unlinkSync(filePath);
+    retryWindowsFileLock(() => unlinkSync(filePath));
   } catch (error) {
-    if (error.code !== 'ENOENT') throw error;
+    if (error.code !== 'ENOENT') throw runtimeStorageError(filePath, error);
   }
 }
 

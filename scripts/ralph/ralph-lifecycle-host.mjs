@@ -12,7 +12,7 @@ import { createStateStore, setActiveStateStore } from './ralph-state-store.mjs';
 import { runReviewSession } from './ralph-agent-backends.mjs';
 import { reviewWithIdleRetry, proposalRetry, requestLisa, supervisorAgentConfig, supervisorPhaseConfig, prepareLisaResume, lisaValidationPathDirectories } from './ralph-supervisor.mjs';
 import { validatedLisaPathDirectories, runConfiguredValidation, assertTrustedControlFilesUnchanged } from './ralph-validation-runner.mjs';
-import { captureLisaRepairContext, assessLisaRepair, acceptLisaRepair,
+import { captureLisaRepairContext, assessLisaRepair, acceptLisaRepair, isPhaseValidationFailure,
   createTrustedRepairRuntime, updateLisaRepairContextState, lisaFailureFingerprint, lisaRepairTreeHash, lisaRepairIndexHash } from './ralph-lisa-repair.mjs';
 import { runRalphLifecycle, startRalphWorker, repairStepPassed } from './ralph-lifecycle.mjs';
 import { clearLatestRunStopReport, parkedReviewPhase, writeRunStopReport } from './ralph-run-stop-report.mjs';
@@ -128,6 +128,13 @@ export async function runRalphLifecycleCli() {
         const current = readJsonFile(statePath, null);
         if (current) store = setActiveStateStore(createStateStore(configForPhase(config, current.phaseIndex), '--run', statePath));
         const failedStep = result.failure?.step ?? (current?.issue?.phase === 'validating' ? 'validation' : current?.issue?.phase);
+        // Without a saved issue, only a proven phase-validation failure or an explicit
+        // budget/parked handoff has a repair target. Preserve any other worker error.
+        if (result.kind === 'repair-needed' && !current?.issue &&
+            !isPhaseValidationFailure(failedStep, result.failure?.code) &&
+            !['RALPH_ITERATION_LIMIT', 'RALPH_PARKED'].includes(result.failure?.code)) {
+          result.kind = 'needs-human';
+        }
         if (result.kind === 'repair-needed' && result.failure?.code !== 'RALPH_PARKED' &&
             pendingFailure && !pendingFailure.proved && pendingFailure.issueNumber === (current?.issue?.number ?? null) &&
             pendingFailure.phaseIndex === current?.phaseIndex && pendingFailure.failureStep === failedStep &&
@@ -277,10 +284,13 @@ export async function runRalphLifecycleCli() {
                       priorCommit: issue.commit ?? previous?.priorCommit ?? null,
                     };
                   }
-                  let target = { scope: 'issue', baseCommit: issue?.startingCommit, issueNumber: issue?.number };
-                  if (!issue && failureStep === 'pull-request') {
+                  const target = issue
+                    ? { scope: 'issue', baseCommit: issue.startingCommit, issueNumber: issue.number }
+                    : { scope: 'phase' };
+                  if (!issue && (context.phaseRepair || candidate.validationProfiles)) {
                     verifyConfiguredGitHubOrigin(candidate, { expectedRemoteUrl: prepared.githubRemoteUrl });
-                    target = { scope: 'phase', baseCommit: verifyBaseHistory(candidate), skipPreflight: Boolean(candidate.validationProfiles) };
+                    target.baseCommit = verifyBaseHistory(candidate);
+                    target.skipPreflight = Boolean(candidate.validationProfiles);
                   }
                   runConfiguredValidation(candidate, { ...target, validationPathDirectories: paths });
                   verifyConfiguredGitHubOrigin(candidate, { expectedRemoteUrl: prepared.githubRemoteUrl });

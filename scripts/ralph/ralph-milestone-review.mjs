@@ -325,6 +325,7 @@ export async function runMilestoneReview(config, repository, milestone, pullRequ
       `Milestone review PR #${pullRequest.number}`,
     );
   } catch (error) {
+    if (error.code === 'RALPH_RUNTIME_STORAGE') throw error;
     activeStateStore()?.recordPhaseProcess?.({ type: 'review-error' });
     if (['RALPH_AGENT_STARTUP_EXHAUSTED', 'RALPH_NEEDS_HUMAN'].includes(error.code)) throw error;
     try {
