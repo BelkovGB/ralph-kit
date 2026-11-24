@@ -1,12 +1,10 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import test from 'node:test';
-import { executableTempDirectory, withFakeCodex } from './ralph-test-support.mjs';
+import { createCliFixture, executableTempDirectory, withFakeCodex } from './ralph-test-support.mjs';
 
-const sourceRoot = fileURLToPath(new URL('../..', import.meta.url));
 function git(root, ...args) {
   const result = spawnSync('git', args, { cwd: root, encoding: 'utf8', windowsHide: true });
   assert.equal(result.status, 0, result.stderr);
@@ -17,16 +15,10 @@ for (const scenario of ['resume', 'stop-review', 'repeat', 'resumed-auth', 'revi
 test(`real CLI repair lifecycle: ${scenario}`, async () => {
   const root = mkdtempSync(path.join(executableTempDirectory, 'repair-cli-'));
   try {
-    cpSync(path.join(sourceRoot, 'scripts'), path.join(root, 'scripts'), { recursive: true });
-    cpSync(path.join(sourceRoot, '.agents'), path.join(root, '.agents'), { recursive: true });
+    const config = createCliFixture(root);
     const configPath = path.join(root, '.agents/ralph.config.json');
-    const config = JSON.parse(readFileSync(configPath, 'utf8'));
-    Object.assign(config, { active: true, agentCli: 'codex', syncBaseBranch: false,
-      phases: [{ milestone: 'Repair', branch: 'phase' }], validationScripts: [], preflightScripts: [],
-      validationArtifactPaths: [], supervisor: { ...config.supervisor, enabled: true, agentCli: 'codex' } });
-    // The fixture supplies all validation below. Installed project profiles take
-    // precedence over validationScripts and would read unrelated project rules.
-    delete config.validationProfiles;
+    Object.assign(config, { syncBaseBranch: false, phases: [{ milestone: 'Repair', branch: 'phase' }],
+      supervisor: { enabled: true, agentCli: 'codex', model: 'fixture-model' } });
     if (scenario.startsWith('config-')) {
       config.validationScripts = ['node wrong-check.mjs'];
       writeFileSync(path.join(root, 'fixed-check.mjs'), "console.log('CANDIDATE_VALIDATION');\n");

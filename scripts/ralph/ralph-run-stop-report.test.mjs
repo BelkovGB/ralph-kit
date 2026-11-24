@@ -1,16 +1,14 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { stateResponse } from './ralph-gui-data.mjs';
 import { readLatestRunStopReportPath, writeRunStopReport } from './ralph-run-stop-report.mjs';
-import { executableTempDirectory, withFakeCodex, withFakeGh } from './ralph-test-support.mjs';
+import { createCliFixture, executableTempDirectory, withFakeCodex, withFakeGh } from './ralph-test-support.mjs';
 import { KIT_VERSION } from './ralph-version.mjs';
 
-const sourceRoot = fileURLToPath(new URL('../..', import.meta.url));
 const branch = 'phase-PRIVATE_BRANCH';
 
 function git(root, ...args) {
@@ -63,16 +61,11 @@ test('real --run reports both review parks and Lisa restart in one safe file', a
   });
 
   try {
-    cpSync(path.join(sourceRoot, 'scripts'), path.join(root, 'scripts'), { recursive: true });
-    cpSync(path.join(sourceRoot, '.agents'), path.join(root, '.agents'), { recursive: true });
-    cpSync(path.join(sourceRoot, '.gitignore'), path.join(root, '.gitignore'));
-    const config = JSON.parse(readFileSync(configPath, 'utf8'));
-    delete config.validationProfiles; // This fixture supplies its own validation command.
-    Object.assign(config, { active: true, agentCli: 'codex', githubAccount: null, baseBranch: 'main',
-      syncBaseBranch: false, phases: [{ milestone: 'Fixture', branch }], stopAfterFirstIssue: false,
+    const config = createCliFixture(root);
+    Object.assign(config, { syncBaseBranch: false, phases: [{ milestone: 'Fixture', branch }], stopAfterFirstIssue: false,
       maxIterations: 8, maxReviewFixAttempts: 2, autoApproveConfiguredIssues: true,
       trustedIssueAuthors: ['owner'], reviewSeverityFloor: 'P1', validationScripts: ['node validate.mjs'],
-      review: { ...config.review, enabled: true }, supervisor: { ...config.supervisor, enabled: true,
+      supervisor: { enabled: true, model: 'fixture-model',
         agentCli: 'codex', maxInterventions: 1, maxAdditionalIterations: 2 } });
     writeFileSync(configPath, JSON.stringify(config));
     writeFileSync(path.join(root, 'product.mjs'), 'export const PRIVATE_PRODUCT = 0;\n');

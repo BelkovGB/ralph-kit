@@ -1,12 +1,10 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import test from 'node:test';
-import { executableTempDirectory, withFakeCodex, withFakeGh } from './ralph-test-support.mjs';
+import { createCliFixture, executableTempDirectory, withFakeCodex, withFakeGh } from './ralph-test-support.mjs';
 
-const sourceRoot = fileURLToPath(new URL('../..', import.meta.url));
 function git(root, ...args) {
   const result = spawnSync('git', args, { cwd: root, encoding: 'utf8', windowsHide: true });
   assert.equal(result.status, 0, result.stderr);
@@ -18,16 +16,13 @@ for (const scenario of ['pushed', 'closing', 'closing-foreign', 'closing-staged'
     const root = mkdtempSync(path.join(executableTempDirectory, 'repair-published-'));
     const remote = mkdtempSync(path.join(executableTempDirectory, 'repair-remote-'));
     try {
-      cpSync(path.join(sourceRoot, 'scripts'), path.join(root, 'scripts'), { recursive: true });
-      cpSync(path.join(sourceRoot, '.agents'), path.join(root, '.agents'), { recursive: true });
-      cpSync(path.join(sourceRoot, '.gitignore'), path.join(root, '.gitignore'));
+      const config = createCliFixture(root);
       const configPath = path.join(root, '.agents/ralph.config.json');
-      const config = JSON.parse(readFileSync(configPath, 'utf8'));
-      Object.assign(config, { active: true, validationProfiles: undefined, agentCli: 'codex', githubAccount: null, syncBaseBranch: false,
-        phases: [{ milestone: 'Repair', branch: 'phase' }], validationScripts: [], preflightScripts: [],
-        validationArtifactPaths: [], stopAfterFirstIssue: true, autoApproveConfiguredIssues: true,
-        review: { ...config.review, enabled: scenario === 'closing' },
-        supervisor: { ...config.supervisor, enabled: true, agentCli: 'codex' } });
+      Object.assign(config, { syncBaseBranch: false, phases: [{ milestone: 'Repair', branch: 'phase' }],
+        stopAfterFirstIssue: true,
+        review: { enabled: scenario === 'closing', model: 'fixture-model',
+          schemaFile: '.agents/review.schema.json', outputFile: '.agents/last-review.json' },
+        supervisor: { enabled: true, agentCli: 'codex', model: 'fixture-model' } });
       writeFileSync(configPath, JSON.stringify(config));
       const target = path.join(root, 'scripts/ralph/ralph-acceptance.mjs');
       writeFileSync(target, readFileSync(target, 'utf8') + "\nexport const repairFixtureValue = 'broken';\n");
