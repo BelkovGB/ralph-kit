@@ -2,7 +2,7 @@
 
 import { spawn, spawnSync } from 'node:child_process';
 import process from 'node:process';
-import { createWriteStream } from 'node:fs';
+import { createWriteStream, writeFileSync } from 'node:fs';
 
 let requestText = '';
 process.stdin.setEncoding('utf8');
@@ -76,8 +76,16 @@ function noteProgress() {
     idleTimer = setTimeout(() => expire(`RALPH_COMMAND_IDLE_TIMEOUT:${request.idleTimeoutMs}`), request.idleTimeoutMs);
   }
 }
-child.stdout.on('data', noteProgress);
-child.stderr.on('data', noteProgress);
+let lastProgressWrite = -Infinity;
+function onCommandOutput() {
+  noteProgress();
+  const now = Date.now();
+  if (!request.progressPath || now - lastProgressWrite < 1_000) return;
+  lastProgressWrite = now;
+  try { writeFileSync(request.progressPath, ''); } catch { /* Terminal observation only. */ }
+}
+child.stdout.on('data', onCommandOutput);
+child.stderr.on('data', onCommandOutput);
 noteProgress();
 
 child.stdout.pipe(process.stdout);

@@ -934,10 +934,12 @@ test('push keeps repository hooks without a configured GitHub account', () => {
 test('phase push sends only the verified SHA and rejects a changed local HEAD', () => {
   const expectedHead = 'a'.repeat(40);
   const pushes = [];
+  const gitCommands = [];
   const config = { branch: 'ralph/phase-1', githubAccount: null };
   const dependencies = {
     expectedHead,
-    run: () => ({ stdout: expectedHead }),
+    trackBranch: true,
+    run: (_command, args) => { gitCommands.push(args); return { stdout: expectedHead }; },
     runNetwork: (_command, args) => { pushes.push(args); },
     verifyPushedHead: (_config, head) => head,
   };
@@ -948,6 +950,7 @@ test('phase push sends only the verified SHA and rejects a changed local HEAD', 
   assert.deepEqual(pushes, [[
     'push', '--set-upstream', 'origin', `${expectedHead}:refs/heads/ralph/phase-1`,
   ]]);
+  assert.deepEqual(gitCommands.at(-1), ['branch', '--set-upstream-to', 'origin/ralph/phase-1', 'ralph/phase-1']);
 });
 
 test('developmentMaxTurns inherits maxTurns and accepts only a positive integer override', () => {

@@ -208,6 +208,7 @@ test('disabled and cached milestone reviews do not invent a new review circle', 
   try {
     await runMilestoneReview({ ...config, milestoneReview: { ...config.milestoneReview, enabled: false } },
       'owner/repo', milestone, pr);
+    assert.deepEqual(observations, []);
     const body = milestoneReviewMarker(config, milestone, pr) +
       '\n**Verdict:** **PASS**\n### Findings\nNo actionable findings.\n' +
       'The pull request remains draft so a human can make the final merge decision.';
@@ -215,7 +216,7 @@ test('disabled and cached milestone reviews do not invent a new review circle', 
       const review = await runMilestoneReview(config, 'owner/repo', milestone, pr);
       assert.equal(review.verdict, 'pass');
     });
-    assert.deepEqual(observations, []);
+    assert.deepEqual(observations, [{ type: 'stage-complete', stage: 'review' }]);
   } finally { setActiveStateStore(null); }
 });
 

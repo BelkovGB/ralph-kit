@@ -89,7 +89,12 @@ test('terminal projects persisted process data and keeps old task history out of
   assert.equal(projected.process.reviews[1].findings, 1);
   const service = terminalSnapshot(store, null, 0, 1000, { activity: { kind: 'issue-preparation',
     label: 'Подготовка задачи #43', startedMs: 0 } });
-  assert.equal(service.process, null);
+  assert.equal(service.process.scope, 'phase');
+  assert.deepEqual(service.process.reviews, []);
+  const frame = renderTerminal(service, [], 120, 24);
+  assert.match(frame, /ПРОЦЕСС ФАЗЫ/);
+  assert.match(frame, /Подготовка задачи #43/);
+  assert.doesNotMatch(frame, /#42/);
 });
 
 test('compact review navigation visits adjacent rounds and preserves the viewed result on new reviews', () => {
@@ -159,4 +164,40 @@ test('phase review history has a stable identity separate from the last issue', 
   assert.equal(first.issueKey, 'phase:1');
   live.activity.kind = 'supervisor';
   assert.equal(terminalSnapshot(store, null, 0, 1000, live).issueKey, first.issueKey);
+});
+
+test('queue, preparation and validation retain the phase map and accumulated task times', () => {
+  const store = { phaseIndex: 4, phaseCount: 6, issue: null, state: {
+    phaseIndex: 4, milestone: 'Test phase',
+    phaseProcess: { version: 1, current: 'validation', completed: ['implementation'] },
+    phaseTaskStageMs: { implementation: 8_000, validation: 3_000, review: 2_000, fixing: 1_000 },
+  } };
+  for (const kind of ['queue', 'issue-preparation', 'phase-transition', 'phase-validation', 'pull-request']) {
+    const snapshot = terminalSnapshot(store, null, 0, 10_000, {
+      activity: { kind, label: kind, startedMs: 0 },
+    });
+    const frame = renderTerminal(snapshot, [], 160, 32);
+    assert.match(frame, /ПРОЦЕСС ФАЗЫ/);
+    assert.match(frame, /Реализация +0:00:08/);
+    assert.match(frame, /Проверки +0:00:03/);
+    assert.match(frame, /Ревью +0:00:02/);
+    assert.match(frame, /Исправления +0:00:01/);
+  }
+  const checking = terminalSnapshot(store, null, 0, 10_000, {
+    activity: { kind: 'phase-validation', label: 'Проверки фазы перед PR', startedMs: 1_000 },
+    operation: { active: true, label: 'cmd /d', displayLabel: 'Проверки фазы', startedMs: 1_000, timeoutMs: 60_000,
+      idleTimeoutMs: 20_000, progressPath: 'progress' },
+  }, 8_000);
+  const frame = renderTerminal(checking, [], 160, 32);
+  assert.match(frame, /\[>\] Проверки/);
+  assert.match(frame, /Без вывода: 0:00:02 \/ 0:00:20/);
+  assert.match(frame, /Команда: Проверки фазы/);
+  assert.doesNotMatch(frame, /cmd \/d/);
+  assert.doesNotMatch(frame, /\[>\] PR фазы/);
+  for (const [columns, rows] of [[60, 16], [100, 20]]) {
+    const compact = renderTerminal(checking, [], columns, rows);
+    assert.match(compact, /Без вывода: 0:00:02 \/ 0:00:20/);
+    assert.match(compact, /Время команды:/);
+    assert.match(compact, /Исправления 0:00:01/);
+  }
 });
