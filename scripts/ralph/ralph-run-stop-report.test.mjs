@@ -135,6 +135,8 @@ test('real --run reports both review parks and Lisa restart in one safe file', a
       assert.match(report, /\| 1 \| 1 \| #12 \| 3 → 1 \| да \|/u);
       assert.match(report, /\| 2 \| 1 \| #12 \| 1 \| да \|/u);
       assert.ok(report.includes('Исчерпан сохранённый бюджет вызовов Lisa.'));
+      assert.ok(report.includes('Почему задача отложена — продуктовый результат отклонён после ремонта Lisa'));
+      assert.match(result.stdout, /достигнут лимит отказов ревью/u);
       assert.ok(report.includes('`needs-human`, код выхода `1`'));
       assert.ok(report.includes('`state.status` — `active`'));
       assert.ok(report.includes('Ремонт Lisa принят — да. Worker после ремонта запущен — да'));

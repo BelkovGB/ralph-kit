@@ -360,15 +360,25 @@ export const incompleteIssueOutcomes = [
   // иначе — она уходит из очереди прогона, поэтому у неё свой исход: общая
   // запись `review-failed` не различала бы их в журнале. Стоит выше
   // `reviewFailed` не случайно: последняя строка служит значением по умолчанию.
-  ['parked', 'review-parked', 'ревью отклонило работу подряд до предела; issue отложена'],
+  ['parked', 'review-parked', 'задача отложена после отказа ревью'],
   ['reviewFailed', 'review-failed', 'независимое ревью вернуло замечания'],
 ];
+
+const reviewParkDescriptions = new Map([
+  ['review-limit', 'достигнут лимит отказов ревью'],
+  ['lisa-product-repair', 'продуктовый результат отклонён после ремонта Lisa'],
+]);
+
+export function describeReviewPark(reason) {
+  return reviewParkDescriptions.get(reason);
+}
 
 export function incompleteIssueOutcome(result) {
   const [flag, outcome, reason] =
     incompleteIssueOutcomes.find(([field]) => result?.[field]) ?? incompleteIssueOutcomes.at(-1);
 
-  return { outcome, reason, runOutcome: { [flag]: true } };
+  const parkReason = flag === 'parked' ? describeReviewPark(result.reviewParkReason) : null;
+  return { outcome, reason: parkReason ?? reason, runOutcome: { [flag]: true } };
 }
 
 // Итоги попытки словами: слева — что цикл пишет в журнал, справа — что это

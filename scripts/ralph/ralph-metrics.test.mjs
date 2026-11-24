@@ -316,6 +316,9 @@ test('у каждого исхода, который пишет цикл, ест
 
   // Классификация незавершённой попытки отвечает слагом из той же таблицы.
   assert.equal(incompleteIssueOutcome({ parked: true }).outcome, 'review-parked');
+  assert.match(incompleteIssueOutcome({ parked: true, reviewParkReason: 'lisa-product-repair' }).reason, /после ремонта Lisa/u);
+  assert.match(incompleteIssueOutcome({ parked: true, reviewParkReason: 'review-limit' }).reason, /лимит/u);
+  assert.doesNotMatch(incompleteIssueOutcome({ parked: true }).reason, /предел|лимит/u);
   assert.equal(incompleteIssueOutcome({}).outcome, 'review-failed');
   assert.equal(describeOutcome(''), 'итог неизвестен');
   assert.equal(describeOutcome('something-new'), 'something-new');
