@@ -567,7 +567,8 @@ async function reviewAndCloseCommittedIssue(config, repository, issue, commit, e
             : 'Локальный коммит сохранён. Публикация ветки остановлена до исправления.'),
       );
       if (alreadyPublished && !config.supervisor?.enabled) store?.clearIssue();
-      return { completed: false, parked: true, publicationBlocked: !alreadyPublished, commit, review };
+      return { completed: false, parked: true, publicationBlocked: !alreadyPublished, commit, review,
+        reviewParkReason: lisaOwnsIssue ? 'lisa-product-repair' : 'review-limit' };
     }
     return { completed: false, commit, review };
   }
@@ -1572,7 +1573,7 @@ export async function runContinuousLoop(context, actions) {
     const linkedCommit = storedPhase ? null : actions.linkedCommitForIssue?.(currentIssue);
     if (linkedCommit) currentIssue.linkedCommit = linkedCommit;
     if (storedPhase === 'review-failed' && hasAcceptedLisaProductRepair(stateStore?.state, currentIssue)) {
-      return { mode: 'run', verdict: 'parked', parkedIssues: [currentIssue.number] };
+      return { mode: 'run', verdict: 'parked', parkedIssues: [currentIssue.number], reviewParkReason: 'lisa-product-repair' };
     }
     const needsDevelopmentIteration =
       !shouldCommitAcceptedRepair(stateStore?.state, currentIssue) &&
@@ -1645,7 +1646,7 @@ export async function runContinuousLoop(context, actions) {
         : { outcome: 'completed', reason: 'issue закрыта' },
     );
     if (result?.parked && (result.publicationBlocked || config.supervisor?.enabled)) {
-      return { mode: 'run', verdict: 'parked', parkedIssues: [currentIssue.number] };
+      return { mode: 'run', verdict: 'parked', parkedIssues: [currentIssue.number], reviewParkReason: result.reviewParkReason };
     }
     if (result?.parked) {
       parkedIssueNumbers.add(currentIssue.number);

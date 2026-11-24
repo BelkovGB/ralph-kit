@@ -303,6 +303,7 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
         issueNumber: state.issue?.number ?? null,
         status: 'repairing', failureStep: context.failureStep, failureFingerprint: context.failureFingerprint,
         acceptedTreeHash: null };
+      if (state.issue) state.issue.lisaRepairId = context.repairId;
       persist();
     },
     updateLisaRepair(repairId, patch) {

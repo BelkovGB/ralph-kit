@@ -5,7 +5,7 @@ import { clearedFailure } from './ralph-failure-summary.mjs';
 import { assertTrustedIssue } from './ralph-issue-contract.mjs';
 import { publicIssueIdentity } from './ralph-github-client.mjs';
 import {
-  filesChangedBetween, gitPathKey, isAncestorCommit, localGitHubRepository, readWorkingTreeEntries,
+  filesChangedBetween, gitPathKey, isAncestorCommit, localGitHubRepository, readRemoteBranchHead, readWorkingTreeEntries,
   validateRecoveredCommit, verifyRepository, workingTreeEntryPaths,
 } from './ralph-git.mjs';
 
@@ -85,6 +85,29 @@ export function resumeAcceptedIssue(config, stateStore, dependencies = {}) {
   return { ...trusted, state: 'OPEN', acceptedRepository: repository, expectedMilestone: config.milestone };
 }
 
+function isInstalledBaseMerge(config, issue, merge, head, manualCommit, parents, execute) {
+  if (parents.length !== 2) return false;
+  const [first, second] = parents;
+  const git = (...args) => execute('git', args, { allowFailure: true });
+  const installedAfterFix = merge === head && first === manualCommit;
+  const fixedAfterInstall = manualCommit === head && first === issue.startingCommit &&
+    git('show', '-s', '--format=%P', manualCommit).stdout === merge;
+  if (!installedAfterFix && !fixedAfterInstall) return false;
+  if (fixedAfterInstall && !filesChangedBetween(merge, manualCommit, execute)?.every((file) => !isRalphInfrastructureGitPath(file))) return false;
+  const base = git('rev-parse', '--verify', `refs/remotes/origin/${config.baseBranch}`);
+  if (base.status !== 0 || base.stdout !== second) return false;
+  const common = git('merge-base', '--all', first, second);
+  if (common.status !== 0 || !/^[a-f0-9]{40}$/u.test(common.stdout) ||
+      !isAncestorCommit(common.stdout, issue.startingCommit, execute)) return false;
+  const incoming = filesChangedBetween(common.stdout, second, execute);
+  if (!incoming?.length || !incoming.every(isRalphInfrastructureGitPath)) return false;
+  const incomingPaths = new Set(incoming);
+  // The merge must install only the incoming control files verbatim. The
+  // caller still audits every commit on both sides, including reverted edits.
+  return filesChangedBetween(first, merge, execute)?.every((file) => incomingPaths.has(file)) &&
+    filesChangedBetween(second, merge, execute)?.every((file) => !incomingPaths.has(file));
+}
+
 /** Read-only decision shared by check, run and explicit operator acceptance. */
 export function analyzeRecovery(config, issue, dependencies = {}) {
   const execute = dependencies.run ?? run;
@@ -134,19 +157,31 @@ export function analyzeRecovery(config, issue, dependencies = {}) {
     // Inspect every commit, not just the net diff: a change and its revert
     // must not hide unrelated product work. Ralph-only updates may follow a fix.
     const commits = git('rev-list', `${issue.startingCommit}..${head}`).split(/\r?\n/).filter(Boolean);
+    let installedBaseHead;
+    const productCommits = [];
     for (const commit of commits) {
       const parents = git('show', '-s', '--format=%P', commit).split(' ');
-      if (parents.length !== 1) blocked('Ручное принятие не поддерживает слияния; требуется разбор истории.');
+      if (parents.length !== 1) {
+        if (isInstalledBaseMerge(config, issue, commit, head, manualCommit, parents, execute)) {
+          installedBaseHead = parents[1];
+          continue;
+        }
+        blocked('Ручное принятие допускает только точную установку файлов Ralph из базы в текущий HEAD.');
+      }
       const paths = execute('git', ['diff-tree', '--no-commit-id', '--name-only', '-z', '--no-renames', '-r', commit],
         { rawStdout: true }).stdout.split('\0').filter(Boolean);
       if (paths.every(isRalphInfrastructureGitPath)) continue;
+      productCommits.push(commit);
       const trailer = git('show', '-s', '--format=%(trailers:key=Ralph-Issue,valueonly)', commit);
       if (trailer !== `#${issue.number}` || !isAncestorCommit(commit, manualCommit, execute)) {
         blocked(`После сохранённой базы найден посторонний продуктовый коммит ${commit}.`);
       }
     }
+    if (installedBaseHead && head === manualCommit && productCommits.some((commit) => commit !== manualCommit)) {
+      blocked('История устанавливаемой базы Ralph содержит изменения продукта.');
+    }
     return {
-      kind: 'accept-manual', head,
+      kind: 'accept-manual', head, ...(installedBaseHead ? { installedBaseHead } : {}),
       patch: {
         phase: 'committed', commit: manualCommit, recoveryHead: head,
         reviewedCommit: null, reviewReceipt: null, pushedHead: null, expectedTree: null, commitMessage: null,
@@ -240,13 +275,30 @@ export function prepareRecovery(config, stateStore, mode, dependencies = {}) {
   if (mode === '--run') applyRecoveryPlan(recovery, stateStore);
   repositoryState ??= verify(config, mode === '--run');
   if (mode === '--accept-manual-commit') {
+    if (recovery.installedBaseHead &&
+        readRemoteBranchHead(config, config.baseBranch, dependencies.runNetwork) !== recovery.installedBaseHead) {
+      blocked('Опубликованная база не совпадает с установленным обновлением Ralph.');
+    }
     const confirmed = analyzeRecovery(config, stateStore?.issue, dependencies);
     if (confirmed.head !== recovery.head) blocked('HEAD изменился во время принятия ручного коммита.');
     const repair = stateStore.state?.lisaRepair;
-    if (repair && (repair.status !== 'needs-human' || repair.runId !== stateStore.state.runId ||
-        repair.phaseIndex !== stateStore.state.phaseIndex || repair.issueNumber !== stateStore.issue.number ||
-        repair.repairId !== stateStore.issue.lisaRepairId)) {
+    if (repair && (!repair.repairId || repair.status !== 'needs-human' || repair.runId !== stateStore.state.runId ||
+        repair.phaseIndex !== stateStore.state.phaseIndex || repair.issueNumber !== stateStore.issue.number)) {
       blocked('Lisa: ручной коммит не соответствует остановленному ремонту.');
+    }
+    if (repair && repair.repairId !== stateStore.issue.lisaRepairId) {
+      const issue = stateStore.issue;
+      // Older versions linked an issue only after Lisa accepted a repair. A
+      // declined second repair can still point to the previously accepted one.
+      if (repair.acceptedTreeHash !== null || repair.failureStep !== 'review-failed' ||
+          issue.phase !== 'review-failed' || issue.reviewReceipt?.result?.verdict !== 'fail' ||
+          !/^[a-f0-9]{40}$/u.test(issue.commit ?? '') || issue.startingCommit !== issue.commit ||
+          issue.reviewReceipt.head !== issue.commit ||
+          issue.reviewedCommit !== issue.commit ||
+          execute('git', ['show', '-s', '--format=%(trailers:key=Ralph-Repair,valueonly)', confirmed.patch.commit]).stdout !== repair.repairId) {
+        blocked('Lisa: ручной коммит не соответствует остановленному ремонту. Проверьте trailer Ralph-Repair.');
+      }
+      confirmed.patch.lisaRepairId = repair.repairId;
     }
     applyRecoveryPlan(confirmed, stateStore);
     // If interrupted here, accepting the same SHA again completes the handoff.

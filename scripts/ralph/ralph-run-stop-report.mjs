@@ -3,6 +3,7 @@ import { lstatSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { readJsonFile, removeFileIfExists, writeJsonAtomic, writeTextAtomic } from './ralph-runtime.mjs';
 import { KIT_VERSION } from './ralph-version.mjs';
+import { describeReviewPark } from './ralph-run-metrics.mjs';
 
 const reportDirectory = 'run-stop-reports';
 const latestReportFile = 'run-stop-report.json';
@@ -32,7 +33,7 @@ export function parkedReviewPhase(workerOutcome) {
       !Array.isArray(phase.parkedIssues)) return null;
   const parkedIssues = phase.parkedIssues.filter((number) => Number.isSafeInteger(number) && number > 0);
   if (!parkedIssues.length) return null;
-  return { phaseIndex: phase.phaseIndex, parkedIssues, iterations: phase.iterations,
+  return { phaseIndex: phase.phaseIndex, parkedIssues, iterations: phase.iterations, reviewParkReason: phase.reviewParkReason,
     pullRequestNumber: phase.pullRequest?.number, pullRequestHead: phase.pullRequest?.headRefOid };
 }
 
@@ -88,6 +89,7 @@ function renderReport({ runId, startedAt, stoppedAt, durationMs, phase, limits, 
 - Длительность — ${durationMs} мс
 - Фаза — ${phase.phaseIndex + 1} из ${count(limits.phaseCount)}
 - Отложенные задачи — ${phase.parkedIssues.map((number) => `#${number}`).join(', ')}
+- Почему задача отложена — ${describeReviewPark(phase.reviewParkReason) ?? missing}
 - Итог \`--run\` — \`needs-human\`, код выхода \`1\`
 - Причина — \`RALPH_PARKED\`. ${stopReasons.get(stopReason) ?? missing}
 - Сохранённый \`state.status\` — ${saved?.status === 'active' ? '\`active\`' : missing}
