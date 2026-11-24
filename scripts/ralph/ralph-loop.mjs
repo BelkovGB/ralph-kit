@@ -1836,7 +1836,9 @@ async function main(lifecycle = null) {
       const { accepted } = prepareRecovery(firstPhaseConfig, activeStateStore(), mode, {
         hostWorkingTreeHash, manualCommit: process.argv[3] ?? '',
       });
-      console.log('Ручной коммит принят. Следующий --run заново выполнит проверки и ревью; задача ещё не завершена.');
+      console.log(activeStateStore().issue
+        ? 'Ручной коммит принят. Следующий --run заново выполнит проверки и ревью; задача ещё не завершена.'
+        : 'Ручной коммит ремонта фазы принят. Следующий --run заново выполнит проверки фазы перед PR.');
       return { mode, accepted };
     }
     const rules = loadRalphRules(config);

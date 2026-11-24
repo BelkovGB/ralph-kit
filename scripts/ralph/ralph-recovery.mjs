@@ -201,10 +201,34 @@ export function applyRecoveryPlan(plan, stateStore) {
   if (plan.patch) stateStore.updateIssue(plan.patch);
 }
 
+function acceptManualPhaseCommit(config, store, sha, execute, verify) {
+  const state = store?.state;
+  const repair = state?.lisaRepair;
+  if (!repair?.repairId || repair.status !== 'needs-human' || repair.issueNumber !== null ||
+      repair.failureStep !== 'pull-request' || repair.acceptedTreeHash !== null ||
+      repair.runId !== state.runId || repair.phaseIndex !== state.phaseIndex ||
+      state.branch !== config.branch || state.baseBranch !== config.baseBranch ||
+      state.milestone !== config.milestone || !/^[a-f0-9]{40}$/u.test(sha ?? '')) {
+    blocked('Нет остановленного ремонта перед PR этой фазы для принятия ручного коммита.');
+  }
+  const repositoryState = verify(config, false);
+  const git = (...args) => execute('git', args).stdout;
+  if (git('branch', '--show-current') !== config.branch || git('status', '--porcelain') ||
+      git('show', '-s', '--format=%(trailers:key=Ralph-Phase-Repair,valueonly)', 'HEAD') !== repair.repairId ||
+      git('rev-parse', 'HEAD') !== sha) {
+    blocked('Нужны чистое дерево, указанный HEAD в ветке фазы и точный trailer Ralph-Phase-Repair.');
+  }
+  store.finishLisaRepair(repair.repairId);
+  return { recovery: { kind: 'ready', head: sha }, repositoryState, accepted: sha };
+}
+
 /** Prepare one phase through the same entry path used by check, run and manual acceptance. */
 export function prepareRecovery(config, stateStore, mode, dependencies = {}) {
   const execute = dependencies.run ?? run;
   const verify = dependencies.verifyRepository ?? verifyRepository;
+  if (mode === '--accept-manual-commit' && !stateStore?.issue) {
+    return acceptManualPhaseCommit(config, stateStore, dependencies.manualCommit, execute, verify);
+  }
   let repositoryState;
   // A saved issue belongs to its phase branch. A clean --run may return there
   // before recovery reads HEAD; check and manual acceptance stay read-only.

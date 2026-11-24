@@ -4,7 +4,36 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { captureLisaRepairContext, assessLisaRepair, acceptLisaRepair, lisaRepairTreeHash } from './ralph-lisa-repair.mjs';
+import { createTrustedRepairRuntime, captureLisaRepairContext, assessLisaRepair, acceptLisaRepair, lisaRepairTreeHash } from './ralph-lisa-repair.mjs';
+
+test('large review inventory preserves all text and binary bytes in verified attachments', () => {
+  const runtime = createTrustedRepairRuntime();
+  try {
+    assert.equal(runtime.reviewInput({ changes: [] }), '{"changes":[]}');
+    const bytes = Buffer.from('89504e470d0a1a0a00ff', 'hex');
+    const large = 'x'.repeat(210_000);
+    for (const changes of [
+      [{ path: 'large.txt', before: null, after: large }],
+      [{ path: 'image.png', before: null, after: { binary: bytes.toString('base64') } }],
+    ]) {
+      const input = runtime.reviewInput({ changes, policy: { review: true } });
+      assert.ok(input.length < 1000);
+      const manifest = JSON.parse(readFileSync(path.join(runtime.root, input.match(/review-[\w-]+\.json/u)[0]), 'utf8'));
+      assert.deepEqual(manifest.policy, { review: true });
+      const attachment = manifest.changes[0].after;
+      const expected = changes[0].path.endsWith('.png') ? bytes : Buffer.from(large);
+      const file = path.join(runtime.root, attachment.file);
+      assert.deepEqual(readFileSync(file), expected);
+      assert.equal(attachment.bytes, expected.length);
+      assert.equal(manifest.changes[0].before, null);
+      runtime.assertUnchanged();
+      if (changes[0].path.endsWith('.png')) {
+        writeFileSync(file, 'modified');
+        assert.throws(() => runtime.assertUnchanged(), /изменена/);
+      }
+    }
+  } finally { runtime.cleanup(); }
+});
 
 function fixture(issueOverrides = {}) {
   const root = mkdtempSync(path.join(tmpdir(), 'ralph-repair-'));

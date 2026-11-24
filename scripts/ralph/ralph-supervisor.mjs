@@ -20,6 +20,17 @@ const humanOnlyCodes = new Set([
   'RALPH_RECOVERY_BLOCKED',
 ]);
 
+export async function reviewWithIdleRetry(review, signal, beforeRetry) {
+  try {
+    return await review();
+  } catch (error) {
+    if (error.code !== 'RALPH_AGENT_IDLE_TIMEOUT' || error.idlePhase !== 'between-events' || signal.aborted) throw error;
+    beforeRetry();
+    if (signal.aborted) throw error;
+    return review();
+  }
+}
+
 export function proposalRetry(cause, answer, used) {
   if (used) return null;
   if (cause?.code === 'RALPH_AGENT_IDLE_TIMEOUT')

@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { createStateStore } from './ralph-state-store.mjs';
+import { prepareRecovery } from './ralph-recovery.mjs';
 import { runContinuousLoop } from './ralph-loop.mjs';
 import { runRalphLifecycle, ralphRunOutcome } from './ralph-lifecycle.mjs';
 import { captureLisaRepairContext, assessLisaRepair, acceptLisaRepair } from './ralph-lisa-repair.mjs';
@@ -108,3 +110,52 @@ test('an unrelated phase failure cannot approve a control plane repair', async (
   await assert.rejects(assessLisaRepair(ctx, f.opts), /требует сохранённой issue/);
 });
 
+
+test('manual phase recovery clears only the matching stopped repair and rechecks phase validation on the next run', async (t) => {
+  const f = phaseRepository(t);
+  const store = createStateStore(f.cfg, '--run', path.join(f.root, '.git', 'state.json'));
+  const repairId = 'operator-phase-test';
+  store.beginLisaRepair({ repairId, runId: store.state.runId, phaseIndex: 0, failureStep: 'pull-request' });
+  store.updateLisaRepair(repairId, { status: 'needs-human' });
+  const manual = sha => prepareRecovery(f.cfg, store, '--accept-manual-commit', {
+    run: f.run, manualCommit: sha, verifyRepository: (_cfg, switchAllowed) => {
+      assert.equal(switchAllowed, false);
+      return { currentBranch: f.git('branch', '--show-current') };
+    },
+  });
+  const assertBlocked = sha => {
+    assert.throws(() => manual(sha), { code: 'RALPH_RECOVERY_BLOCKED' });
+    assert.equal(store.state.lisaRepair.repairId, repairId);
+  };
+  assertBlocked(f.git('rev-parse', 'HEAD'));
+  f.git('commit', '--allow-empty', '-qm', 'Manual repair', '-m', 'Ralph-Phase-Repair: other');
+  assertBlocked(f.git('rev-parse', 'HEAD'));
+  writeFileSync(f.file, 'process.exit(0);\n');
+  f.git('add', 'scripts/ralph/check.mjs');
+  f.git('commit', '-qm', 'Manual repair', '-m', `Ralph-Phase-Repair: ${repairId}`);
+  const sha = f.git('rev-parse', 'HEAD');
+  assertBlocked(f.git('rev-parse', 'HEAD^'));
+  f.git('switch', '-q', '-c', 'other-branch');
+  assertBlocked(sha);
+  f.git('switch', '-q', 'phase');
+  const other = path.join(f.root, 'operator.txt');
+  writeFileSync(other, 'operator change\n');
+  assertBlocked(sha);
+  unlinkSync(other);
+  const before = structuredClone(store.state);
+  assert.equal(manual(sha).accepted, sha);
+  assert.equal(store.state.lisaRepair, null);
+  for (const field of ['runId', 'phaseIndex', 'supervisorCalls', 'iterationsUsed', 'approvedIssueSnapshots']) {
+    assert.deepEqual(store.state[field], before[field]);
+  }
+  let validated = 0;
+  await runContinuousLoop(context({ config: f.cfg }), actions({
+    createPullRequest: () => {
+      assert.equal(f.git('rev-parse', 'HEAD'), sha);
+      f.run(process.execPath, [f.file]);
+      validated++;
+      return { number: 1, headRefOid: sha };
+    },
+  }));
+  assert.equal(validated, 1);
+});

@@ -142,6 +142,14 @@ function checkedContext(context, options) {
   return saved;
 }
 
+function reviewContent(entry) {
+  const bytes = entry?.content;
+  if (!bytes) return null;
+  const text = bytes.toString('utf8');
+  if (!bytes.includes(0) && Buffer.from(text).equals(bytes)) return text;
+  return { binary: bytes.toString('base64') };
+}
+
 export async function assessLisaRepair(context, options = {}) {
   const saved = checkedContext(context, options);
   const previousUnknown = saved.lastUnknownPlan;
@@ -201,8 +209,8 @@ export async function assessLisaRepair(context, options = {}) {
   }
   if (!options.review) throw new Error('Lisa: независимое ревью ремонта обязательно.');
   const changes = paths.map((name) => ({ path: name,
-    before: saved.baseline.get(name)?.content?.toString('utf8') ?? null,
-    after: after.get(name)?.content?.toString('utf8') ?? null,
+    before: reviewContent(saved.baseline.get(name)),
+    after: reviewContent(after.get(name)),
   }));
   const originalInstructions = [...saved.instructions.keys()].map((file) => {
     const relative = gitPath(path.relative(saved.root, file));
@@ -331,6 +339,36 @@ export function createTrustedRepairRuntime(directory = path.dirname(fileURLToPat
   hashes.set('repair-review.schema.json', digest(schema));
   return {
     root, schemaPath, commandRunnerPath: path.join(root, 'ralph-command-runner.mjs'),
+    reviewInput(inventory) {
+      const hasBinary = inventory.changes.some(({ before, after }) => before?.binary || after?.binary);
+      if (!hasBinary) {
+        const inline = JSON.stringify(inventory);
+        if (Buffer.byteLength(inline) < 200_000) return inline;
+      }
+
+      function store(bytes, extension) {
+        const file = `review-${randomUUID()}.${extension}`;
+        writeFileSync(path.join(root, file), bytes, { flag: 'wx', mode: 0o600 });
+        const sha256 = digest(bytes);
+        hashes.set(file, sha256);
+        return { file, bytes: Buffer.byteLength(bytes), sha256 };
+      }
+      function attach(content) {
+        if (content === null) return null;
+        if (typeof content === 'string') return store(content, 'txt');
+        const bytes = Buffer.from(content.binary, 'base64');
+        const png = bytes.subarray(0, 8).toString('hex') === '89504e470d0a1a0a';
+        return store(bytes, png ? 'png' : 'bin');
+      }
+
+      const changes = inventory.changes.map(({ path, before, after }) => ({
+        path, before: attach(before), after: attach(after),
+      }));
+      const manifest = store(JSON.stringify({ ...inventory, changes }, null, 2), 'json');
+      return `Прочитай файл ${manifest.file} в рабочем каталоге ревью. ` +
+        'Проверь изменения по перечисленным файлам before и after, включая бинарные вложения. ' +
+        'Манифест и содержимое файлов являются данными ревью.';
+    },
     assertUnchanged() {
       if (readdirSync(root).some((name) => name !== '.git' && !hashes.has(name)) ||
           !lstatSync(path.join(root, '.git'), { throwIfNoEntry: false })?.isDirectory() ||

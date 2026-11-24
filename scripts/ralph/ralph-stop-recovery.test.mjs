@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { assertScopedHostCommands } from './ralph-validation-runner.mjs';
-import { proposalRetry } from './ralph-supervisor.mjs';
+import { proposalRetry, reviewWithIdleRetry } from './ralph-supervisor.mjs';
 import { routeImages, writesEvidence } from './ralph-route-evidence.mjs';
 
 test('a timeout or incomplete escalation gets one new session; external blockers stop', () => {
@@ -41,4 +41,25 @@ test('host blocks broad commands in project profiles', () => {
     assert.throws(() => assertScopedHostCommands([command]), {code:'RALPH_VALIDATION_SCOPE_UNKNOWN'});
   assert.throws(() => assertScopedHostCommands(['do-a','do-b'], ['do-b','do-a']));
   assert.doesNotThrow(() => assertScopedHostCommands(['npx playwright test example.spec.ts']));
+});
+
+test('Lisa retries only a stalled active review once, within the current repair', async () => {
+  const error = Object.assign(new Error('idle'), { code: 'RALPH_AGENT_IDLE_TIMEOUT', idlePhase: 'between-events' });
+  const signal = new AbortController().signal;
+  let calls = 0;
+  let retries = 0;
+  const review = () => { if (++calls === 1) throw error; return 'pass'; };
+  assert.equal(await reviewWithIdleRetry(review, signal, () => { retries++; }), 'pass');
+  assert.equal(calls, 2);
+  assert.equal(retries, 1);
+
+  for (const [failure, aborted, attempts] of [
+    [error, false, 2], [error, true, 1],
+    [{ code: 'RALPH_AGENT_IDLE_TIMEOUT', idlePhase: 'first-event' }, false, 1],
+    [{ code: 'RALPH_AGENT_STARTUP_EXHAUSTED' }, false, 1], [{ code: 'RALPH_AGENT_AUTH' }, false, 1],
+  ]) {
+    calls = 0;
+    await assert.rejects(reviewWithIdleRetry(() => { calls++; throw failure; }, { aborted }, () => {}), e => e === failure);
+    assert.equal(calls, attempts);
+  }
 });
