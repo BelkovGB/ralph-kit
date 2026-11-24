@@ -1,3 +1,4 @@
+import { boundedGitPatch } from './ralph-review-diff.mjs';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -241,7 +242,9 @@ export function issueChangeInventory(issue, commit, dependencies = {}) {
   const reviewed = commits.length > 0 ? [...commits].reverse() : [commit];
   const inspect = (flags, pathspecs = []) =>
     execute('git', ['show', '--format=', ...flags, ...reviewed, ...pathspecs]).stdout;
-  const patch = inspect(['--patch', '--unified=3'], ['--', '.', ...excluded]);
+  const patch = boundedGitPatch(execute, [
+    'show', '--format=', '--patch', '--unified=3', ...reviewed, '--', '.', ...excluded,
+  ], reviewDiffCharacterBudget).stdout;
   const truncated = patch.length > reviewDiffCharacterBudget;
 
   const nameStatus = inspect(['--name-status']);
@@ -249,6 +252,7 @@ export function issueChangeInventory(issue, commit, dependencies = {}) {
   return {
     commit,
     commits: commits.length > 0 ? commits : [commit],
+    excludedPaths: dependencies.excludedPaths ?? [],
     ...(incremental ? { afterHead } : {}),
     // Пути разбираются здесь, у источника: `git diff --name-status` печатает
     // статус, табуляцию и путь, а для переименования — два пути, из которых
@@ -288,7 +292,10 @@ export function branchChangeInventory(baseRef, head, dependencies = {}) {
     ['log', '--format=%h %s', range, '--', '.', ...controlPlaneExcludePathspec],
     { allowFailure: true },
   );
-  const patch = inspect(['--patch', '--unified=3']);
+  const excluded = reviewDiffExcludePathspec(dependencies.excludedPaths);
+  const patch = boundedGitPatch(execute, [
+    'diff', '--patch', '--unified=3', range, '--', '.', ...controlPlaneExcludePathspec, ...excluded,
+  ], reviewDiffCharacterBudget, { allowFailure: true });
   // Отсутствие базы — не повод ронять ревью: оно идёт без инвентаря изменений.
   if (patch.status !== 0) return null;
   const truncated = patch.stdout.length > reviewDiffCharacterBudget;
@@ -296,6 +303,7 @@ export function branchChangeInventory(baseRef, head, dependencies = {}) {
   return {
     range,
     commits: commits.status === 0 ? commits.stdout : '',
+    excludedPaths: dependencies.excludedPaths ?? [],
     nameStatus: inspect(['--name-status']).stdout,
     stat: inspect(['--stat']).stdout,
     diff: truncated ? patch.stdout.slice(0, reviewDiffCharacterBudget) : patch.stdout,

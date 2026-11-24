@@ -260,7 +260,7 @@ export async function runMilestoneReview(config, repository, milestone, pullRequ
       );
       const incrementalChanges =
         merges.status === 0 && merges.stdout === ''
-          ? branchChangeInventory(previous.head, pullRequest.headRefOid)
+          ? branchChangeInventory(previous.head, pullRequest.headRefOid, { excludedPaths: config.reviewDiffExcludedPaths })
           : null;
       if (incrementalChanges) {
         changes = incrementalChanges;
@@ -275,7 +275,7 @@ export async function runMilestoneReview(config, repository, milestone, pullRequ
   if (!previousReview) {
     // База берётся с origin, а не с локальной ветки: локальная может отставать,
     // и тогда в diff попадёт чужая работа, которую ревьюер обязан игнорировать.
-    changes = branchChangeInventory(`origin/${config.baseBranch}`, pullRequest.headRefOid);
+    changes = branchChangeInventory(`origin/${config.baseBranch}`, pullRequest.headRefOid, { excludedPaths: config.reviewDiffExcludedPaths });
   }
   const reviewPrompt = buildMilestoneReviewPrompt(config, milestone, pullRequest, {
     changes,
