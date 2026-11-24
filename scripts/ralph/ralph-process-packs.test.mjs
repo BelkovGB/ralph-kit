@@ -95,8 +95,8 @@ if (output !== -1) {
 } else if (prompt.includes('### Режим research')) {
   if (readFileSync('button.txt', 'utf8') !== 'ready') throw new Error('dependency incomplete');
   const report = 'docs/ralph-reports/issue-13.md';
-  if (existsSync(report)) unlinkSync('out-of-scope.txt');
-  else writeFileSync('out-of-scope.txt', 'Should never be committed.');
+  if (prompt.includes('research: измените только ' + report)) unlinkSync('out-of-scope.txt');
+  else if (!existsSync(report)) writeFileSync('out-of-scope.txt', 'Should never be committed.');
   mkdirSync('docs/ralph-reports', { recursive: true });
   writeFileSync(report, '# Report\n\nThe updated button is ready.\n');
 } else throw new Error('Unexpected role or process.');
