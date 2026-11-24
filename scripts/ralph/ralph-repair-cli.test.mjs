@@ -100,7 +100,14 @@ test(`real CLI repair lifecycle: ${scenario}`, async () => {
         if (!process.cwd().includes('ralph-repair-runtime-') || args[args.indexOf('-C') + 1] !== process.cwd()) throw new Error('review loaded candidate project');
         if (existsSync('AGENTS.md') || existsSync('.claude')) throw new Error('candidate instructions loaded as review rules');
         ${scenario === 'stop-review' ? `writeFileSync(${JSON.stringify(path.join(root, '.git/ralph-loop/review-started.marker'))}, 'started'); setInterval(() => {}, 1000); await new Promise(() => {});` : ''}
-        ${scenario === 'instruction-repair' ? "if (!prompt.includes('AGENTS.md') || !prompt.includes('Preserve requirement')) throw new Error('instruction missing from review');" : ''}
+        ${scenario === 'instruction-repair' ? `
+          const manifestFile = prompt.match(/review-[a-f0-9-]+[.]json/u)?.[0];
+          const inventory = manifestFile ? JSON.parse(readFileSync(manifestFile, 'utf8')) :
+            JSON.parse(prompt.slice(prompt.indexOf('\\n') + 1));
+          const instruction = inventory.changes.find(change => change.path === 'AGENTS.md');
+          const text = manifestFile && instruction?.after ? readFileSync(instruction.after.file, 'utf8') : instruction?.after;
+          if (!text?.includes('Preserve requirement')) throw new Error('instruction missing from review');
+        ` : ''}
         const verdict = ${scenario === 'retry-review' ? "attempts === 1 ? 'retry' : 'pass'" : `'${['review-error', 'ignored-instruction'].includes(scenario) ? 'human' : 'pass'}'`};
         writeFileSync(output, JSON.stringify({ verdict, reason: ${scenario === 'retry-review' ? "'REPAIR_REVIEW_FEEDBACK'" : "'independent review result'"} }));
       } else {
