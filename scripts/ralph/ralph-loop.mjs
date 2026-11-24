@@ -16,7 +16,9 @@ import {
 import {
   applySeverityFloor,
   fail,
+  isRalphInfrastructureGitPath,
   isRalphInfrastructureIssue,
+  clarifyProductReview,
   scopeReviewToProduct,
 } from './ralph-scope.mjs';
 
@@ -128,7 +130,7 @@ import { assertProcessReport, resolveIssueProcess } from './ralph-process-packs.
 
 import {
   analyzeRecovery, applyRecoveryPlan, committedRecoveryPhases, committedValidationFailurePatch,
-  hasAcceptedLisaIssueRepair, prepareRecovery, resumeAcceptedIssue, savedIssueReview,
+  hasAcceptedLisaIssueRepair, hasAcceptedLisaProductRepair, prepareRecovery, resumeAcceptedIssue, savedIssueReview,
 } from './ralph-recovery.mjs';
 
 import { KIT_VERSION } from './ralph-version.mjs';
@@ -313,7 +315,7 @@ async function runIndependentReview(config, issue, commit, expectedHead) {
   const previous = saved?.number === issue.number ? saved : null;
   const receipt = previous?.reviewReceipt;
   const inventory = issueChangeInventory(issue, commit, {
-    afterHead: ['pass', 'fail'].includes(receipt?.result?.verdict) ? receipt.head : undefined,
+    afterHead: savedIssueReview(previous, receipt?.head) ? receipt.head : undefined,
     excludedPaths: config.reviewDiffExcludedPaths,
   });
   const reviewPrompt = buildIndependentReviewPrompt(
@@ -330,19 +332,19 @@ async function runIndependentReview(config, issue, commit, expectedHead) {
   console.log(`\n=== Independent review for issue #${issue.number} ===\n`);
 
   const reviewLabel = `Review issue #${issue.number}`;
-  const candidate = await runReviewSession(config, config.review, {
-    input: reviewPrompt,
-    maxTurns: config.maxTurns,
-    timeoutMs: config.runtime.agentTimeoutMs,
-    label: reviewLabel,
-  });
-
-  assertReviewPayloadShape(candidate, reviewLabel);
-  const review = applySeverityFloor(
-    scopeReviewToProduct(normalizeReviewResult(candidate), reviewLabel),
-    config.reviewSeverityFloor,
-    reviewLabel,
-  );
+  const askReviewer = async (input) => {
+    const candidate = await runReviewSession(config, config.review, {
+      input,
+      maxTurns: config.maxTurns,
+      timeoutMs: config.runtime.agentTimeoutMs,
+      label: reviewLabel,
+    });
+    assertReviewPayloadShape(candidate, reviewLabel);
+    return normalizeReviewResult(candidate);
+  };
+  const assessment = await clarifyProductReview(askReviewer, reviewPrompt, reviewLabel);
+  const review = applySeverityFloor(scopeReviewToProduct(assessment, reviewLabel),
+    config.reviewSeverityFloor, reviewLabel);
 
   const changes = run('git', ['status', '--porcelain']).stdout;
   const headAfterReview = run('git', ['rev-parse', 'HEAD']).stdout;
@@ -486,7 +488,7 @@ function pendingIssuePublication(config, stateStore, head = stateStore?.issue?.r
   const checkpoint = issue?.publicationCheckpoint;
   if (!config.review?.enabled || !issue?.commit || !committedRecoveryPhases.includes(issue.phase) ||
       !head || checkpoint?.head !== head || issue.reviewReceipt?.head !== head ||
-      issue.reviewReceipt.result?.verdict !== 'pass') return null;
+      savedIssueReview(issue, head)?.verdict !== 'pass') return null;
   const pending = checkpoint.step === 'push' ? issue.pendingPublishHead === head && issue.pushedHead !== head
     : checkpoint.step === 'close' && issue.phase === 'closing' && issue.pushedHead === head;
   if (!pending || typeof checkpoint.fingerprint !== 'string') return null;
@@ -556,7 +558,7 @@ async function reviewAndCloseCommittedIssue(config, repository, issue, commit, e
       console.error(`Issue #${issue.number}: замечания сохранены локально, GitHub недоступен. ${error.message}`);
     }
 
-    const lisaOwnsIssue = hasAcceptedLisaIssueRepair(store?.state, issue);
+    const lisaOwnsIssue = hasAcceptedLisaProductRepair(store?.state, issue);
     if (lisaOwnsIssue || reviewFixAttempts >= config.maxReviewFixAttempts) {
       console.error(
         `Issue #${issue.number}: ревью отклонило работу ${reviewFixAttempts} раз подряд. ` +
@@ -652,8 +654,10 @@ function retryIssueValidation(config, issue, error) {
 }
 
 function shouldCommitAcceptedRepair(state, issue) {
-  return hasAcceptedLisaIssueRepair(state, issue) && !state.issue.commit &&
-    !state.issue.processReportRepair?.needsDevelopment;
+  if (!hasAcceptedLisaIssueRepair(state, issue) || state.issue.commit ||
+      state.issue.processReportRepair?.needsDevelopment) return false;
+  return hasAcceptedLisaProductRepair(state, issue) ||
+    Boolean(state.issue.lisaPublishedProductHead && state.issue.lisaPublishedProductHead === state.issue.startingCommit);
 }
 
 async function commitAndCompleteIssue(config, repository, issue, startingCommit, lastAgentMessage) {
@@ -689,6 +693,16 @@ async function commitAndCompleteIssue(config, repository, issue, startingCommit,
         `изменённых до начала задачи: ${untouchedForeign.slice(0, 5).join(', ')}` +
         `${untouchedForeign.length > 5 ? ' и другие' : ''}.`,
     );
+  }
+
+  const recoveryState = activeStateStore()?.state;
+  if (agentEntries.length > 0 && hasAcceptedLisaIssueRepair(recoveryState, issue) &&
+      !hasAcceptedLisaProductRepair(recoveryState, issue) &&
+      recoveryState.issue.lisaPublishedProductHead !== currentCommit &&
+      agentEntries.flatMap(workingTreeEntryPaths).every(isRalphInfrastructureGitPath)) {
+    throw Object.assign(new Error(
+      `Issue #${issue.number}: после ремонта окружения или инструкций нет продуктовых изменений.`,
+    ), { code: 'RALPH_NEEDS_HUMAN' });
   }
 
   if (agentEntries.length === 0) {
@@ -967,7 +981,7 @@ export async function runAgentOnIssue(config, repository, issue, rules) {
   try {
     codexResult = await observedRepairStep('development', () => runDevelopmentSession(config, {
       input: renderPrompt(config, issue, rules) + continuationPrompt,
-      maxTurns: config.maxTurns,
+      maxTurns: config.developmentMaxTurns ?? config.maxTurns,
       timeoutMs: config.runtime.agentTimeoutMs,
       label: `${config.agentCli} issue #${issue.number}`,
     }));
@@ -980,7 +994,7 @@ export async function runAgentOnIssue(config, repository, issue, rules) {
       phase: 'working-tree',
       ...recordedFailure(error),
     });
-    if (error.code === 'RALPH_AGENT_AUTH') {
+    if (['RALPH_AGENT_AUTH', 'RALPH_AGENT_STARTUP_EXHAUSTED', 'RALPH_NEEDS_HUMAN'].includes(error.code)) {
       throw error;
     }
     if (['RALPH_MAX_TURNS', 'RALPH_AGENT_TIMEOUT'].includes(error.code)) {
@@ -1123,7 +1137,7 @@ export function printCheck(
   console.log(
     `Итерации: использовано ${budget.used}/${budget.limit}, осталось ${budget.remaining}`,
   );
-  console.log(`Лимит шагов на сессию: ${config.maxTurns}`);
+  console.log(`Лимит шагов реализации: ${config.developmentMaxTurns ?? config.maxTurns}, ревью issue: ${config.maxTurns}`);
   console.log(`Лимит исправлений тестов: ${config.maxTestFixAttempts}`);
   console.log(`Модель разработки: ${config.developmentModel} (effort=${config.developmentEffort})`);
   if (config.supervisor?.enabled) {
@@ -1536,7 +1550,7 @@ export async function runContinuousLoop(context, actions) {
       stateStore?.issue?.number === currentIssue.number ? stateStore.issue.phase : null;
     const linkedCommit = storedPhase ? null : actions.linkedCommitForIssue?.(currentIssue);
     if (linkedCommit) currentIssue.linkedCommit = linkedCommit;
-    if (storedPhase === 'review-failed' && hasAcceptedLisaIssueRepair(stateStore?.state, currentIssue)) {
+    if (storedPhase === 'review-failed' && hasAcceptedLisaProductRepair(stateStore?.state, currentIssue)) {
       return { mode: 'run', verdict: 'parked', parkedIssues: [currentIssue.number] };
     }
     const needsDevelopmentIteration =
@@ -1593,7 +1607,7 @@ export async function runContinuousLoop(context, actions) {
       });
       if (
         needsDevelopmentIteration &&
-        ['RALPH_AGENT_AUTH', 'RALPH_AGENT_WRITE_ACCESS', 'RALPH_UNTRUSTED_ISSUE', 'RALPH_PROCESS_CONFIG'].includes(
+        ['RALPH_AGENT_AUTH', 'RALPH_AGENT_STARTUP_EXHAUSTED', 'RALPH_AGENT_WRITE_ACCESS', 'RALPH_UNTRUSTED_ISSUE', 'RALPH_PROCESS_CONFIG'].includes(
           error.code,
         )
       ) {
@@ -1822,7 +1836,9 @@ async function main(lifecycle = null) {
       const { accepted } = prepareRecovery(firstPhaseConfig, activeStateStore(), mode, {
         hostWorkingTreeHash, manualCommit: process.argv[3] ?? '',
       });
-      console.log('Ручной коммит принят. Следующий --run заново выполнит проверки и ревью; задача ещё не завершена.');
+      console.log(activeStateStore().issue
+        ? 'Ручной коммит принят. Следующий --run заново выполнит проверки и ревью; задача ещё не завершена.'
+        : 'Ручной коммит ремонта фазы принят. Следующий --run заново выполнит проверки фазы перед PR.');
       return { mode, accepted };
     }
     const rules = loadRalphRules(config);

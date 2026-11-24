@@ -4,6 +4,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -37,6 +38,32 @@ export const executableTempDirectory = path.join(
   'ralph-test',
 );
 mkdirSync(executableTempDirectory, { recursive: true });
+
+// A real CLI fixture runs the shipped modules against synthetic project inputs.
+// Never load the installed project's commands, validation environment or issue ledger.
+export function createCliFixture(root) {
+  const runtime = fileURLToPath(new URL('.', import.meta.url));
+  const scripts = path.join(root, 'scripts', 'ralph');
+  const agents = path.join(root, '.agents');
+  mkdirSync(scripts, { recursive: true });
+  mkdirSync(agents, { recursive: true });
+  for (const entry of readdirSync(runtime, { withFileTypes: true })) {
+    if (entry.isFile() && /^ralph-.*\.mjs$/u.test(entry.name) &&
+        !entry.name.endsWith('.test.mjs') && entry.name !== 'ralph-test-support.mjs') {
+      copyFileSync(path.join(runtime, entry.name), path.join(scripts, entry.name));
+    }
+  }
+  copyFileSync(new URL('../../.agents/review.schema.json', import.meta.url), path.join(agents, 'review.schema.json'));
+  writeFileSync(path.join(agents, 'RALPH.md'), 'Fixture operator guide.\n');
+  writeFileSync(path.join(agents, 'ralph-rules.md'), 'Preserve the issue requirements and use the configured validation.\n');
+  writeFileSync(path.join(root, '.gitignore'), '.agents/last-review.json\n.agents/last-milestone-review.json\n');
+  return {
+    active: true, agentCli: 'codex', developmentModel: 'fixture-model',
+    baseBranch: 'main', autoApproveConfiguredIssues: true,
+    prompt: 'Implement issue #{issue_number}: {issue_title}.',
+    preflightScripts: [], validationScripts: [], runtime: { networkRetryAttempts: 1 },
+  };
+}
 
 export function fakeCodexScript(source) {
   const directory = mkdtempSync(path.join(executableTempDirectory, '.ralph-fake-codex-'));

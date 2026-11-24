@@ -324,12 +324,16 @@ test('блок замечаний в теле issue отделим от треб
 function inventoryRunner(commits) {
   const calls = [];
   const run = (_name, args) => {
-    calls.push(args.join(' '));
+    calls.push(args);
     if (args[0] === 'log') return { status: 0, stdout: commits.map((sha) => `${sha}\t#57`).join('\0') };
     if (args[0] === 'rev-parse') return { status: 0, stdout: 'd'.repeat(40) };
-    if (args.includes('--name-status')) return { stdout: 'M\tsrc/items.ts' };
-    if (args.includes('--stat')) return { stdout: ' src/items.ts | 4 +++-' };
-    return { stdout: 'x'.repeat(70_000) };
+    if (args.includes('--name-status')) return { status: 0, stdout: 'M\tsrc/items.ts\nM\tdependencies.lock' };
+    if (args.includes('--stat')) return { status: 0, stdout: 'src/items.ts | 4 +++-\ndependencies.lock | 2 +-' };
+    assert.ok(args.includes('--patch'));
+    const output = args.find((arg) => arg.startsWith('--output='))?.slice('--output='.length);
+    assert.ok(output, 'Git must write the patch to its output file');
+    writeFileSync(output, 'x'.repeat(70_000));
+    return { status: 0, stdout: '' };
   };
 
   return { calls, run };
@@ -345,15 +349,22 @@ test('the change inventory reads one commit through show and marks an oversized 
   });
 
   assert.equal(inventory.truncated, true);
-  assert.equal(inventory.diff.length, 60_000);
-  assert.match(inventory.nameStatus, /src\/items\.ts/);
+  assert.equal(inventory.diff, 'x'.repeat(60_000));
+  assert.deepEqual(inventory.paths, ['src/items.ts', 'dependencies.lock']);
+  assert.match(inventory.stat, /dependencies\.lock/);
   assert.deepEqual(inventory.commits, [commit]);
   // У `git show` нет особого случая для корневого commit, в отличие от
   // `commit^..commit`, поэтому одиночный commit читается именно так.
-  assert.equal(calls.filter((call) => call.startsWith('show --format=')).length, 3);
-  assert.ok(!calls.some((call) => call.startsWith('rev-parse')));
-  // Исключённый путь убирается только из построчного diff и остаётся в списке файлов.
-  assert.ok(calls.some((call) => call.includes(':(exclude)dependencies.lock')));
+  const shows = calls.filter(([command]) => command === 'show');
+  assert.equal(shows.length, 3);
+  for (const flag of ['--name-status', '--stat', '--patch']) {
+    const matches = shows.filter((args) => args.includes(flag));
+    assert.equal(matches.length, 1, flag);
+    const [args] = matches;
+    assert.ok(args.includes('--format=') && args.includes(commit));
+    assert.equal(args.includes(':(exclude)dependencies.lock'), flag === '--patch');
+  }
+  assert.ok(!calls.some(([command]) => command === 'rev-parse'));
 });
 
 test('a second iteration shows the issue commits only, not the range between them', () => {
@@ -366,11 +377,10 @@ test('a second iteration shows the issue commits only, not the range between the
   assert.deepEqual(inventory.commits, [newest, oldest]);
   // Диапазон `oldest^..newest` втянул бы всё, что легло в ветку между ними,
   // включая чужие правки control plane.
-  assert.ok(!calls.some((call) => call.startsWith('rev-parse')));
-  assert.ok(!calls.some((call) => call.startsWith('diff ')));
+  assert.ok(!calls.some(([command]) => command === 'rev-parse' || command === 'diff'));
   // Оба commit перечислены в хронологическом порядке в одном вызове.
   assert.equal(
-    calls.filter((call) => call.includes(`${oldest} ${newest}`)).length,
+    calls.filter((args) => args[0] === 'show' && args.includes(oldest) && args[args.indexOf(oldest) + 1] === newest).length,
     3,
     'ожидались три вызова show с обоими commit',
   );
@@ -426,6 +436,12 @@ test('the reviewed HEAD selects only new commits of this issue before truncating
     assert.deepEqual(fallback.commits, [head, afterHead]);
     assert.deepEqual(fallback.paths, ['old.txt', 'fix.txt']);
     assert.equal(fallback.truncated, true);
+    const filtered = issueChangeInventory(issue, head, { run, excludedPaths: ['old.txt'] });
+    assert.deepEqual(filtered.paths, fallback.paths);
+    assert.equal(filtered.stat, fallback.stat);
+    assert.equal(filtered.truncated, false);
+    assert.match(filtered.diff, /\+exact new fix/u);
+    assert.doesNotMatch(filtered.diff, /old\.txt|already reviewed/u);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -615,12 +631,17 @@ test('relative references from project-local skills exist', () => {
   }
 });
 
-test('a skill body in .agents is mirrored by a link in .claude', () => {
-  // Claude Code loads skills from `.claude/skills`, Codex from
-  // `.agents/skills`. A skill that lives only in `.claude` is legitimate: it
-  // may need what Codex has not. A body with no link is not: the command
-  // disappears from Claude Code, and nothing reports it. Frontmatter decides
-  // whether the model raises the skill, so the pair must read identically.
+// A consuming project can also install skills for a single CLI. The Kit repository
+// owns every skill in its source tree. Its install guide stays outside the distribution.
+const kitInstallGuide = fileURLToPath(new URL('../../INSTALL.md', import.meta.url));
+const kitSourceCheckout = existsSync(kitInstallGuide) &&
+  readFileSync(kitInstallGuide, 'utf8').startsWith('# Установка Ralph Kit в проект');
+const shippedWorkflowSkills = [
+  'acceptance', 'complete-work', 'init-project', 'issues', 'plan-phase',
+  'prd', 'prepare-run', 'review-all', 'solution-architect',
+];
+
+test('every shipped skill body in .agents is mirrored in .claude', () => {
   const skillsByDirectory = (root) =>
     new Map(
       agentSkillFiles()
@@ -629,11 +650,11 @@ test('a skill body in .agents is mirrored by a link in .claude', () => {
     );
   const bodies = skillsByDirectory('.agents');
   const links = skillsByDirectory('.claude');
-  // Without this the loop below would pass on an empty checkout.
-  assert.notEqual(bodies.size, 0, '.agents/skills holds no SKILL.md');
-
-  for (const [skill, body] of bodies) {
+  const expected = new Set([...shippedWorkflowSkills, ...(kitSourceCheckout ? bodies.keys() : [])]);
+  for (const skill of expected) {
+    const body = bodies.get(skill);
     const link = links.get(skill);
+    assert.ok(body, `${skill}: .agents/skills body is missing`);
     assert.ok(link, `${skill}: body in .agents/skills has no link in .claude/skills`);
     const bodyFields = parseSkillFrontmatter(readFileSync(body, 'utf8')).fields;
     const linkFields = parseSkillFrontmatter(readFileSync(link, 'utf8')).fields;
@@ -666,14 +687,16 @@ test(
     const internalSkills = new Set(
       JSON.parse(readFileSync(ralphConfigPath, 'utf8')).developmentSkills ?? [],
     );
-    const bodies = agentSkillFiles()
+    const bodies = new Set(agentSkillFiles()
       .filter((file) => file.split(path.sep).includes('.agents'))
-      .map((file) => path.basename(path.dirname(file)))
-      .filter((skill) => !internalSkills.has(skill));
+      .map((file) => path.basename(path.dirname(file))));
+    for (const skill of listed) assert.ok(bodies.has(skill), `/${skill} has no skill body`);
 
-    // Несколько режимов одной команды могут ссылаться на один навык.
-    // Все имена всё равно должны существовать, каждый навык — быть доступен.
-    assert.deepEqual([...new Set(listed)].sort(), bodies.sort());
+    const expected = kitSourceCheckout
+      ? [...bodies].filter((skill) => !internalSkills.has(skill))
+      : shippedWorkflowSkills;
+    for (const skill of expected) assert.ok(listed.includes(skill), `/${skill} is missing from the guide`);
+    if (kitSourceCheckout) assert.deepEqual([...new Set(listed)].sort(), expected.sort());
   },
 );
 
@@ -927,6 +950,20 @@ test('phase push sends only the verified SHA and rejects a changed local HEAD', 
   ]]);
 });
 
+test('developmentMaxTurns inherits maxTurns and accepts only a positive integer override', () => {
+  withPatchedRalphConfig({ maxTurns: 6, developmentMaxTurns: undefined }, (config) => {
+    assert.equal(config.developmentMaxTurns, 6);
+  });
+  withPatchedRalphConfig({ maxTurns: 6, developmentMaxTurns: 9 }, (config) => {
+    assert.equal(config.developmentMaxTurns, 9);
+    assert.equal(config.maxTurns, 6);
+  });
+  for (const value of [0, -1, 1.5, '9']) {
+    assert.throws(() => withPatchedRalphConfig({ developmentMaxTurns: value }, () => {}),
+      /developmentMaxTurns/);
+  }
+});
+
 test('reasoning effort falls back to medium/medium/high when the config omits it', () => {
   const original = JSON.parse(readFileSync(ralphConfigPath, 'utf8'));
   const { effort: _review, ...review } = original.review;
@@ -1015,8 +1052,8 @@ test('fast mode accepts only booleans and does not replace a Claude role model',
     [{ supervisor: { ...sample.supervisor, fast: 1 } }, 'supervisor.fast'],
     [{ review: { ...sample.review, fast: 'yes' } }, 'review.fast'],
     [{ milestoneReview: { ...sample.milestoneReview, fast: 1 } }, 'milestoneReview.fast'],
-    [{ developmentModel: 'claude-fable-5-1', developmentFast: true }, 'developmentFast'],
-    [{ developmentModel: 'claude-opus-5-1', developmentFast: true }, 'developmentFast'],
+    [{ agentCli: 'claude', developmentModel: 'claude-fable-5-1', developmentFast: true }, 'developmentFast'],
+    [{ agentCli: 'claude', developmentModel: 'claude-opus-5-1', developmentFast: true }, 'developmentFast'],
   ]) {
     assert.throws(() => withPatchedRalphConfig(patch, () => {}),
       (error) => error.message.includes(`"${field}"`));

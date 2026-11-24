@@ -50,6 +50,24 @@ for (const phase of ['review-failed', 'committed', 'pushed', 'reviewing', 'closi
   });
 }
 
+for (const [file, trailer, proven] of [
+  ['code.txt', '#12', true], ['AGENTS.md', '#12', false], ['code.txt', '#13', false],
+]) {
+  test(`publication repair requires this issue's product commit: ${file} ${trailer}`, (t) => {
+    const f = fixture(t, 'closing');
+    writeFileSync(path.join(f.root, file), 'synthetic change');
+    f.run('git', ['add', '--', file]);
+    f.run('git', ['commit', '-m', 'synthetic work', '-m', `Ralph-Issue: ${trailer}`]);
+    const head = f.run('git', ['rev-parse', 'HEAD']).stdout;
+    Object.assign(f.issue, { commit: head, recoveryHead: head, pushedHead: head, reviewedCommit: head });
+    writeFileSync(path.join(f.root, 'CLAUDE.md'), 'synthetic repair');
+    supervisor.prepareLisaResume({ ...f.config, review: { enabled: true } }, f.store,
+      { ...f.before, head, repairId: 'repair' }, { run: f.run, acceptedRepair: true });
+    assert.equal(f.issue.lisaPublishedProductHead, proven ? head : null);
+    assert.equal(f.issue.reviewReceipt, null);
+  });
+}
+
 for (const phase of ['validation-diagnostic', 'validation-mutated']) {
   test(`accepted repair can reconcile ${phase} without weakening legacy recovery`, (t) => {
     const f = fixture(t, phase);

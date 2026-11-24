@@ -1,12 +1,10 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import test from 'node:test';
-import { executableTempDirectory, withFakeCodex, withFakeGh } from './ralph-test-support.mjs';
+import { createCliFixture, executableTempDirectory, withFakeCodex, withFakeGh } from './ralph-test-support.mjs';
 
-const sourceRoot = fileURLToPath(new URL('../..', import.meta.url));
 function git(root, ...args) {
   const result = spawnSync('git', args, { cwd: root, encoding: 'utf8', windowsHide: true });
   assert.equal(result.status, 0, result.stderr);
@@ -18,16 +16,13 @@ for (const scenario of ['pushed', 'closing', 'closing-foreign', 'closing-staged'
     const root = mkdtempSync(path.join(executableTempDirectory, 'repair-published-'));
     const remote = mkdtempSync(path.join(executableTempDirectory, 'repair-remote-'));
     try {
-      cpSync(path.join(sourceRoot, 'scripts'), path.join(root, 'scripts'), { recursive: true });
-      cpSync(path.join(sourceRoot, '.agents'), path.join(root, '.agents'), { recursive: true });
-      cpSync(path.join(sourceRoot, '.gitignore'), path.join(root, '.gitignore'));
+      const config = createCliFixture(root);
       const configPath = path.join(root, '.agents/ralph.config.json');
-      const config = JSON.parse(readFileSync(configPath, 'utf8'));
-      Object.assign(config, { active: true, agentCli: 'codex', githubAccount: null, syncBaseBranch: false,
-        phases: [{ milestone: 'Repair', branch: 'phase' }], validationScripts: [], preflightScripts: [],
-        validationArtifactPaths: [], stopAfterFirstIssue: true, autoApproveConfiguredIssues: true,
-        review: { ...config.review, enabled: scenario === 'closing' },
-        supervisor: { ...config.supervisor, enabled: true, agentCli: 'codex' } });
+      Object.assign(config, { syncBaseBranch: false, phases: [{ milestone: 'Repair', branch: 'phase' }],
+        stopAfterFirstIssue: true,
+        review: { enabled: scenario === 'closing', model: 'fixture-model',
+          schemaFile: '.agents/review.schema.json', outputFile: '.agents/last-review.json' },
+        supervisor: { enabled: true, agentCli: 'codex', model: 'fixture-model' } });
       writeFileSync(configPath, JSON.stringify(config));
       const target = path.join(root, 'scripts/ralph/ralph-acceptance.mjs');
       writeFileSync(target, readFileSync(target, 'utf8') + "\nexport const repairFixtureValue = 'broken';\n");
@@ -47,7 +42,8 @@ import { repairFixtureValue } from './ralph-acceptance.mjs';`);
           const issue = { number: 12, title: 'Preserved product task', body: 'Preserve requirement', authorLogin: 'owner' };
           if (!store.issue) {
             const head = run('git', ['rev-parse', 'HEAD']).stdout;
-            store.beginIssue(issue, head, ${['closing-foreign', 'closing-staged'].includes(scenario) ? "['user.txt']" : '[]'});
+            const base = run('git', ['rev-parse', 'HEAD^']).stdout;
+            store.beginIssue(issue, base, ${['closing-foreign', 'closing-staged'].includes(scenario) ? "['user.txt']" : '[]'});
             store.updateIssue({ phase: '${scenario === 'pushed' ? 'pushed' : 'closing'}', commit: head, recoveryHead: head, pushedHead: head, reviewedCommit: head });
           }
           sendRalphWorkerMessage(lifecycle, 'prepared', { config: phaseConfig, stateRunId: store.state.runId });
@@ -66,6 +62,9 @@ import { repairFixtureValue } from './ralph-acceptance.mjs';`);
       git(root, 'config', 'user.name', 'Repair Test');
       git(root, 'config', 'user.email', 'repair@example.test');
       git(root, 'add', '.');
+      git(root, 'commit', '--quiet', '-m', 'Initialize fixture project');
+      writeFileSync(path.join(root, 'product.txt'), 'Preserved product work\n');
+      git(root, 'add', 'product.txt');
       git(root, 'commit', '--quiet', '-m', 'product completed\n\nRalph-Issue: #12');
       const before = git(root, 'rev-parse', 'HEAD');
       git(remote, 'init', '--quiet', '--bare');

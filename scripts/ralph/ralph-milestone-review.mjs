@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto';
 
 import {
   applySeverityFloor,
+  clarifyProductReview,
+  filteredPassFromOlderKit,
   fail,
   isRalphInfrastructurePath,
   scopeMilestoneReviewToProduct,
@@ -87,14 +89,15 @@ export function lastPublishedMilestoneReview(
     if (!head) return null;
     const expectedMarker = milestoneReviewMarker(config, milestone, { headRefOid: head });
     if (!body.includes(expectedMarker)) return null;
-    if (body.includes(milestonePartialCoverageMarker)) return null;
+    if (body.includes(milestonePartialCoverageMarker) ||
+        (body.includes('**Verdict:** **PASS**') && filteredPassFromOlderKit(body))) return null;
     return { head, body };
   }
   return null;
 }
 
 export function milestonePassReviewIsClean(body, marker) {
-  if (typeof body !== 'string' || !body.includes(marker)) {
+  if (typeof body !== 'string' || !body.includes(marker) || filteredPassFromOlderKit(body)) {
     return false;
   }
 
@@ -257,7 +260,7 @@ export async function runMilestoneReview(config, repository, milestone, pullRequ
       );
       const incrementalChanges =
         merges.status === 0 && merges.stdout === ''
-          ? branchChangeInventory(previous.head, pullRequest.headRefOid)
+          ? branchChangeInventory(previous.head, pullRequest.headRefOid, { excludedPaths: config.reviewDiffExcludedPaths })
           : null;
       if (incrementalChanges) {
         changes = incrementalChanges;
@@ -272,7 +275,7 @@ export async function runMilestoneReview(config, repository, milestone, pullRequ
   if (!previousReview) {
     // База берётся с origin, а не с локальной ветки: локальная может отставать,
     // и тогда в diff попадёт чужая работа, которую ревьюер обязан игнорировать.
-    changes = branchChangeInventory(`origin/${config.baseBranch}`, pullRequest.headRefOid);
+    changes = branchChangeInventory(`origin/${config.baseBranch}`, pullRequest.headRefOid, { excludedPaths: config.reviewDiffExcludedPaths });
   }
   const reviewPrompt = buildMilestoneReviewPrompt(config, milestone, pullRequest, {
     changes,
@@ -298,14 +301,14 @@ export async function runMilestoneReview(config, repository, milestone, pullRequ
         const reviewedBranch = run('git', ['branch', '--show-current']).stdout;
 
         const reviewLabel = `Milestone review PR #${pullRequest.number}`;
-        const candidate = await runReviewSession(config, config.milestoneReview, {
-          input: reviewPrompt,
-          maxTurns: config.milestoneReview.maxTurns,
-          timeoutMs: config.runtime.agentTimeoutMs,
-          label: reviewLabel,
-        });
-        assertReviewPayloadShape(candidate, reviewLabel);
-        const normalized = normalizeReviewResult(candidate);
+        const normalized = await clarifyProductReview(async (input) => {
+          const candidate = await runReviewSession(config, config.milestoneReview, {
+            input, maxTurns: config.milestoneReview.maxTurns,
+            timeoutMs: config.runtime.agentTimeoutMs, label: reviewLabel,
+          });
+          assertReviewPayloadShape(candidate, reviewLabel);
+          return normalizeReviewResult(candidate);
+        }, reviewPrompt, reviewLabel);
         const changed = run('git', ['status', '--porcelain']).stdout !== '';
         const headChanged = run('git', ['rev-parse', 'HEAD']).stdout !== reviewedHead;
         const branchChanged = run('git', ['branch', '--show-current']).stdout !== reviewedBranch;
@@ -322,6 +325,7 @@ export async function runMilestoneReview(config, repository, milestone, pullRequ
     );
   } catch (error) {
     activeStateStore()?.recordPhaseProcess?.({ type: 'review-error' });
+    if (['RALPH_AGENT_STARTUP_EXHAUSTED', 'RALPH_NEEDS_HUMAN'].includes(error.code)) throw error;
     try {
       postMilestoneReviewFailure(config, repository, milestone, pullRequest, error.message);
     } catch (commentError) {

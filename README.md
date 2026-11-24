@@ -659,7 +659,8 @@ node scripts/ralph/ralph-loop.mjs --run
 `milestoneReview.model` — `default`, `review.effort` — `medium`,
 `milestoneReview.effort` — `high`,
 четыре поля fast — `false`,
-`milestoneReview.maxTurns` — значение `maxTurns`, `milestoneReview.maxFindings`
+`developmentMaxTurns` (реализация и исправления) и `milestoneReview.maxTurns`
+наследуют `maxTurns` (ревью issue), `milestoneReview.maxFindings`
 — 10, `milestoneReview.incremental` — `true`, `validationEnvironment` —
 пустой список,
 `githubAccount` — активный аккаунт GitHub CLI.

@@ -1,12 +1,10 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import test from 'node:test';
-import { executableTempDirectory, withFakeCodex, withFakeGh } from './ralph-test-support.mjs';
+import { createCliFixture, executableTempDirectory, withFakeCodex, withFakeGh } from './ralph-test-support.mjs';
 
-const sourceRoot = fileURLToPath(new URL('../..', import.meta.url));
 
 function git(root, ...args) {
   const result = spawnSync('git', args, { cwd: root, encoding: 'utf8', windowsHide: true });
@@ -21,24 +19,18 @@ function node(root, ...args) {
   });
 }
 
-function prepareFixture(root, { trackValidation = false, transport } = {}) {
-  for (const name of ['scripts', '.agents', '.gitignore']) {
-    cpSync(path.join(sourceRoot, name), path.join(root, name), { recursive: true });
-  }
+function prepareFixture(root, { transport } = {}) {
   const configPath = path.join(root, '.agents', 'ralph.config.json');
-  const config = JSON.parse(readFileSync(configPath, 'utf8'));
-  Object.assign(config, { active: true, agentCli: 'codex', githubAccount: null, stopAfterFirstIssue: true,
+  const config = {
+    ...createCliFixture(root), stopAfterFirstIssue: true,
     phases: [{ branch: 'phase', milestone: 'Recovery' }, { branch: 'follow-up', milestone: 'Follow-up' }],
-    runtime: { ...config.runtime, networkRetryAttempts: 1 },
-  });
-  if (trackValidation) {
-    config.preflightScripts = ['node fixture-validation.mjs preflight'];
-    config.validationScripts = ['node fixture-validation.mjs validation'];
-    writeFileSync(path.join(root, 'fixture-validation.mjs'), `
-      import { appendFileSync } from 'node:fs';
-      appendFileSync('.git/ralph-loop/fixture-validation', process.argv[2] + '\\n');
-    `);
-  }
+    preflightScripts: ['node fixture-validation.mjs preflight'],
+    validationScripts: ['node fixture-validation.mjs validation'],
+  };
+  writeFileSync(path.join(root, 'fixture-validation.mjs'), `
+    import { appendFileSync } from 'node:fs';
+    appendFileSync('.git/ralph-loop/fixture-validation', process.argv[2] + '\\n');
+  `);
   if (transport) {
     const transportPath = path.join(root, 'scripts', 'ralph', 'ralph-git.mjs');
     const source = readFileSync(transportPath, 'utf8');
@@ -178,7 +170,7 @@ test('cold publication retry after DNS recovery runs only the external steps', a
   const remote = mkdtempSync(path.join(executableTempDirectory, 'ralph-publication-remote-'));
   try {
     git(remote, 'init', '--quiet', '--bare');
-    const base = prepareFixture(root, { trackValidation: true, transport: remote });
+    const base = prepareFixture(root, { transport: remote });
     const head = prepareSavedIssue(root, base, true);
     const runtime = path.join(root, '.git', 'ralph-loop');
     const statePath = path.join(runtime, 'state.json');

@@ -69,5 +69,16 @@
     "incremental": true,
     "schemaFile": ".agents/review.schema.json",
     "outputFile": ".agents/last-milestone-review.json"
+  },
+  "validationProfiles": {
+    "issue": [
+      "node scripts/ralph/ralph-scoped-validation.mjs .agents/validation-rules.json"
+    ],
+    "phase": [
+      "node scripts/ralph/ralph-scoped-validation.mjs .agents/validation-rules.json"
+    ],
+    "baseSync": [
+      "node scripts/ralph/ralph-scoped-validation.mjs .agents/validation-rules.json"
+    ]
   }
 }

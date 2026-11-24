@@ -3,6 +3,7 @@ import { readFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 
+import { ralphRunOutcome, runRalphLifecycle } from './ralph-lifecycle.mjs';
 import { executeMode, iterationBudget, printCheck, runContinuousLoop } from './ralph-loop.mjs';
 import { runCodexWithTurnLimit } from './ralph-codex-session.mjs';
 import { readRunProgress } from './ralph-gui-data.mjs';
@@ -285,8 +286,8 @@ test(
   'Codex first-event watchdog stops a process that never starts its event stream',
   { concurrency: false },
   async () => {
-    const fakeSource = 'setInterval(() => {}, 1_000);\n';
-    const firstEventTimeoutMs = 100;
+    const fakeSource = 'import { appendFileSync } from "node:fs"; appendFileSync(new URL("calls", import.meta.url), "x"); console.log(JSON.stringify({ type: "thread.started" })); setInterval(() => {}, 1_000);\n';
+    const firstEventTimeoutMs = 1_000;
 
     applyRuntimeSettings({
       ...defaultRuntimeSettings,
@@ -305,11 +306,11 @@ test(
             authenticationFile: null,
           }),
           (error) => {
-            assert.equal(error.code, 'RALPH_AGENT_IDLE_TIMEOUT');
-            assert.equal(error.timeoutMs, firstEventTimeoutMs);
-            assert.equal(error.idlePhase, 'first-event');
-            assert.equal(error.turns, 0);
-            assert.match(error.message, /первое событие.*100 ms/u);
+            assert.equal(error.code, 'RALPH_AGENT_STARTUP_EXHAUSTED');
+            assert.equal(error.cause.timeoutMs, firstEventTimeoutMs);
+            assert.equal(error.cause.idlePhase, 'first-event');
+            assert.equal(error.cause.turns, 0);
+            assert.equal(readFileSync(path.join(process.env.CODEX_HOME, 'calls'), 'utf8'), 'xxx');
             return true;
           },
         );
@@ -317,6 +318,31 @@ test(
     } finally {
       applyRuntimeSettings(defaultRuntimeSettings);
     }
+  },
+);
+
+test(
+  'Codex returns the third startup response within the same session request',
+  { concurrency: false },
+  async () => {
+    const source = `
+      import { appendFileSync, readFileSync } from 'node:fs';
+      const calls = new URL('calls', import.meta.url);
+      appendFileSync(calls, 'x');
+      if (readFileSync(calls, 'utf8') === 'xxx') {
+        console.log(JSON.stringify({ type: 'item.completed', item: { id: 'ok', type: 'agent_message', text: 'done' } }));
+      } else {
+        setInterval(() => {}, 1000);
+      }
+    `;
+    await withFakeCodex(source, async () => {
+      const result = await runCodexWithTurnLimit(['exec', '--json', '-'], {
+        input: 'same request', label: 'Recovering Codex', maxTurns: 5,
+        firstEventTimeoutMs: 1000, timeoutMs: 5000, authenticationFile: null,
+      });
+      assert.equal(result.lastAgentMessage, 'done');
+      assert.equal(result.turns, 1);
+    });
   },
 );
 
@@ -1108,6 +1134,26 @@ test('continuous loop stops immediately and refunds an iteration on Codex authen
 
   assert.equal(codexRuns, 1);
   assert.equal(stateStore.iterationsUsed, 0);
+});
+
+test('three silent starts pause the issue without spending an iteration or invoking Lisa', async () => {
+  const stateStore = persistentState({ iterationsUsed: 2 });
+  const outcome = await runRalphLifecycle({
+    async start() {
+      try {
+        await runContinuousLoop(context({ stateStore }), actions({
+          openIssues: () => [{ number: 67, title: 'Product issue' }],
+          runAgentOnIssue: async () => { throw Object.assign(new Error('silent'), { code: 'RALPH_AGENT_STARTUP_EXHAUSTED' }); },
+        }));
+        assert.fail('expected startup exhaustion');
+      } catch (error) {
+        return ralphRunOutcome(null, error);
+      }
+    },
+    repair: () => assert.fail('unexpected Lisa intervention'),
+  });
+  assert.equal(outcome.kind, 'needs-human');
+  assert.equal(stateStore.iterationsUsed, 2);
 });
 
 test('continuous loop refunds an iteration when the agent cannot write the workspace', async () => {

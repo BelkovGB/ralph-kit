@@ -1,9 +1,11 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { lstatSync } from 'node:fs';
+import { lstatSync, readFileSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
 import { isAbsolute, resolve, win32 } from 'node:path';
 import { hasValidationCommandShape, usesValidationControlOperator } from './ralph-config.mjs';
-import { hostShellCommand } from './ralph-validation-runner.mjs';
+import { verifyVisualContract, writesEvidence } from './ralph-route-evidence.mjs';
+import { assertScopedHostCommands, hostShellCommand } from './ralph-validation-runner.mjs';
 
 function git(root, args) {
   return execFileSync('git', args, {
@@ -59,20 +61,22 @@ function changedFiles(root, base) {
   return changes;
 }
 
-function planChecks({ full, rules }, changes, root) {
-  if (!changes.size) return { commands: full, reason: 'пустой diff' };
+function planChecks({ full, rules }, changes, root, scope) {
+  if (!changes.size && scope === 'issue') throw new Error('Пустой diff задачи. Проверьте базовый SHA.');
   const matched = new Set();
   for (const [path, statuses] of changes) {
-    if ([...statuses].some((status) => !['A', 'M', '?'].includes(status))
-      || !lstatSync(resolve(root, path), { throwIfNoEntry: false })?.isFile()) {
-      return { commands: full, reason: `удаление, смена типа или особый путь ${JSON.stringify(path)}` };
+    if ([...statuses].some((status) => !['A', 'M', 'D', '?'].includes(status))
+      || !statuses.has('D') && !lstatSync(resolve(root, path), { throwIfNoEntry: false })?.isFile()) {
+      throw new Error('Особый путь требует адресной проверки: ' + path);
     }
     const matches = rules.filter(({ paths }) => paths.some((prefix) =>
       prefix.endsWith('/') ? path.startsWith(prefix) : path === prefix));
-    if (!matches.length) return { commands: full, reason: `нет правила для ${JSON.stringify(path)}` };
+    if (!matches.length) throw new Error('Нет адресного правила для ' + path);
+    console.log('[scoped]', path, '=>', matches.flatMap(rule => rule.commands).join(', '));
     for (const rule of matches) matched.add(rule);
   }
   const commands = [...new Set(rules.filter((rule) => matched.has(rule)).flatMap((rule) => rule.commands))];
+  assertScopedHostCommands(commands, full);
   return { commands, reason: 'все пути покрыты правилами' };
 }
 
@@ -96,26 +100,49 @@ function runChecks({ commands, reason }, root) {
   return 0;
 }
 
-function main() {
-  const scope = process.env.RALPH_VALIDATION_SCOPE;
-  const base = process.env.RALPH_VALIDATION_BASE_COMMIT;
-  const configFile = process.argv[2];
-  if (process.argv.length !== 3 || scope !== 'issue'
-    || !/^[0-9a-f]{40}$/u.test(base ?? '')) {
-    throw new Error('Нужны путь к JSON, RALPH_VALIDATION_SCOPE=issue и полный RALPH_VALIDATION_BASE_COMMIT.');
-  }
+export function runFinalChecks(file) {
+  if (process.env.RALPH_VALIDATION_SCOPE || process.env.RALPH_AGENT_ROLE) throw new Error('Final acceptance is external to Ralph.');
   const root = git(process.cwd(), ['rev-parse', '--show-toplevel']).trimEnd();
+  const head = git(root, ['rev-parse', 'HEAD']).trim();
+  const changes = changedFiles(root, head);
+  if (changes.size) throw new Error('Final acceptance requires a clean commit.');
+  return runChecks({commands: readRules(root, head, file, changes).full, reason: 'FinalAcceptance'}, root);
+}
+
+function main() {
+  const args = process.argv.slice(2);
+  const root = git(process.cwd(), ['rev-parse', '--show-toplevel']).trimEnd();
+  const preview = args[0] === '--plan';
+  if (args[0] === '--full') {
+    const [, purpose, file, ...reasons] = args;
+    const role = process.env.RALPH_AGENT_ROLE;
+    const reason = reasons.join(' ').trim();
+    if (process.env.RALPH_VALIDATION_SCOPE ||
+        !(purpose === 'LisaEmergency' && role === 'supervisor' && reason)) throw new Error('Полный прогон недоступен в этой роли или без обоснования Lisa.');
+    const head = git(root, ['rev-parse', 'HEAD']).trim();
+    const changes = changedFiles(root, head);
+    return runChecks({commands: readRules(root, head, file, changes).full, reason: purpose + ' ' + reason}, root);
+  }
+  const [file, base, scope] = preview ? args.slice(1) :
+    [args[0], process.env.RALPH_VALIDATION_BASE_COMMIT, process.env.RALPH_VALIDATION_SCOPE];
+  if (args.length !== (preview ? 4 : 1) || !['issue', 'phase', 'baseSync'].includes(scope) ||
+      !/^[0-9a-f]{40}$/u.test(base ?? '')) throw new Error('Укажите файл правил, область и полный SHA базы.');
   const changes = changedFiles(root, base);
-  const config = readRules(root, base, configFile, changes);
-  const plan = planChecks(config, changes, root);
-  const paths = [...changes.keys()].sort();
-  const fingerprint = createHash('sha256').update(JSON.stringify([base, paths, plan.commands]));
-  console.log(`[scoped] ${scope}; base=${base}; plan=${fingerprint.digest('hex')}; rerun=always`);
-  console.log('[scoped] paths:', JSON.stringify(paths));
+  const config = readRules(root, base, file, changes);
+  console.log('[scoped] paths:', JSON.stringify([...changes.keys()].sort()));
+  const plan = planChecks(config, changes, root, scope);
+  const fingerprint = createHash('sha256').update(JSON.stringify([base, [...changes.keys()].sort(), plan.commands]));
+  console.log('[scoped]', scope, base, fingerprint.digest('hex'));
+  if (preview) return 0;
+  if (process.env.RALPH_VISUAL_CONTRACT) verifyVisualContract(process.env.RALPH_VISUAL_CONTRACT, [...changes.keys()], root);
+  for (const [path, statuses] of changes) {
+    if (!statuses.has('D') && /[.]spec[.][cm]?[jt]sx?$/u.test(path) &&
+        writesEvidence(readFileSync(resolve(root, path), 'utf8'))) throw new Error('Use the Playwright output directory for screenshots: ' + path);
+  }
   return runChecks(plan, root);
 }
 
-try {
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) try {
   process.exitCode = main();
 } catch (error) {
   console.error('[scoped]', error.message);

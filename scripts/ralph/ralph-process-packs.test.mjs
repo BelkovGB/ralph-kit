@@ -1,16 +1,14 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 import { approveConfiguredIssue } from './ralph-issue-contract.mjs';
 import { assertProcessReport } from './ralph-process-packs.mjs';
-import { executableTempDirectory, withFakeClaude, withFakeCodex, withFakeGh } from './ralph-test-support.mjs';
+import { createCliFixture, executableTempDirectory, withFakeClaude, withFakeCodex, withFakeGh } from './ralph-test-support.mjs';
 
-const sourceRoot = fileURLToPath(new URL('../..', import.meta.url));
 const reportPath = 'docs/ralph-reports/issue-13.md';
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', windowsHide: true }).trim();
 
@@ -95,8 +93,8 @@ if (output !== -1) {
 } else if (prompt.includes('### Режим research')) {
   if (readFileSync('button.txt', 'utf8') !== 'ready') throw new Error('dependency incomplete');
   const report = 'docs/ralph-reports/issue-13.md';
-  if (existsSync(report)) unlinkSync('out-of-scope.txt');
-  else writeFileSync('out-of-scope.txt', 'Should never be committed.');
+  if (prompt.includes('research: измените только ' + report)) unlinkSync('out-of-scope.txt');
+  else if (!existsSync(report)) writeFileSync('out-of-scope.txt', 'Should never be committed.');
   mkdirSync('docs/ralph-reports', { recursive: true });
   writeFileSync(report, '# Report\n\nThe updated button is ready.\n');
 } else throw new Error('Unexpected role or process.');
@@ -198,23 +196,19 @@ test('--run verifies UI, retries report scope, and closes with a separate Lisa b
   const statePath = path.join(sandbox, 'github.json');
   try {
     mkdirSync(root);
-    cpSync(path.join(sourceRoot, 'scripts'), path.join(root, 'scripts'), { recursive: true });
-    cpSync(path.join(sourceRoot, '.agents'), path.join(root, '.agents'), { recursive: true });
-    cpSync(path.join(sourceRoot, '.gitignore'), path.join(root, '.gitignore'));
+    const config = createCliFixture(root);
     const configPath = path.join(root, '.agents/ralph.config.json');
     const ledger = '{}\n';
     const approvedIssueSnapshotsFile = 'scripts/ralph/approved-issues.json';
     writeFileSync(path.join(root, approvedIssueSnapshotsFile), ledger);
-    const config = {
-      active: true, syncBaseBranch: false, autoApproveConfiguredIssues: true,
-      prompt: 'Implement issue #{issue_number}.',
+    Object.assign(config, {
+      syncBaseBranch: false,
       approvedIssueSnapshotsFile,
       approvedIssueSnapshotsHash: createHash('sha256').update(ledger).digest('hex'),
       phases: [{ milestone: 'Packs', branch: 'phase' }], maxIterations: 6, maxTestFixAttempts: 2,
       supervisor: { enabled: true, agentCli: 'claude', model: 'fixture-lisa-model', maxInterventions: 2 },
       validationScripts: ['node check.cjs'], browserValidationScripts: ['node browser.cjs'],
-      runtime: { networkRetryAttempts: 1 },
-    };
+    });
     writeFileSync(configPath, JSON.stringify(config));
     writeFileSync(path.join(root, 'check.cjs'), String.raw`
 const { existsSync } = require('node:fs');

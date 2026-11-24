@@ -1,6 +1,6 @@
 import { run } from './ralph-process-runner.mjs';
 import { holdIssuePublication, issueForeignPaths } from './ralph-state-store.mjs';
-import { isRalphInfrastructureGitPath } from './ralph-scope.mjs';
+import { filteredPassFromOlderKit, isRalphInfrastructureGitPath } from './ralph-scope.mjs';
 import { clearedFailure } from './ralph-failure-summary.mjs';
 import { assertTrustedIssue } from './ralph-issue-contract.mjs';
 import { publicIssueIdentity } from './ralph-github-client.mjs';
@@ -17,7 +17,9 @@ const workingPhases = new Set([
 export function savedIssueReview(issue, head) {
   if (!issue || !head) return null;
   if (issue.reviewReceipt) {
-    return issue.reviewReceipt.head === head ? issue.reviewReceipt.result : null;
+    const { result } = issue.reviewReceipt;
+    if (result?.verdict === 'pass' && filteredPassFromOlderKit(result.summary)) return null;
+    return issue.reviewReceipt.head === head ? result : null;
   }
   // Legacy state kept the issue commit and the published HEAD separately.
   // Only a closing state with both values equal proves this exact HEAD passed.
@@ -53,6 +55,12 @@ export function hasAcceptedLisaIssueRepair(state, issue = state?.issue) {
     repair.issueNumber === issue.number && repair.runId === state.runId &&
     repair.phaseIndex === state.phaseIndex && repair.acceptedTreeHash &&
     ['accepted', 'resuming'].includes(repair.status));
+}
+
+export function hasAcceptedLisaProductRepair(state, issue = state?.issue) {
+  return hasAcceptedLisaIssueRepair(state, issue) &&
+    (state.lisaRepair.changedPaths === undefined ||
+      state.lisaRepair.changedPaths.some((file) => !isRalphInfrastructureGitPath(file)));
 }
 
 function blocked(message) {
@@ -94,7 +102,14 @@ export function analyzeRecovery(config, issue, dependencies = {}) {
     blocked(`Issue #${issue.number}: текущая ветка ${branch}, ожидается ${config.branch}. Перейдите на ветку задачи.`);
   }
   if (manualCommit !== undefined) {
-    if (!['agent-running', 'working-tree', 'validating', 'review-failed', ...committedRecoveryPhases].includes(issue.phase)) {
+    // An operator can replace a lost evidence image with a reviewed manual commit.
+    // Normal resume still requires the original hash. Manual acceptance invalidates
+    // receipts and requires fresh validation and review of the named commit.
+    const evidenceFailure = issue.phase === 'validation-mutated' &&
+      /^[a-f0-9]{64}$/u.test(issue.validationExpectedTreeHash ?? '') &&
+      issue.lastFailureSummary?.code === 'RALPH_VALIDATION_MUTATED' &&
+      /^Validation: команды проверки изменили отслеживаемые или новые файлы проекта: evidence\/[\w-]+\/[\w.-]+\.png\.$/u.test(issue.lastFailureSummary.error);
+    if (!evidenceFailure && !['agent-running', 'working-tree', 'validating', 'review-failed', ...committedRecoveryPhases].includes(issue.phase)) {
       blocked(`Issue #${issue.number}: ручное принятие недоступно на этапе ${issue.phase}; восстановите исходное состояние.`);
     }
     if (status !== '') blocked('Для принятия ручного коммита требуется чистое рабочее дерево.');
@@ -110,7 +125,7 @@ export function analyzeRecovery(config, issue, dependencies = {}) {
         (workingPhases.has(issue.phase) || issue.phase === 'review-failed')) {
       blocked('Ручной коммит не содержит продолжения сохранённой задачи.');
     }
-    if (issue.phase === 'review-failed') {
+    if (issue.phase === 'review-failed' || evidenceFailure) {
       const changed = filesChangedBetween(issue.startingCommit, manualCommit, execute);
       if (!changed?.some((file) => !isRalphInfrastructureGitPath(file))) {
         blocked('Ручной коммит не содержит исправления после отклонённого ревью.');
@@ -186,10 +201,34 @@ export function applyRecoveryPlan(plan, stateStore) {
   if (plan.patch) stateStore.updateIssue(plan.patch);
 }
 
+function acceptManualPhaseCommit(config, store, sha, execute, verify) {
+  const state = store?.state;
+  const repair = state?.lisaRepair;
+  if (!repair?.repairId || repair.status !== 'needs-human' || repair.issueNumber !== null ||
+      repair.failureStep !== 'pull-request' || repair.acceptedTreeHash !== null ||
+      repair.runId !== state.runId || repair.phaseIndex !== state.phaseIndex ||
+      state.branch !== config.branch || state.baseBranch !== config.baseBranch ||
+      state.milestone !== config.milestone || !/^[a-f0-9]{40}$/u.test(sha ?? '')) {
+    blocked('Нет остановленного ремонта перед PR этой фазы для принятия ручного коммита.');
+  }
+  const repositoryState = verify(config, false);
+  const git = (...args) => execute('git', args).stdout;
+  if (git('branch', '--show-current') !== config.branch || git('status', '--porcelain') ||
+      git('show', '-s', '--format=%(trailers:key=Ralph-Phase-Repair,valueonly)', 'HEAD') !== repair.repairId ||
+      git('rev-parse', 'HEAD') !== sha) {
+    blocked('Нужны чистое дерево, указанный HEAD в ветке фазы и точный trailer Ralph-Phase-Repair.');
+  }
+  store.finishLisaRepair(repair.repairId);
+  return { recovery: { kind: 'ready', head: sha }, repositoryState, accepted: sha };
+}
+
 /** Prepare one phase through the same entry path used by check, run and manual acceptance. */
 export function prepareRecovery(config, stateStore, mode, dependencies = {}) {
   const execute = dependencies.run ?? run;
   const verify = dependencies.verifyRepository ?? verifyRepository;
+  if (mode === '--accept-manual-commit' && !stateStore?.issue) {
+    return acceptManualPhaseCommit(config, stateStore, dependencies.manualCommit, execute, verify);
+  }
   let repositoryState;
   // A saved issue belongs to its phase branch. A clean --run may return there
   // before recovery reads HEAD; check and manual acceptance stay read-only.
@@ -203,7 +242,15 @@ export function prepareRecovery(config, stateStore, mode, dependencies = {}) {
   if (mode === '--accept-manual-commit') {
     const confirmed = analyzeRecovery(config, stateStore?.issue, dependencies);
     if (confirmed.head !== recovery.head) blocked('HEAD изменился во время принятия ручного коммита.');
+    const repair = stateStore.state?.lisaRepair;
+    if (repair && (repair.status !== 'needs-human' || repair.runId !== stateStore.state.runId ||
+        repair.phaseIndex !== stateStore.state.phaseIndex || repair.issueNumber !== stateStore.issue.number ||
+        repair.repairId !== stateStore.issue.lisaRepairId)) {
+      blocked('Lisa: ручной коммит не соответствует остановленному ремонту.');
+    }
     applyRecoveryPlan(confirmed, stateStore);
+    // If interrupted here, accepting the same SHA again completes the handoff.
+    if (repair) stateStore.finishLisaRepair(repair.repairId);
     return { recovery, repositoryState, accepted: confirmed.patch.commit };
   }
   return { recovery, repositoryState };

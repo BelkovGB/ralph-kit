@@ -90,6 +90,9 @@ export function terminalSnapshot(store, metrics, startedMs, now = Date.now(), li
     sessionCounters.push(`${supervisor ? 'Шаги Lisa' : 'Шаги агента'}: ${pair(session.turns, session.maxTurns)}`,
       `Ответы инструментов: ${session.toolResults}`,
       `Агент: ${duration(end - session.startedMs)} / ${duration(session.timeoutMs)}`);
+    if (session.active && session.lastEventMs === null && session.startupAttempt) {
+      sessionCounters.push(`Попытка запуска: ${session.startupAttempt}/${session.startupLimit}`);
+    }
     if (session.active) sessionCounters.push(session.lastEventMs === null
       ? `Первый ответ: ${duration(now - session.startedMs)} / ${duration(session.firstEventTimeoutMs)}`
       : `Без событий: ${duration(now - session.lastEventMs)} / ${duration(session.idleTimeoutMs)}`);
