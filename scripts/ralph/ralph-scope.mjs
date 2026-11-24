@@ -101,13 +101,17 @@ export function scopeReviewToProduct(review, label = 'Review') {
   );
   const ignoredCount = review.findings.length - productFindings.length;
   if (ignoredCount === 0) return review;
+  if (productFindings.length === 0) {
+    throw Object.assign(new Error(`${label}: отсутствует подтверждённый вердикт по продукту. ${review.summary}`),
+      { code: 'RALPH_NEEDS_HUMAN', nonRetryable: true });
+  }
 
   console.log(
     `${label}: ${ignoredCount} замечаний к Ralph-инфраструктуре исключены из продуктовой очереди.`,
   );
   return {
     ...review,
-    verdict: productFindings.length > 0 ? 'fail' : 'pass',
+    verdict: 'fail',
     summary:
       `${review.summary} ${ignoredCount} Ralph infrastructure finding(s) were excluded ` +
       'from the product milestone and must be handled manually in the configuration chat.',
@@ -115,24 +119,24 @@ export function scopeReviewToProduct(review, label = 'Review') {
   };
 }
 
-function issueReviewNeedsClarification(review) {
+function needsProductVerdict(review) {
   return review.verdict === 'fail' && review.findings.length > 0 &&
     review.findings.every((finding) => isRalphInfrastructurePath(finding.file));
 }
 
-export async function clarifyIssueReview(askReviewer, prompt, label) {
+export async function clarifyProductReview(askReviewer, prompt, label) {
   const review = await askReviewer(prompt);
-  if (!issueReviewNeedsClarification(review)) return review;
+  if (!needsProductVerdict(review)) return review;
 
   console.log(`${label}: все замечания ссылаются на инфраструктуру Ralph. Запрашиваю уточнение.`);
   const clarified = await askReviewer(
     prompt + '\n\nA previous review returned FAIL but cited only Ralph infrastructure. ' +
-      'Recheck whether the issue is implemented at this HEAD. Report missing product work against ' +
+      'Recheck the product requirements in the original prompt at this HEAD. Report missing product work against ' +
       'the relevant product file or the expected product path for a missing file. ' +
       'Return PASS only if the product requirements are satisfied.\n' +
       `Previous review summary: ${review.summary}`,
   );
-  if (issueReviewNeedsClarification(clarified)) {
+  if (needsProductVerdict(clarified)) {
     throw Object.assign(new Error(
       `${label}: после уточнения все замечания по-прежнему ссылаются на инфраструктуру. ${clarified.summary}`,
     ), { code: 'RALPH_NEEDS_HUMAN', nonRetryable: true });
@@ -183,6 +187,14 @@ export function applySeverityFloor(review, floor, label = 'Review') {
     belowFloorFindings: review.findings.filter((finding) => !findingBlocks(finding, floor)),
   };
 }
+
+// Older versions converted infrastructure-only FAIL into PASS and appended this exact sentence.
+// A new, explicit product verdict is required before a resumed run can publish or skip review.
+export function filteredPassFromOlderKit(text) {
+  return /\d+ Ralph infrastructure finding\(s\) were excluded from the product milestone and must be handled manually in the configuration chat\.(?! \d+ finding\(s\) below the)/.test(text);
+}
+
+export { clarifyProductReview as clarifyIssueReview };
 
 export function scopeMilestoneReviewToProduct(review) {
   return scopeReviewToProduct(review, 'Milestone review');

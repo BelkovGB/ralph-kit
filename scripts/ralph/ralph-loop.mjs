@@ -18,7 +18,7 @@ import {
   fail,
   isRalphInfrastructureGitPath,
   isRalphInfrastructureIssue,
-  clarifyIssueReview,
+  clarifyProductReview,
   scopeReviewToProduct,
 } from './ralph-scope.mjs';
 
@@ -315,7 +315,7 @@ async function runIndependentReview(config, issue, commit, expectedHead) {
   const previous = saved?.number === issue.number ? saved : null;
   const receipt = previous?.reviewReceipt;
   const inventory = issueChangeInventory(issue, commit, {
-    afterHead: ['pass', 'fail'].includes(receipt?.result?.verdict) ? receipt.head : undefined,
+    afterHead: savedIssueReview(previous, receipt?.head) ? receipt.head : undefined,
     excludedPaths: config.reviewDiffExcludedPaths,
   });
   const reviewPrompt = buildIndependentReviewPrompt(
@@ -342,7 +342,7 @@ async function runIndependentReview(config, issue, commit, expectedHead) {
     assertReviewPayloadShape(candidate, reviewLabel);
     return normalizeReviewResult(candidate);
   };
-  const assessment = await clarifyIssueReview(askReviewer, reviewPrompt, reviewLabel);
+  const assessment = await clarifyProductReview(askReviewer, reviewPrompt, reviewLabel);
   const review = applySeverityFloor(scopeReviewToProduct(assessment, reviewLabel),
     config.reviewSeverityFloor, reviewLabel);
 
@@ -488,7 +488,7 @@ function pendingIssuePublication(config, stateStore, head = stateStore?.issue?.r
   const checkpoint = issue?.publicationCheckpoint;
   if (!config.review?.enabled || !issue?.commit || !committedRecoveryPhases.includes(issue.phase) ||
       !head || checkpoint?.head !== head || issue.reviewReceipt?.head !== head ||
-      issue.reviewReceipt.result?.verdict !== 'pass') return null;
+      savedIssueReview(issue, head)?.verdict !== 'pass') return null;
   const pending = checkpoint.step === 'push' ? issue.pendingPublishHead === head && issue.pushedHead !== head
     : checkpoint.step === 'close' && issue.phase === 'closing' && issue.pushedHead === head;
   if (!pending || typeof checkpoint.fingerprint !== 'string') return null;
@@ -654,8 +654,10 @@ function retryIssueValidation(config, issue, error) {
 }
 
 function shouldCommitAcceptedRepair(state, issue) {
-  return hasAcceptedLisaProductRepair(state, issue) && !state.issue.commit &&
-    !state.issue.processReportRepair?.needsDevelopment;
+  if (!hasAcceptedLisaIssueRepair(state, issue) || state.issue.commit ||
+      state.issue.processReportRepair?.needsDevelopment) return false;
+  return hasAcceptedLisaProductRepair(state, issue) ||
+    Boolean(state.issue.lisaPublishedProductHead && state.issue.lisaPublishedProductHead === state.issue.startingCommit);
 }
 
 async function commitAndCompleteIssue(config, repository, issue, startingCommit, lastAgentMessage) {
@@ -696,6 +698,7 @@ async function commitAndCompleteIssue(config, repository, issue, startingCommit,
   const recoveryState = activeStateStore()?.state;
   if (agentEntries.length > 0 && hasAcceptedLisaIssueRepair(recoveryState, issue) &&
       !hasAcceptedLisaProductRepair(recoveryState, issue) &&
+      recoveryState.issue.lisaPublishedProductHead !== currentCommit &&
       agentEntries.flatMap(workingTreeEntryPaths).every(isRalphInfrastructureGitPath)) {
     throw Object.assign(new Error(
       `Issue #${issue.number}: после ремонта окружения или инструкций нет продуктовых изменений.`,

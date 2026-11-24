@@ -86,6 +86,9 @@ export async function runRalphLifecycleCli() {
       start: async () => {
         snapshot.assertUnchanged();
         if (accepted) {
+          if (accepted.phaseCommit && run('git', ['rev-parse', 'HEAD']).stdout !== accepted.phaseCommit) {
+            throw new Error('Lisa: HEAD изменился до возобновления фазы.');
+          }
           assertTrustedControlFilesUnchanged(accepted.controlPlane);
           if (lisaRepairTreeHash({ controlFiles: accepted.controlPlane.trustedControlFileHashes.keys() }) !== accepted.acceptedTreeHash ||
               lisaRepairIndexHash() !== accepted.acceptedIndexHash) {
@@ -125,7 +128,7 @@ export async function runRalphLifecycleCli() {
         if (current) store = setActiveStateStore(createStateStore(configForPhase(config, current.phaseIndex), '--run', statePath));
         const failedStep = result.failure?.step ?? (current?.issue?.phase === 'validating' ? 'validation' : current?.issue?.phase);
         if (result.kind === 'repair-needed' && result.failure?.code !== 'RALPH_PARKED' &&
-            pendingFailure && !pendingFailure.proved && pendingFailure.issueNumber === current?.issue?.number &&
+            pendingFailure && !pendingFailure.proved && pendingFailure.issueNumber === (current?.issue?.number ?? null) &&
             pendingFailure.phaseIndex === current?.phaseIndex && pendingFailure.failureStep === failedStep &&
             pendingFailure.failureCode === result.failure?.code &&
             (pendingFailure.failureFingerprint === lisaFailureFingerprint(result.failure, failedStep) || worker.observations.length === 0) &&
@@ -142,13 +145,13 @@ export async function runRalphLifecycleCli() {
           pendingFailure = null;
         }
         if (pendingFailure && current?.lisaRepair && result.kind === 'needs-human' &&
-            pendingFailure.issueNumber === current?.issue?.number && pendingFailure.phaseIndex === current?.phaseIndex) {
+            pendingFailure.issueNumber === (current?.issue?.number ?? null) && pendingFailure.phaseIndex === current?.phaseIndex) {
           updateRepair(pendingFailure.repairId, { status: 'needs-human', reason: result.reason ?? result.failure?.message ?? 'Ralph не возобновлён.' });
           recordLisaRepairOutcome(config, store, { repairId: pendingFailure.repairId, verdict: 'human',
             reason: result.reason ?? result.failure?.message ?? 'Ralph не возобновлён.' });
         } else if (result.kind === 'needs-human' && provedRepair) {
           const sameIssue = provedRepair.runId === current?.runId && provedRepair.phaseIndex === current?.phaseIndex &&
-            provedRepair.issueNumber === current?.issue?.number;
+            provedRepair.issueNumber === (current?.issue?.number ?? null);
           recordLisaRepairOutcome(config, store, { repairId: sameIssue ? provedRepair.repairId : null, verdict: 'human',
             reason: result.reason ?? result.failure?.message ?? 'Ralph не возобновлён.' });
         }
@@ -169,7 +172,9 @@ export async function runRalphLifecycleCli() {
           }
           return { verdict: 'human', reason };
         }
-        const error = Object.assign(new Error(result.failure?.message ?? 'Задачи отложены.'), { code: result.failure?.code });
+        const error = Object.assign(new Error(result.failure?.message ?? 'Задачи отложены.'), {
+          code: result.failure?.code, ralphFailureStep: result.failure?.step,
+        });
         const repairConfig = supervisorPhaseConfig({ ...config,
           trustedControlFileHashes: prepared.trustedControlFileHashes,
           agentInstructionFiles: prepared.agentInstructionFiles }, store);
@@ -275,12 +280,12 @@ export async function runRalphLifecycleCli() {
               snapshot.assertUnchanged();
               const receipt = acceptLisaRepair(context, assessment);
               updateLisaRepairContextState(context, () => {
-                prepareLisaResume(repairConfig, store, context, { acceptedRepair: true });
+                if (!context.phaseRepair) prepareLisaResume(repairConfig, store, context, { acceptedRepair: true });
                 if (reportRepair) store.updateIssue({ processReportRepair: reportRepair });
                 store.setValidationPathDirectories(paths);
                 store.addLisaRecommendations(answer.recommendations ?? []);
                 recommendations = [...store.lisaRecommendations];
-                if (!store.issue && store.supervisorExtraIterations < config.supervisor.maxAdditionalIterations) store.grantSupervisorIteration();
+                if (!store.issue && !context.phaseRepair && store.supervisorExtraIterations < config.supervisor.maxAdditionalIterations) store.grantSupervisorIteration();
                 updateRepair(repairId, { status: 'accepted', acceptedTreeHash: receipt.acceptedTreeHash, changedPaths: receipt.changedPaths });
               });
               recordLisaRepairOutcome(repairConfig, store, { repairId, verdict: 'accepted', reason: answer.reason });

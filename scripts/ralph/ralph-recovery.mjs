@@ -1,6 +1,6 @@
 import { run } from './ralph-process-runner.mjs';
 import { holdIssuePublication, issueForeignPaths } from './ralph-state-store.mjs';
-import { isRalphInfrastructureGitPath } from './ralph-scope.mjs';
+import { filteredPassFromOlderKit, isRalphInfrastructureGitPath } from './ralph-scope.mjs';
 import { clearedFailure } from './ralph-failure-summary.mjs';
 import { assertTrustedIssue } from './ralph-issue-contract.mjs';
 import { publicIssueIdentity } from './ralph-github-client.mjs';
@@ -17,7 +17,9 @@ const workingPhases = new Set([
 export function savedIssueReview(issue, head) {
   if (!issue || !head) return null;
   if (issue.reviewReceipt) {
-    return issue.reviewReceipt.head === head ? issue.reviewReceipt.result : null;
+    const { result } = issue.reviewReceipt;
+    if (result?.verdict === 'pass' && filteredPassFromOlderKit(result.summary)) return null;
+    return issue.reviewReceipt.head === head ? result : null;
   }
   // Legacy state kept the issue commit and the published HEAD separately.
   // Only a closing state with both values equal proves this exact HEAD passed.

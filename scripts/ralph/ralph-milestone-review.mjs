@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto';
 
 import {
   applySeverityFloor,
+  clarifyProductReview,
+  filteredPassFromOlderKit,
   fail,
   isRalphInfrastructurePath,
   scopeMilestoneReviewToProduct,
@@ -87,14 +89,15 @@ export function lastPublishedMilestoneReview(
     if (!head) return null;
     const expectedMarker = milestoneReviewMarker(config, milestone, { headRefOid: head });
     if (!body.includes(expectedMarker)) return null;
-    if (body.includes(milestonePartialCoverageMarker)) return null;
+    if (body.includes(milestonePartialCoverageMarker) ||
+        (body.includes('**Verdict:** **PASS**') && filteredPassFromOlderKit(body))) return null;
     return { head, body };
   }
   return null;
 }
 
 export function milestonePassReviewIsClean(body, marker) {
-  if (typeof body !== 'string' || !body.includes(marker)) {
+  if (typeof body !== 'string' || !body.includes(marker) || filteredPassFromOlderKit(body)) {
     return false;
   }
 
@@ -298,14 +301,14 @@ export async function runMilestoneReview(config, repository, milestone, pullRequ
         const reviewedBranch = run('git', ['branch', '--show-current']).stdout;
 
         const reviewLabel = `Milestone review PR #${pullRequest.number}`;
-        const candidate = await runReviewSession(config, config.milestoneReview, {
-          input: reviewPrompt,
-          maxTurns: config.milestoneReview.maxTurns,
-          timeoutMs: config.runtime.agentTimeoutMs,
-          label: reviewLabel,
-        });
-        assertReviewPayloadShape(candidate, reviewLabel);
-        const normalized = normalizeReviewResult(candidate);
+        const normalized = await clarifyProductReview(async (input) => {
+          const candidate = await runReviewSession(config, config.milestoneReview, {
+            input, maxTurns: config.milestoneReview.maxTurns,
+            timeoutMs: config.runtime.agentTimeoutMs, label: reviewLabel,
+          });
+          assertReviewPayloadShape(candidate, reviewLabel);
+          return normalizeReviewResult(candidate);
+        }, reviewPrompt, reviewLabel);
         const changed = run('git', ['status', '--porcelain']).stdout !== '';
         const headChanged = run('git', ['rev-parse', 'HEAD']).stdout !== reviewedHead;
         const branchChanged = run('git', ['branch', '--show-current']).stdout !== reviewedBranch;

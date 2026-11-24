@@ -336,7 +336,7 @@ test('milestone review removes Ralph findings before product issues are created'
   );
   assert.match(scoped.summary, /excluded from the product milestone/);
 
-  const infrastructureOnly = scopeMilestoneReviewToProduct({
+  assert.throws(() => scopeMilestoneReviewToProduct({
     verdict: 'fail',
     summary: 'One finding.',
     findings: [
@@ -347,9 +347,7 @@ test('milestone review removes Ralph findings before product issues are created'
         file: '.agents/RALPH.md',
       },
     ],
-  });
-  assert.equal(infrastructureOnly.verdict, 'pass');
-  assert.deepEqual(infrastructureOnly.findings, []);
+  }), { code: 'RALPH_NEEDS_HUMAN' });
 });
 
 test('cached milestone PASS is trusted only with an empty canonical findings section', () => {
@@ -397,6 +395,8 @@ The pull request remains draft so a human can make the final merge decision.`;
   assert.equal(milestonePassReviewIsClean(malformedReview, marker), false);
   assert.equal(milestonePassReviewIsClean(duplicateFindingsReview, marker), false);
   assert.equal(milestonePassReviewIsClean(cleanReview, '<!-- another marker -->'), false);
+  const legacy = cleanReview.replace('Everything is ready.', 'The migration is missing. 1 Ralph infrastructure finding(s) were excluded from the product milestone and must be handled manually in the configuration chat.');
+  assert.equal(milestonePassReviewIsClean(legacy, marker), false);
 });
 
 const ralphRulesPath = fileURLToPath(new URL('../../.agents/ralph-rules.md', import.meta.url));
@@ -569,17 +569,14 @@ test('замечания к control plane выбрасываются из рев
   );
   assert.equal(scoped.verdict, 'fail');
 
-  // Когда продуктовых замечаний не осталось, отклонять нечего.
-  const infrastructureOnly = scopeReviewToProduct(
+  assert.throws(() => scopeReviewToProduct(
     {
       verdict: 'fail',
       summary: 'One finding.',
       findings: [{ severity: 'P2', file: 'scripts/ralph/ralph-loop.mjs', line: 1, title: 'x' }],
     },
     'Review issue #84',
-  );
-  assert.equal(infrastructureOnly.verdict, 'pass');
-  assert.deepEqual(infrastructureOnly.findings, []);
+  ), { code: 'RALPH_NEEDS_HUMAN' });
 });
 
 test('issue review clarifies infrastructure-only FAIL before applying the filter', async () => {

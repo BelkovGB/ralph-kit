@@ -27,7 +27,7 @@ function prepareFixture(root, { trackValidation = false, transport } = {}) {
   }
   const configPath = path.join(root, '.agents', 'ralph.config.json');
   const config = JSON.parse(readFileSync(configPath, 'utf8'));
-  Object.assign(config, { active: true, agentCli: 'codex', githubAccount: null, stopAfterFirstIssue: true,
+  Object.assign(config, { active: true, validationProfiles: undefined, agentCli: 'codex', githubAccount: null, stopAfterFirstIssue: true,
     phases: [{ branch: 'phase', milestone: 'Recovery' }, { branch: 'follow-up', milestone: 'Follow-up' }],
     runtime: { ...config.runtime, networkRetryAttempts: 1 },
   });

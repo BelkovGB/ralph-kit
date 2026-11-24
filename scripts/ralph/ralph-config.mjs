@@ -1052,6 +1052,8 @@ function collectTrustedControlFileHashes(config) {
     path.join(scriptDirectory, 'ralph-process.mjs'),
     path.join(scriptDirectory, 'ralph-scope.mjs'),
     path.join(scriptDirectory, 'ralph-scoped-validation.mjs'),
+    path.join(scriptDirectory, 'ralph-route-evidence.mjs'),
+    path.join(scriptDirectory, 'ralph-final-acceptance.mjs'),
     path.join(scriptDirectory, 'ralph-state-store.mjs'),
     path.join(scriptDirectory, 'ralph-supervisor.mjs'),
     path.join(scriptDirectory, 'ralph-lifecycle.mjs'),

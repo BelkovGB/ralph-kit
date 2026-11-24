@@ -4,8 +4,9 @@ import { runDevelopmentSession, verifyAgentAuthentication } from './ralph-agent-
 import { publishLiveStatus, reportActivity } from './ralph-live-status.mjs';
 import { assertTrustedControlFilesUnchanged, hostHomeDirectory, validatedLisaPathDirectories } from './ralph-validation-runner.mjs';
 import { run } from './ralph-process-runner.mjs';
-import { analyzeRecovery, committedRecoveryPhases } from './ralph-recovery.mjs';
+import { analyzeRecovery, committedRecoveryPhases, savedIssueReview } from './ralph-recovery.mjs';
 import { holdIssuePublication, validatedLisaRecommendations } from './ralph-state-store.mjs';
+import { isRalphInfrastructureGitPath } from './ralph-scope.mjs';
 import { isAncestorCommit } from './ralph-git.mjs';
 import { beginIssueMetrics, currentIssueMetrics, finishIssueMetrics,
   formatIssueMetrics, startStage } from './ralph-run-metrics.mjs';
@@ -59,6 +60,9 @@ export function supervisorPrompt(config, state, error, call, options = {}) {
     'Если необязательное обновление окружения можно отложить и все обязательные проверки проходят, продолжай работу и верни рекомендацию в recommendations. Невыполненную обязательную проверку нельзя заменить рекомендацией, пропустить или объявить успешной.',
     'Не редактируй state.json и локи. После resume оркестратор сам проверит восстановление и согласует этап с рабочим деревом, отменит устаревшие результаты проверок и ревью. При небезопасном состоянии он сохранит работу и запросит человека.',
     'Не меняй цель задачи и критерии приёмки, не отключай проверки, ревью или доверие к источникам, не меняй лимиты и идентичность плана.',
+    options.proposalOnly && !issue && state && error?.ralphFailureStep === 'pull-request' &&
+      ['RALPH_VALIDATION_SCOPE_UNKNOWN', 'RALPH_VALIDATION_FAILED'].includes(error.code)
+      ? 'Сбой проверки фазы: проверь адресный план и исправь команды проверки фазы в рамках исходной политики. Сохрани обязательные проверки. Индекс, HEAD, состояние и оркестрацию восстановления меняет только Ralph.' : '',
     options.proposalOnly
       ? 'Для текущей сохранённой issue разрешён ремонт скриптов Ralph, команд preflightScripts, validationScripts и существующих validationProfiles в конфиге, ошибочных команд или противоречий в инструкциях. Сохраняй исходные требования; остальные настройки неизменны. Не меняй ralph-lifecycle.mjs, ralph-lifecycle-host.mjs, ralph-lisa-repair.mjs, ralph-process-packs.mjs и ralph-repair-policy.mjs. После твоего ответа независимое ревью исходной политики и полного diff проверит ремонт, а управляющий процесс перезапустит Ralph. Не редактируй runtime-каталоги и временную доверенную копию.'
       : 'Настройки Ralph и доверенные инструкции оставь неизменными.',
@@ -98,6 +102,20 @@ function workspaceIdentity(execute = run) {
     branch: execute('git', ['branch', '--show-current']).stdout,
     head: execute('git', ['rev-parse', 'HEAD']).stdout,
   };
+}
+
+// An approved repair to push/close can follow a real product delivery. Bind it to
+// the exact HEAD and issue trailer; a previously accepted control-only commit
+// cannot stand in for implementation. The repaired HEAD gets a fresh review.
+function publishedProductHead(config, issue, head, execute) {
+  if (issue.commit !== head || issue.pushedHead !== head ||
+      !['pushed', 'closing'].includes(issue.phase)) return null;
+  if (config.review?.enabled && savedIssueReview(issue, head)?.verdict !== 'pass') return null;
+  const trailer = execute('git', ['show', '-s', '--format=%(trailers:key=Ralph-Issue,valueonly)', head]).stdout;
+  if (trailer !== `#${issue.number}`) return null;
+  const paths = execute('git', ['diff-tree', '--root', '--no-commit-id', '-r', '-z', '--name-only', head],
+    { rawStdout: true }).stdout.split('\0').filter(Boolean);
+  return paths.some((file) => !isRalphInfrastructureGitPath(file)) ? head : null;
 }
 
 /** Validate the next recovery before persisting a supervisor's uncommitted fix. */
@@ -145,7 +163,10 @@ export function prepareLisaResume(config, store, before, dependencies = {}) {
   }
   const patch = {
     phase: 'working-tree', startingCommit: after.head,
-    ...(dependencies.acceptedRepair ? { lisaRepairId: before.repairId } : {}),
+    ...(dependencies.acceptedRepair ? {
+      lisaRepairId: before.repairId,
+      lisaPublishedProductHead: publishedProductHead(config, issue, after.head, execute),
+    } : {}),
     commit: null, recoveryHead: null, pushedHead: null, reviewedCommit: null, reviewReceipt: null,
     publicationCheckpoint: null,
     ...holdIssuePublication(issue),

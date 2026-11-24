@@ -23,7 +23,7 @@ for (const scenario of ['pushed', 'closing', 'closing-foreign', 'closing-staged'
       cpSync(path.join(sourceRoot, '.gitignore'), path.join(root, '.gitignore'));
       const configPath = path.join(root, '.agents/ralph.config.json');
       const config = JSON.parse(readFileSync(configPath, 'utf8'));
-      Object.assign(config, { active: true, agentCli: 'codex', githubAccount: null, syncBaseBranch: false,
+      Object.assign(config, { active: true, validationProfiles: undefined, agentCli: 'codex', githubAccount: null, syncBaseBranch: false,
         phases: [{ milestone: 'Repair', branch: 'phase' }], validationScripts: [], preflightScripts: [],
         validationArtifactPaths: [], stopAfterFirstIssue: true, autoApproveConfiguredIssues: true,
         review: { ...config.review, enabled: scenario === 'closing' },
@@ -47,7 +47,8 @@ import { repairFixtureValue } from './ralph-acceptance.mjs';`);
           const issue = { number: 12, title: 'Preserved product task', body: 'Preserve requirement', authorLogin: 'owner' };
           if (!store.issue) {
             const head = run('git', ['rev-parse', 'HEAD']).stdout;
-            store.beginIssue(issue, head, ${['closing-foreign', 'closing-staged'].includes(scenario) ? "['user.txt']" : '[]'});
+            const base = run('git', ['rev-parse', 'HEAD^']).stdout;
+            store.beginIssue(issue, base, ${['closing-foreign', 'closing-staged'].includes(scenario) ? "['user.txt']" : '[]'});
             store.updateIssue({ phase: '${scenario === 'pushed' ? 'pushed' : 'closing'}', commit: head, recoveryHead: head, pushedHead: head, reviewedCommit: head });
           }
           sendRalphWorkerMessage(lifecycle, 'prepared', { config: phaseConfig, stateRunId: store.state.runId });
@@ -66,6 +67,9 @@ import { repairFixtureValue } from './ralph-acceptance.mjs';`);
       git(root, 'config', 'user.name', 'Repair Test');
       git(root, 'config', 'user.email', 'repair@example.test');
       git(root, 'add', '.');
+      git(root, 'commit', '--quiet', '-m', 'Initialize fixture project');
+      writeFileSync(path.join(root, 'product.txt'), 'Preserved product work\n');
+      git(root, 'add', 'product.txt');
       git(root, 'commit', '--quiet', '-m', 'product completed\n\nRalph-Issue: #12');
       const before = git(root, 'rev-parse', 'HEAD');
       git(remote, 'init', '--quiet', '--bare');

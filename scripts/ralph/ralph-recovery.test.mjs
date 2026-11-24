@@ -157,6 +157,11 @@ test('clean committed and closing recovery keep the exact-HEAD PASS with a legac
   }
 });
 
+test('legacy infra-filtered issue PASS cannot be reused to close an issue', () => {
+  const result = { verdict: 'pass', findings: [], summary: 'The migration is missing. 1 Ralph infrastructure finding(s) were excluded from the product milestone and must be handled manually in the configuration chat.' };
+  assert.equal(savedIssueReview({ reviewReceipt: { head: 'same', result } }, 'same'), null);
+});
+
 test('auth, trust and validation mutation failures retain strict committed recovery', () => {
   for (const code of ['RALPH_AGENT_AUTH', 'RALPH_CONTROL_PLANE_CHANGED', 'RALPH_VALIDATION_MUTATED',
     'RALPH_PREFLIGHT_FAILED', 'RALPH_RECOVERY_BLOCKED']) {

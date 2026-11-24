@@ -195,6 +195,28 @@ test('a failing repair gate returns actionable feedback without accepting the tr
   } finally { f.cleanup(); }
 });
 
+test('an unchanged unknown validation plan stops after a repair retry with the same diagnostic', async () => {
+  const f = fixture();
+  try {
+    const target = path.join(f.root, 'scripts/ralph/ralph-loop.mjs');
+    let diagnostic = 'unknown file A';
+    const attempt = () => assessLisaRepair(f.context, {
+      ...f.options,
+      review: async () => ({ verdict: 'pass', reason: 'preserved scope' }),
+      validate: async () => { throw Object.assign(new Error('exit 79'), {
+        code: 'RALPH_VALIDATION_SCOPE_UNKNOWN', stderr: diagnostic,
+      }); },
+    });
+    writeFileSync(target, 'candidateA();');
+    await assert.rejects(attempt(), { code: 'RALPH_LISA_RETRY' });
+    writeFileSync(target, 'candidateB();');
+    await assert.rejects(attempt(), { code: 'RALPH_LISA_RETRY' });
+    diagnostic = 'unknown file B';
+    await assert.rejects(attempt(), { code: 'RALPH_LISA_RETRY' });
+    await assert.rejects(attempt(), { code: 'RALPH_NEEDS_HUMAN' });
+  } finally { f.cleanup(); }
+});
+
 test('a wrapped external permission failure is not retried as a repairable gate failure', async () => {
   const f = fixture();
   try {

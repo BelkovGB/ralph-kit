@@ -244,6 +244,8 @@ function lifecycleConfig(repository, reviewOutputPath) {
     trustedIssueAuthors: ['trusted-author'],
     approvedIssueSnapshots: { [issueNumber]: { title: issueTitle, body: issueBody } },
     preflightScripts: [],
+    // Each lifecycle scenario supplies its own validation for the disposable repository.
+    validationProfiles: undefined,
     validationScripts: [],
     validationArtifactPaths: [],
     maxReviewFixAttempts: 2,
