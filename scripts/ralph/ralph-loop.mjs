@@ -991,7 +991,7 @@ export async function runAgentOnIssue(config, repository, issue, rules) {
       phase: 'working-tree',
       ...recordedFailure(error),
     });
-    if (error.code === 'RALPH_AGENT_AUTH') {
+    if (['RALPH_AGENT_AUTH', 'RALPH_AGENT_STARTUP_EXHAUSTED', 'RALPH_NEEDS_HUMAN'].includes(error.code)) {
       throw error;
     }
     if (['RALPH_MAX_TURNS', 'RALPH_AGENT_TIMEOUT'].includes(error.code)) {
@@ -1604,7 +1604,7 @@ export async function runContinuousLoop(context, actions) {
       });
       if (
         needsDevelopmentIteration &&
-        ['RALPH_AGENT_AUTH', 'RALPH_AGENT_WRITE_ACCESS', 'RALPH_UNTRUSTED_ISSUE', 'RALPH_PROCESS_CONFIG'].includes(
+        ['RALPH_AGENT_AUTH', 'RALPH_AGENT_STARTUP_EXHAUSTED', 'RALPH_AGENT_WRITE_ACCESS', 'RALPH_UNTRUSTED_ISSUE', 'RALPH_PROCESS_CONFIG'].includes(
           error.code,
         )
       ) {

@@ -97,13 +97,13 @@ async function waitForChildTermination(child, childResult, graceMs) {
       timer = setTimeout(() => resolve(false), graceMs);
     }),
   ]).finally(() => clearTimeout(timer));
-  if (completed) return;
+  if (completed) return true;
 
   terminateProcessTree(child, true);
-  await Promise.race([
-    childResult.catch(() => undefined),
-    new Promise((resolve) => setTimeout(resolve, 2_000)),
-  ]);
+  return Promise.race([
+    childResult.then(() => true, () => true),
+    new Promise((resolve) => { timer = setTimeout(() => resolve(false), 2_000); }),
+  ]).finally(() => clearTimeout(timer));
 }
 
 /**
@@ -147,9 +147,27 @@ export function addUsage(total, usage) {
  * оркестратором время и собственный счётчик шагов.
  */
 export async function runAgentSession(backend, args, options) {
+  const startupLimit = 3;
+  for (let startupAttempt = 1; startupAttempt <= startupLimit; startupAttempt += 1) {
+    try {
+      return await runSessionAttempt(backend, args, options, startupAttempt, startupLimit);
+    } catch (error) {
+      if (error.code !== 'RALPH_AGENT_IDLE_TIMEOUT' || error.idlePhase !== 'first-event') throw error;
+      if (startupAttempt === startupLimit) {
+        throw Object.assign(new Error(
+          `${options.label}: ${startupLimit} попытки без первого рабочего события. Прогон остановлен.`,
+          { cause: error },
+        ), { code: 'RALPH_AGENT_STARTUP_EXHAUSTED', telemetry: error.telemetry, nonRetryable: true });
+      }
+      console.log(`${options.label}: повтор запуска ${startupAttempt + 1}/${startupLimit} после тайм-аута первого ответа.`);
+    }
+  }
+}
+
+async function runSessionAttempt(backend, args, options, startupAttempt, startupLimit) {
   const sessionStartedMs = Date.now();
   publishLiveStatus({
-    type: 'session-start', label: options.label, startedMs: sessionStartedMs,
+    type: 'session-start', label: options.label, startedMs: sessionStartedMs, startupAttempt, startupLimit,
     maxTurns: options.maxTurns,
     timeoutMs: options.timeoutMs ?? runtimeSettings().agentTimeoutMs,
     firstEventTimeoutMs: options.firstEventTimeoutMs ?? runtimeSettings().agentFirstEventTimeoutMs,
@@ -387,7 +405,9 @@ async function runObservedAgentSession(backend, args, options, sessionStartedMs)
     options.signal?.removeEventListener('abort', abort);
   }
   if (limitReached || wallTimeoutReached || idleTimeoutReached || aborted) {
-    await waitForChildTermination(child, childResult, 10_000);
+    const stopped = await waitForChildTermination(child, childResult, 10_000);
+    if (!stopped) throw Object.assign(new Error(`${options.label}: завершение предыдущего процесса не подтверждено.`),
+      { code: 'RALPH_NEEDS_HUMAN', nonRetryable: true });
   }
   if (aborted) throw Object.assign(new Error('Сессия остановлена пользователем.'), { code: 'RALPH_STOPPED', telemetry: sessionTelemetry() });
   if (stdoutBuffer.trim() !== '') {

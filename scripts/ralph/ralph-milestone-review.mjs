@@ -322,6 +322,7 @@ export async function runMilestoneReview(config, repository, milestone, pullRequ
     );
   } catch (error) {
     activeStateStore()?.recordPhaseProcess?.({ type: 'review-error' });
+    if (['RALPH_AGENT_STARTUP_EXHAUSTED', 'RALPH_NEEDS_HUMAN'].includes(error.code)) throw error;
     try {
       postMilestoneReviewFailure(config, repository, milestone, pullRequest, error.message);
     } catch (commentError) {
