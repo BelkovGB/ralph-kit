@@ -205,11 +205,11 @@ function acceptManualPhaseCommit(config, store, sha, execute, verify) {
   const state = store?.state;
   const repair = state?.lisaRepair;
   if (!repair?.repairId || repair.status !== 'needs-human' || repair.issueNumber !== null ||
-      repair.failureStep !== 'pull-request' || repair.acceptedTreeHash !== null ||
+      !['pull-request', 'phase'].includes(repair.failureStep) || repair.acceptedTreeHash !== null ||
       repair.runId !== state.runId || repair.phaseIndex !== state.phaseIndex ||
       state.branch !== config.branch || state.baseBranch !== config.baseBranch ||
       state.milestone !== config.milestone || !/^[a-f0-9]{40}$/u.test(sha ?? '')) {
-    blocked('Нет остановленного ремонта перед PR этой фазы для принятия ручного коммита.');
+    blocked('Нет соответствующего остановленного ремонта этой фазы для принятия ручного коммита.');
   }
   const repositoryState = verify(config, false);
   const git = (...args) => execute('git', args).stdout;

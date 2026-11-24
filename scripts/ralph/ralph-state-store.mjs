@@ -315,6 +315,7 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
         fail('Lisa: неизвестный контекст ремонта.');
       }
       state.lisaRepair = null;
+      state.supervisorActive = false;
       persist();
     },
     grantSupervisorIteration() {

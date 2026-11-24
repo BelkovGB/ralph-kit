@@ -81,6 +81,10 @@ export function lisaFailureFingerprint(error, step) {
   return digest(JSON.stringify([step, error?.code ?? null, message]));
 }
 
+export function isPhaseValidationFailure(step, code) {
+  return step === 'pull-request' && phaseValidationFailures.has(code);
+}
+
 export function captureLisaRepairContext(config, store, error, options = {}) {
   const root = path.resolve(options.projectRoot ?? projectRoot);
   const workspace = identity(options);
@@ -97,7 +101,7 @@ export function captureLisaRepairContext(config, store, error, options = {}) {
   }
   const state = structuredClone(store.state);
   const step = options.failureStep ?? state?.issue?.phase ?? 'phase';
-  const phaseRepair = !state?.issue && step === 'pull-request' && phaseValidationFailures.has(error?.code);
+  const phaseRepair = !state?.issue && isPhaseValidationFailure(step, error?.code);
   let phaseBaseHead;
   if (phaseRepair) {
     const git = (...args) => (options.run ?? run)('git', args).stdout;
