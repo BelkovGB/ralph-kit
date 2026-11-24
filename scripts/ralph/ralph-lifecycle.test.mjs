@@ -244,6 +244,8 @@ function lifecycleConfig(repository, reviewOutputPath) {
     trustedIssueAuthors: ['trusted-author'],
     approvedIssueSnapshots: { [issueNumber]: { title: issueTitle, body: issueBody } },
     preflightScripts: [],
+    // Each lifecycle scenario supplies its own validation for the disposable repository.
+    validationProfiles: undefined,
     validationScripts: [],
     validationArtifactPaths: [],
     maxReviewFixAttempts: 2,
@@ -582,8 +584,12 @@ test('отказ ревью оставляет коммит локально и 
     setActiveStateStore(store);
     const config = lifecycleConfig(stand.repository, stand.reviewOutputPath);
 
+    config.maxTurns = 3;
+    config.developmentMaxTurns = 7;
+    config.prompt += '\nDevelopment budget {max_turns}';
     const first = await runAgentOnIssue(config, 'owner/repository', lifecycleIssue(), 'rules');
 
+    assert.equal(readLiveStatus().session.maxTurns, 3);
     assert.equal(first.completed, false);
     assert.equal(first.parked, undefined);
     assert.equal(first.review.verdict, 'fail');
@@ -608,6 +614,8 @@ test('отказ ревью оставляет коммит локально и 
     assert.equal(second.completed, false);
     assert.equal(second.parked, true);
     assert.equal(second.publicationBlocked, true);
+    assert.equal(readLiveStatus().session.maxTurns, 7);
+    assert.match(readFileSync(`${stand.reviewOutputPath}.development-prompt`, 'utf8'), /Development budget 7/u);
     assert.equal(store.issue.phase, 'review-failed');
     assert.deepEqual(store.record.process.reviews, [{ round: 1, verdict: 'fail', findings: 1 }]);
     assert.deepEqual(agentInvocations(stand.reviewOutputPath), [

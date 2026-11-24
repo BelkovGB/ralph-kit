@@ -309,6 +309,16 @@ function isConnectionInterruption(error) {
   return /^\s*(?:Error:\s*[^\r\n]*\b(?:ECONNRESET|ECONNABORTED)\b|(?:ConnectionAbortedError|ConnectionResetError):)/mu.test(output);
 }
 
+export function assertScopedHostCommands(commands, declaredFull = []) {
+  const normalize = value => value.trim().replace(/\s+/gu, ' ').toLowerCase();
+  const selected = commands.map(normalize);
+  const broad = /^(?:(?:npx|pnpm(?: exec)?|yarn) )?playwright test$|^(?:npm|pnpm|yarn) (?:run )?(?:check|test:all|test:full|regress:all)$/u;
+  if (selected.some(command => broad.test(command)) ||
+      declaredFull.length && declaredFull.every(command => selected.includes(normalize(command)))) {
+    throw Object.assign(new Error('Полный набор запрещён в host-проверках Ralph. Настройте адресные команды.'), {code:'RALPH_VALIDATION_SCOPE_UNKNOWN'});
+  }
+}
+
 export function runConfiguredScripts(config, scripts, label, options = {}) {
   const execute = options.run ?? run;
   // Preflight готовит окружение и по своему контракту вправе менять дерево:
@@ -320,9 +330,18 @@ export function runConfiguredScripts(config, scripts, label, options = {}) {
   if (preparation.length + guarded.length === 0) return { ran: false, scripts: [] };
 
   assertTrustedControlFilesUnchanged(config);
+  const rulesFile = path.join(projectRoot, '.agents/validation-rules.json');
+  const declaredFull = existsSync(rulesFile) ? JSON.parse(readFileSync(rulesFile, 'utf8')).full : [];
+  assertScopedHostCommands([...preparation, ...guarded], declaredFull);
   const environment = hostValidationEnvironment(config, options.environmentSource ?? process.env,
     options.validationPathDirectories ?? activeStateStore()?.validationPathDirectories ?? []);
+  environment.RALPH_AGENT_ROLE = 'validation-host';
   if (options.scope) {
+    if (options.scope === 'issue' && options.issueNumber) {
+      const body = config.approvedIssueSnapshots?.[options.issueNumber]?.body ?? activeStateStore()?.issue?.body ?? '';
+      const contract = /^## Визуальный контракт[^\S\n]*\n[\s\S]*?(?=^## |(?![\s\S]))/mu.exec(body)?.[0];
+      if (contract) environment.RALPH_VISUAL_CONTRACT = contract;
+    }
     environment.RALPH_VALIDATION_SCOPE = options.scope;
     environment.RALPH_VALIDATION_BASE_COMMIT = options.baseCommit ?? '';
   }

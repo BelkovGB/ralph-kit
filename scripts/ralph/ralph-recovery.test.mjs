@@ -157,6 +157,11 @@ test('clean committed and closing recovery keep the exact-HEAD PASS with a legac
   }
 });
 
+test('legacy infra-filtered issue PASS cannot be reused to close an issue', () => {
+  const result = { verdict: 'pass', findings: [], summary: 'The migration is missing. 1 Ralph infrastructure finding(s) were excluded from the product milestone and must be handled manually in the configuration chat.' };
+  assert.equal(savedIssueReview({ reviewReceipt: { head: 'same', result } }, 'same'), null);
+});
+
 test('auth, trust and validation mutation failures retain strict committed recovery', () => {
   for (const code of ['RALPH_AGENT_AUTH', 'RALPH_CONTROL_PLANE_CHANGED', 'RALPH_VALIDATION_MUTATED',
     'RALPH_PREFLIGHT_FAILED', 'RALPH_RECOVERY_BLOCKED']) {
@@ -314,4 +319,33 @@ test('read-only state load does not delete an idle mismatched state', (t) => {
   const previous = readFileSync(f.statePath, 'utf8');
   createStateStore({ ...f.config, branch: 'other' }, '--check', f.statePath);
   assert.equal(readFileSync(f.statePath, 'utf8'), previous);
+});
+
+test('explicit manual recovery after a single evidence mutation requires fresh review', (t) => {
+  const f = fixture(t);
+  f.store.updateIssue({ phase: 'validation-mutated', validationExpectedTreeHash: 'a'.repeat(64),
+    lastFailureSummary: { code: 'RALPH_VALIDATION_MUTATED',
+      error: 'Validation: команды проверки изменили отслеживаемые или новые файлы проекта: evidence/run/result.png.' } });
+  assert.throws(() => f.analyze(), /точное дерево/);
+  const plan = f.analyze({ manualCommit: f.manual });
+  assert.equal(plan.patch.phase, 'committed');
+  assert.equal(plan.patch.reviewReceipt, null);
+  assert.equal(plan.patch.publicationCheckpoint, null);
+});
+
+test('manual acceptance releases only the matching stopped Lisa repair for restart', (t) => {
+  const f = fixture(t);
+  const repairId = 'manual-recovery-test';
+  f.store.beginLisaRepair({ repairId, runId: f.store.state.runId, phaseIndex: f.store.state.phaseIndex });
+  f.store.updateLisaRepair(repairId, { status: 'needs-human' });
+  const accept = () => prepareRecovery(f.config, f.store, '--accept-manual-commit', {
+    run: f.run, manualCommit: f.manual, verifyRepository: () => ({}),
+  });
+  assert.throws(accept, /не соответствует остановленному/);
+  assert.equal(f.store.state.lisaRepair.repairId, repairId);
+  f.store.updateIssue({ lisaRepairId: repairId });
+  assert.equal(accept().accepted, f.manual);
+  assert.equal(f.store.state.lisaRepair, null);
+  assert.equal(f.store.issue.phase, 'committed');
+  assert.equal(f.store.issue.reviewReceipt, null);
 });

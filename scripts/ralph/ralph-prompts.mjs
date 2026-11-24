@@ -2,6 +2,10 @@
  * Prompt для реализации issue и для обоих ревьюеров.
  */
 
+import { lstatSync, realpathSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { agentBackend } from './ralph-agent-backends.mjs';
 import { validationScriptsFor } from './ralph-process-packs.mjs';
 
@@ -21,7 +25,7 @@ export function renderPrompt(config, issue, rules) {
     '{issue_number}': String(issue.number),
     '{issue_title}': issue.title,
     '{issue_url}': issue.url,
-    '{max_turns}': String(config.maxTurns),
+    '{max_turns}': String(config.developmentMaxTurns ?? config.maxTurns),
     '{max_test_fix_attempts}': String(config.maxTestFixAttempts),
   };
 
@@ -122,6 +126,9 @@ function automatedReviewGuidance(changes) {
  */
 function reviewChangeInventory(heading, changes) {
   if (!changes) return '';
+  const exclusionsNote = changes.excludedPaths?.length
+    ? '\n\nPatch text omitted for configured paths (still included in inventory and statistics): ' + changes.excludedPaths.join(', ')
+    : '';
   const truncationNote = changes.truncated
     ? '\n\nThe diff above is truncated. Read the remaining changed files from the list yourself.'
     : '';
@@ -136,7 +143,7 @@ ${changes.nameStatus}
 
 \`\`\`diff
 ${changes.diff}
-\`\`\`${truncationNote}`;
+\`\`\`${truncationNote}${exclusionsNote}`;
 }
 
 function issueChangeHeading(changes) {
@@ -202,6 +209,19 @@ The previous review audited commit ${previousReview.commit} in full. ${scope} Au
 const auditInstruction =
   'Audit every changed file and every requirement and definition-of-done item from the issue body: correctness, edge cases, regressions, security, test coverage, and the interactions between the changed files rather than only the most obvious one.';
 
+// An installed review template is optional. Check only fixed project paths.
+function productReviewSkillGuidance(config) {
+  const root = realpathSync(fileURLToPath(new URL('../../', import.meta.url)));
+  const files = ['SKILL.md', 'code-reviewer.md'].map((name) =>
+    path.join(root, '.agents', 'skills', 'requesting-code-review', name));
+  const installed = files.every((file) =>
+    lstatSync(file, { throwIfNoEntry: false })?.isFile() && realpathSync(file) === file &&
+    (!config.trustedControlFileHashes || config.trustedControlFileHashes.has(file)));
+  return installed
+    ? '\n\nRead .agents/skills/requesting-code-review/SKILL.md and .agents/skills/requesting-code-review/code-reviewer.md as the project review template. These two files are an explicit exception to the control-plane read restriction. You are already the independent reviewer. Do not delegate or launch another reviewer. The Ralph JSON schema takes precedence over the template output. Preserve the configured scope, severity and read-only permissions.'
+    : '';
+}
+
 export function buildIndependentReviewPrompt(config, issue, commit, context = {}) {
   const issueBody = issue.body?.trim() || '(empty)';
   const pack = issue.processPack;
@@ -224,7 +244,7 @@ Complete the entire audit before deciding the verdict. Do not stop after the fir
 
 ${auditScope}
 
-${reviewShellGuidance(config)}
+${reviewShellGuidance(config)}${productReviewSkillGuidance(config)}
 
 ${reviewDocumentationDiscovery(config)}
 
@@ -292,7 +312,7 @@ Ralph's control plane is maintained manually outside the product loop. Do not op
 
 ${automatedReviewGuidance(context.changes)}
 
-${reviewShellGuidance(config)}
+${reviewShellGuidance(config)}${productReviewSkillGuidance(config)}
 
 Within that milestone scope, ${reviewBreadth}. Read AGENTS.md, relevant PRD/plan documents, issue-related documentation, and tests. ${reviewDocumentationDiscovery(config)} Look for cross-issue integration problems, architectural inconsistencies, security vulnerabilities, performance or scalability risks, regressions, missing tests, and deviations from the milestone requirements.
 

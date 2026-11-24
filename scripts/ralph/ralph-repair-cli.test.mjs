@@ -1,12 +1,10 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import test from 'node:test';
-import { executableTempDirectory, withFakeCodex } from './ralph-test-support.mjs';
+import { createCliFixture, executableTempDirectory, withFakeCodex } from './ralph-test-support.mjs';
 
-const sourceRoot = fileURLToPath(new URL('../..', import.meta.url));
 function git(root, ...args) {
   const result = spawnSync('git', args, { cwd: root, encoding: 'utf8', windowsHide: true });
   assert.equal(result.status, 0, result.stderr);
@@ -17,13 +15,10 @@ for (const scenario of ['resume', 'stop-review', 'repeat', 'resumed-auth', 'revi
 test(`real CLI repair lifecycle: ${scenario}`, async () => {
   const root = mkdtempSync(path.join(executableTempDirectory, 'repair-cli-'));
   try {
-    cpSync(path.join(sourceRoot, 'scripts'), path.join(root, 'scripts'), { recursive: true });
-    cpSync(path.join(sourceRoot, '.agents'), path.join(root, '.agents'), { recursive: true });
+    const config = createCliFixture(root);
     const configPath = path.join(root, '.agents/ralph.config.json');
-    const config = JSON.parse(readFileSync(configPath, 'utf8'));
-    Object.assign(config, { active: true, agentCli: 'codex', syncBaseBranch: false,
-      phases: [{ milestone: 'Repair', branch: 'phase' }], validationScripts: [], preflightScripts: [],
-      validationArtifactPaths: [], supervisor: { ...config.supervisor, enabled: true, agentCli: 'codex' } });
+    Object.assign(config, { syncBaseBranch: false, phases: [{ milestone: 'Repair', branch: 'phase' }],
+      supervisor: { enabled: true, agentCli: 'codex', model: 'fixture-model' } });
     if (scenario.startsWith('config-')) {
       config.validationScripts = ['node wrong-check.mjs'];
       writeFileSync(path.join(root, 'fixed-check.mjs'), "console.log('CANDIDATE_VALIDATION');\n");
@@ -97,7 +92,14 @@ test(`real CLI repair lifecycle: ${scenario}`, async () => {
         if (!process.cwd().includes('ralph-repair-runtime-') || args[args.indexOf('-C') + 1] !== process.cwd()) throw new Error('review loaded candidate project');
         if (existsSync('AGENTS.md') || existsSync('.claude')) throw new Error('candidate instructions loaded as review rules');
         ${scenario === 'stop-review' ? `writeFileSync(${JSON.stringify(path.join(root, '.git/ralph-loop/review-started.marker'))}, 'started'); setInterval(() => {}, 1000); await new Promise(() => {});` : ''}
-        ${scenario === 'instruction-repair' ? "if (!prompt.includes('AGENTS.md') || !prompt.includes('Preserve requirement')) throw new Error('instruction missing from review');" : ''}
+        ${scenario === 'instruction-repair' ? `
+          const manifestFile = prompt.match(/review-[a-f0-9-]+[.]json/u)?.[0];
+          const inventory = manifestFile ? JSON.parse(readFileSync(manifestFile, 'utf8')) :
+            JSON.parse(prompt.slice(prompt.indexOf('\\n') + 1));
+          const instruction = inventory.changes.find(change => change.path === 'AGENTS.md');
+          const text = manifestFile && instruction?.after ? readFileSync(instruction.after.file, 'utf8') : instruction?.after;
+          if (!text?.includes('Preserve requirement')) throw new Error('instruction missing from review');
+        ` : ''}
         const verdict = ${scenario === 'retry-review' ? "attempts === 1 ? 'retry' : 'pass'" : `'${['review-error', 'ignored-instruction'].includes(scenario) ? 'human' : 'pass'}'`};
         writeFileSync(output, JSON.stringify({ verdict, reason: ${scenario === 'retry-review' ? "'REPAIR_REVIEW_FEEDBACK'" : "'independent review result'"} }));
       } else {

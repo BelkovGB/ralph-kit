@@ -4,26 +4,51 @@ import { runDevelopmentSession, verifyAgentAuthentication } from './ralph-agent-
 import { publishLiveStatus, reportActivity } from './ralph-live-status.mjs';
 import { assertTrustedControlFilesUnchanged, hostHomeDirectory, validatedLisaPathDirectories } from './ralph-validation-runner.mjs';
 import { run } from './ralph-process-runner.mjs';
-import { analyzeRecovery, committedRecoveryPhases } from './ralph-recovery.mjs';
+import { analyzeRecovery, committedRecoveryPhases, savedIssueReview } from './ralph-recovery.mjs';
 import { holdIssuePublication, validatedLisaRecommendations } from './ralph-state-store.mjs';
+import { isRalphInfrastructureGitPath } from './ralph-scope.mjs';
 import { isAncestorCommit } from './ralph-git.mjs';
 import { beginIssueMetrics, currentIssueMetrics, finishIssueMetrics,
   formatIssueMetrics, startStage } from './ralph-run-metrics.mjs';
 import { runRalphLifecycle, ralphRunOutcome } from './ralph-lifecycle.mjs';
 
 const humanOnlyCodes = new Set([
-  'RALPH_AGENT_AUTH',
+  'RALPH_AGENT_STARTUP_EXHAUSTED', 'RALPH_AGENT_AUTH',
   'RALPH_AGENT_WRITE_ACCESS',
   'RALPH_UNTRUSTED_ISSUE',
   'RALPH_CONTROL_PLANE_CHANGED',
   'RALPH_RECOVERY_BLOCKED',
 ]);
 
+export async function reviewWithIdleRetry(review, signal, beforeRetry) {
+  try {
+    return await review();
+  } catch (error) {
+    if (error.code !== 'RALPH_AGENT_IDLE_TIMEOUT' || error.idlePhase !== 'between-events' || signal.aborted) throw error;
+    beforeRetry();
+    if (signal.aborted) throw error;
+    return review();
+  }
+}
+
+export function proposalRetry(cause, answer, used) {
+  if (used) return null;
+  if (cause?.code === 'RALPH_AGENT_IDLE_TIMEOUT')
+    return 'Предыдущая сессия перестала присылать события. Начни с git status --short и продолжи с сохранённого diff.';
+  if (!cause && answer?.verdict === 'human' && (typeof answer.operatorAction !== 'string' || !answer.operatorAction.trim()))
+    return 'Назови конкретное необходимое действие оператора либо исправь оставшийся дефект и проверь его.';
+  return null;
+}
+
 export function supervisorPrompt(config, state, error, call, options = {}) {
   const issue = state?.issue;
   const failure = error?.message ?? 'Задача отложена после повторных отказов ревью.';
   return [
     'Ты Lisa, супервизор Ralph Loop. Разбери остановку и помоги Ralph продолжить текущую задачу.',
+    'Полный набор допустим только в крайнем случае. Назови конкретный сбой, пройденные адресные проверки и причину полного прогона. Используй --full LisaEmergency с этим обоснованием.',
+    'Для human обязательно поле operatorAction: одна конкретная операция человека или решение, без которого нельзя продолжить. Незавершённый diff или отсутствие проверки сами по себе не требуют человека.',
+    error?.code === 'RALPH_VALIDATION_SCOPE_UNKNOWN' && issue?.startingCommit
+      ? 'Сначала проверь только план: node scripts/ralph/ralph-scoped-validation.mjs --plan .agents/validation-rules.json ' + issue.startingCommit + ' issue. Исправь маршрутизацию UNKNOWN и повтори план перед тестами.' : '',
     `Вызов ${call}. Ветка: ${config.branch}. Milestone: ${config.milestone}.`,
     `Issue: ${issue ? `#${issue.number} «${issue.title ?? ''}», этап ${issue.phase}` : 'нет сохранённой issue'}.`,
     `Причина остановки: ${failure}`,
@@ -46,12 +71,15 @@ export function supervisorPrompt(config, state, error, call, options = {}) {
     'Если необязательное обновление окружения можно отложить и все обязательные проверки проходят, продолжай работу и верни рекомендацию в recommendations. Невыполненную обязательную проверку нельзя заменить рекомендацией, пропустить или объявить успешной.',
     'Не редактируй state.json и локи. После resume оркестратор сам проверит восстановление и согласует этап с рабочим деревом, отменит устаревшие результаты проверок и ревью. При небезопасном состоянии он сохранит работу и запросит человека.',
     'Не меняй цель задачи и критерии приёмки, не отключай проверки, ревью или доверие к источникам, не меняй лимиты и идентичность плана.',
+    options.proposalOnly && !issue && state && error?.ralphFailureStep === 'pull-request' &&
+      ['RALPH_VALIDATION_SCOPE_UNKNOWN', 'RALPH_VALIDATION_FAILED'].includes(error.code)
+      ? 'Сбой проверки фазы: проверь адресный план и исправь команды проверки фазы в рамках исходной политики. Сохрани обязательные проверки. Индекс, HEAD, состояние и оркестрацию восстановления меняет только Ralph.' : '',
     options.proposalOnly
       ? 'Для текущей сохранённой issue разрешён ремонт скриптов Ralph, команд preflightScripts, validationScripts и существующих validationProfiles в конфиге, ошибочных команд или противоречий в инструкциях. Сохраняй исходные требования; остальные настройки неизменны. Не меняй ralph-lifecycle.mjs, ralph-lifecycle-host.mjs, ralph-lisa-repair.mjs, ralph-process-packs.mjs и ralph-repair-policy.mjs. После твоего ответа независимое ревью исходной политики и полного diff проверит ремонт, а управляющий процесс перезапустит Ralph. Не редактируй runtime-каталоги и временную доверенную копию.'
       : 'Настройки Ralph и доверенные инструкции оставь неизменными.',
     'Не удаляй незавершённую работу, не меняй индекс Git, не создавай commit и не переключай ветку. Не запускай второй Ralph Loop: оболочка продолжит его после твоего ответа.',
     'Если нужен доступ, согласование, решение за пределами задачи или безопасное исправление невозможно, запроси человека.',
-    'Последним сообщением верни только JSON: {"verdict":"resume"|"human","reason":"краткая причина","validationPathDirectories":["абсолютный путь"],"recommendations":["неблокирующая рекомендация"]}. Последние два поля необязательны. recommendations: не более десяти непустых однострочных рекомендаций до 1000 символов каждая. resume предлагает ремонт для независимой проверки; он не объявляет задачу принятой.',
+    'Последним сообщением верни только JSON: {"verdict":"resume"|"human","reason":"краткая причина","operatorAction":"для human: необходимое действие","validationPathDirectories":["абсолютный путь"],"recommendations":["неблокирующая рекомендация"]}. Последние два поля необязательны. recommendations: не более десяти непустых однострочных рекомендаций до 1000 символов каждая. resume предлагает ремонт для независимой проверки; он не объявляет задачу принятой.',
   ].filter(Boolean).join('\n\n');
 }
 
@@ -85,6 +113,20 @@ function workspaceIdentity(execute = run) {
     branch: execute('git', ['branch', '--show-current']).stdout,
     head: execute('git', ['rev-parse', 'HEAD']).stdout,
   };
+}
+
+// An approved repair to push/close can follow a real product delivery. Bind it to
+// the exact HEAD and issue trailer; a previously accepted control-only commit
+// cannot stand in for implementation. The repaired HEAD gets a fresh review.
+function publishedProductHead(config, issue, head, execute) {
+  if (issue.commit !== head || issue.pushedHead !== head ||
+      !['pushed', 'closing'].includes(issue.phase)) return null;
+  if (config.review?.enabled && savedIssueReview(issue, head)?.verdict !== 'pass') return null;
+  const trailer = execute('git', ['show', '-s', '--format=%(trailers:key=Ralph-Issue,valueonly)', head]).stdout;
+  if (trailer !== `#${issue.number}`) return null;
+  const paths = execute('git', ['diff-tree', '--root', '--no-commit-id', '-r', '-z', '--name-only', head],
+    { rawStdout: true }).stdout.split('\0').filter(Boolean);
+  return paths.some((file) => !isRalphInfrastructureGitPath(file)) ? head : null;
 }
 
 /** Validate the next recovery before persisting a supervisor's uncommitted fix. */
@@ -132,7 +174,10 @@ export function prepareLisaResume(config, store, before, dependencies = {}) {
   }
   const patch = {
     phase: 'working-tree', startingCommit: after.head,
-    ...(dependencies.acceptedRepair ? { lisaRepairId: before.repairId } : {}),
+    ...(dependencies.acceptedRepair ? {
+      lisaRepairId: before.repairId,
+      lisaPublishedProductHead: publishedProductHead(config, issue, after.head, execute),
+    } : {}),
     commit: null, recoveryHead: null, pushedHead: null, reviewedCommit: null, reviewReceipt: null,
     publicationCheckpoint: null,
     ...holdIssuePublication(issue),

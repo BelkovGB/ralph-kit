@@ -45,7 +45,7 @@ export function verifyAgentAuthentication(config, dependencies = {}) {
 export async function runDevelopmentSession(config, options, metricsRole = 'development') {
   const backend = agentBackend(config);
   return withRecordedTelemetry(metricsRole, () =>
-    runAgentSession(backend, backend.developmentArguments(config), options),
+    runAgentSession(backend, backend.developmentArguments(config), { ...options, agentRole: metricsRole }),
   );
 }
 
@@ -66,7 +66,7 @@ export async function runReviewSession(config, role, options) {
   // отличается от цены ревью одной issue.
   const metricsRole = role === config?.milestoneReview ? 'milestone-review' : 'review';
   const session = await withRecordedTelemetry(metricsRole, () =>
-    runAgentSession(backend, review.arguments({ ...role, workingDirectory: options.workingDirectory }), options),
+    runAgentSession(backend, review.arguments({ ...role, workingDirectory: options.workingDirectory }), { ...options, agentRole: metricsRole }),
   );
 
   const fromEvent = review.resultChannel === 'structured-event';

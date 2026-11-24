@@ -31,7 +31,7 @@ function hostValidationConfig(overrides = {}) {
   return {
     validationEnvironment: ['CI=true', 'DATABASE_URL=postgres://validation'],
     preflightScripts: ['pnpm db:migrate'],
-    validationScripts: ['pnpm check'],
+    validationScripts: ['pnpm check:module'],
     runtime: { validationRunTimeoutMs: 9_000 },
     trustedControlFileHashes: trustedControlFileHashes(),
     agentInstructionFiles: trustedAgentInstructionFiles(),
@@ -51,7 +51,7 @@ function unchangedHostTreeRun(calls = []) {
 
 test('idle watchdog failure retains its cause through host validation', () => {
   const ordinary = unchangedHostTreeRun();
-  assert.throws(() => runConfiguredScripts(hostValidationConfig(), ['pnpm check'], 'Validation', {
+  assert.throws(() => runConfiguredScripts(hostValidationConfig(), ['pnpm check:module'], 'Validation', {
     run(command, args, options) {
       if (command === 'git') return ordinary(command, args, options);
       throw Object.assign(new Error('silent command'), { code: 'RALPH_COMMAND_IDLE_TIMEOUT' });
@@ -61,7 +61,7 @@ test('idle watchdog failure retains its cause through host validation', () => {
 
 test('проверки идут в проекте: preflight, затем набор, с окружением из конфига', () => {
   const calls = [];
-  const result = runConfiguredScripts(hostValidationConfig(), ['pnpm check'], 'Validation', {
+  const result = runConfiguredScripts(hostValidationConfig(), ['pnpm check:module'], 'Validation', {
     run: unchangedHostTreeRun(calls),
     environmentSource: {
       PATH: process.env.PATH,
@@ -69,7 +69,7 @@ test('проверки идут в проекте: preflight, затем наб�
     },
   });
 
-  assert.deepEqual(result.scripts, ['pnpm db:migrate', 'pnpm check']);
+  assert.deepEqual(result.scripts, ['pnpm db:migrate', 'pnpm check:module']);
   assert.deepEqual(result.timings.map(({ stage, passed }) => [stage, passed]), [
     ['preflight', true], ['check', true],
   ]);
@@ -187,7 +187,7 @@ test('saved Lisa PATH reaches validation after a process restart', () => {
     first.setValidationPathDirectories(validatedLisaPathDirectories([toolsDirectory]));
     setActiveStateStore(createStateStore(stateConfig, '--run', statePath));
     const calls = [];
-    runConfiguredScripts(hostValidationConfig(), ['pnpm check'], 'Validation', {
+    runConfiguredScripts(hostValidationConfig(), ['pnpm check:module'], 'Validation', {
       run: unchangedHostTreeRun(calls),
       environmentSource: { PATH: 'original' },
     });
@@ -213,7 +213,7 @@ test('host validation rejects a check that changes project files', () => {
 
   assert.throws(
     () =>
-      runConfiguredScripts(hostValidationConfig({ preflightScripts: [] }), ['pnpm check'], 'Validation', {
+      runConfiguredScripts(hostValidationConfig({ preflightScripts: [] }), ['pnpm check:module'], 'Validation', {
         run: execute,
       }),
     (error) => {
@@ -241,10 +241,10 @@ test('host validation names the command that failed', () => {
   };
 
   assert.throws(
-    () => runConfiguredScripts(hostValidationConfig(), ['pnpm check'], 'Validation', { run: execute }),
+    () => runConfiguredScripts(hostValidationConfig(), ['pnpm check:module'], 'Validation', { run: execute }),
     (error) => {
       assert.equal(error.code, 'RALPH_VALIDATION_FAILED');
-      assert.equal(error.script, 'pnpm check');
+      assert.equal(error.script, 'pnpm check:module');
       return true;
     },
   );
@@ -261,7 +261,7 @@ test('host: подделка доверенного control-файла оста�
     () =>
       runConfiguredScripts(
         hostValidationConfig({ trustedControlFileHashes: tamperedHashes }),
-        ['pnpm check'],
+        ['pnpm check:module'],
         'Validation',
         { run: unchangedHostTreeRun(calls) },
       ),
@@ -277,7 +277,7 @@ test('host: изменённый набор файлов инструкций о
     () =>
       runConfiguredScripts(
         hostValidationConfig({ agentInstructionFiles: [] }),
-        ['pnpm check'],
+        ['pnpm check:module'],
         'Validation',
         { run: unchangedHostTreeRun(calls) },
       ),
@@ -305,14 +305,14 @@ test('host: общий бюджет прогона обрывает набор �
     () =>
       runConfiguredScripts(
         hostValidationConfig({ runtime: { validationRunTimeoutMs: budgetMs } }),
-        ['pnpm check'],
+        ['pnpm check:module'],
         'Validation',
         { run: execute },
       ),
     (error) => {
       assert.equal(error.code, 'RALPH_COMMAND_TIMEOUT');
       assert.match(error.message, new RegExp(`общий лимит ${budgetMs} ms исчерпан`, 'u'));
-      assert.equal(error.script, 'pnpm check');
+      assert.equal(error.script, 'pnpm check:module');
       return true;
     },
   );
@@ -357,13 +357,13 @@ test('host validation reports both a failed command and its file mutation', () =
     () =>
       runConfiguredScripts(
         hostValidationConfig({ preflightScripts: [] }),
-        ['pnpm check'],
+        ['pnpm check:module'],
         'Validation',
         { run: execute },
       ),
     (error) => {
       assert.equal(error.code, 'RALPH_VALIDATION_MUTATED');
-      assert.equal(error.script, 'pnpm check');
+      assert.equal(error.script, 'pnpm check:module');
       assert.match(error.message, /изменили отслеживаемые или новые файлы/u);
       assert.match(error.message, /native command failed/u);
       assert.equal(error.cause, commandFailure);
@@ -452,7 +452,7 @@ test('отказ подготовки каталогов останавлива�
 
   assert.throws(
     () =>
-      runConfiguredScripts(hostValidationConfig(), ['pnpm check'], 'Validation', {
+      runConfiguredScripts(hostValidationConfig(), ['pnpm check:module'], 'Validation', {
         run: (command, args) => {
           commands.push(args.at(-1));
           return { status: 0, stdout: '', stderr: '' };
@@ -562,13 +562,13 @@ test('host: preflight готовит окружение до снимка дер
     return { status: 0, stdout: '', stderr: '' };
   };
 
-  const result = runConfiguredScripts(hostValidationConfig(), ['pnpm check'], 'Validation', {
+  const result = runConfiguredScripts(hostValidationConfig(), ['pnpm check:module'], 'Validation', {
     run: execute,
   });
 
   assert.equal(result.ran, true);
   // Два вызова git на снимок: изменённые отслеживаемые файлы и новые.
-  assert.deepEqual(log, ['pnpm db:migrate', 'git', 'git', 'pnpm check', 'git', 'git']);
+  assert.deepEqual(log, ['pnpm db:migrate', 'git', 'git', 'pnpm check:module', 'git', 'git']);
 });
 
 test('остановка host-проверки называет изменённые файлы', () => {
@@ -591,7 +591,7 @@ test('остановка host-проверки называет изменённ
     () =>
       runConfiguredScripts(
         hostValidationConfig({ preflightScripts: [] }),
-        ['pnpm check'],
+        ['pnpm check:module'],
         'Validation',
         { run: execute },
       ),
@@ -887,14 +887,14 @@ test('уборка идёт до preflight, а не после него', () => 
 
 test('prepared callback observes generated files before guarded validation', () => {
   const events = [];
-  runConfiguredScripts(hostValidationConfig(), ['pnpm check'], 'Validation', {
+  runConfiguredScripts(hostValidationConfig(), ['pnpm check:module'], 'Validation', {
     run: (command, args, options) => {
       if (command !== 'git') events.push(args.at(-1));
       return unchangedHostTreeRun()(command, args, options);
     },
     onPrepared: () => events.push('prepared'),
   });
-  assert.deepEqual(events, ['pnpm db:migrate', 'prepared', 'pnpm check']);
+  assert.deepEqual(events, ['pnpm db:migrate', 'prepared', 'pnpm check:module']);
 });
 
 
