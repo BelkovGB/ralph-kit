@@ -13,7 +13,7 @@ import { beginIssueMetrics, currentIssueMetrics, finishIssueMetrics,
 import { runRalphLifecycle, ralphRunOutcome } from './ralph-lifecycle.mjs';
 
 const humanOnlyCodes = new Set([
-  'RALPH_AGENT_STARTUP_EXHAUSTED', 'RALPH_AGENT_AUTH',
+  'RALPH_RUNTIME_STORAGE', 'RALPH_AGENT_STARTUP_EXHAUSTED', 'RALPH_AGENT_AUTH',
   'RALPH_AGENT_WRITE_ACCESS',
   'RALPH_UNTRUSTED_ISSUE',
   'RALPH_CONTROL_PLANE_CHANGED',

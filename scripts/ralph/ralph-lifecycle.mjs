@@ -5,7 +5,7 @@ import { initializeLogForwarding, logDetail, logDetailError, terminateProcessTre
 
 /** The worker must close before start resolves; only this owner may restart it. */
 export const humanOnlyFailureCodes = new Set([
-  'RALPH_AGENT_STARTUP_EXHAUSTED', 'RALPH_AGENT_AUTH', 'RALPH_AGENT_WRITE_ACCESS', 'RALPH_UNTRUSTED_ISSUE',
+  'RALPH_RUNTIME_STORAGE', 'RALPH_AGENT_STARTUP_EXHAUSTED', 'RALPH_AGENT_AUTH', 'RALPH_AGENT_WRITE_ACCESS', 'RALPH_UNTRUSTED_ISSUE',
   'RALPH_CONTROL_PLANE_CHANGED', 'RALPH_RECOVERY_BLOCKED', 'RALPH_NEEDS_HUMAN',
   'RALPH_PROCESS_CONFIG', 'RALPH_PROCESS_EVIDENCE',
 ]);

@@ -638,6 +638,7 @@ export function validateIssueWorkingTree(config, foreignPaths, dependencies = {}
 }
 
 function retryIssueValidation(config, issue, error) {
+  if (error.code === 'RALPH_RUNTIME_STORAGE') throw error;
   const attempts = (activeStateStore()?.issue?.validationFixAttempts ?? 0) + 1;
   activeStateStore()?.updateIssue({
     phase: 'working-tree',
@@ -988,6 +989,7 @@ export async function runAgentOnIssue(config, repository, issue, rules) {
     endImplementation();
     recordProcess({ type: 'stage-complete', stage: 'implementation' });
   } catch (error) {
+    if (error.code === 'RALPH_RUNTIME_STORAGE') throw error;
     endImplementation({ failed: true });
     recordProcess({ type: 'stage-error', stage: 'implementation' });
     activeStateStore()?.updateIssue({
@@ -1608,6 +1610,7 @@ export async function runContinuousLoop(context, actions) {
       reportActivity('issue', `Работа над задачей #${currentIssue.number}`);
       result = await actions.runAgentOnIssue(config, repository, currentIssue, rules);
     } catch (error) {
+      if (error.code === 'RALPH_RUNTIME_STORAGE') throw error;
       if (['push', 'close'].includes(error.ralphFailureStep) &&
           publicationUnavailable(error) &&
           !hasAcceptedLisaIssueRepair(stateStore?.state, currentIssue)) {
