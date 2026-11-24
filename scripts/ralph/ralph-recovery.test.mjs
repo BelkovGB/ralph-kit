@@ -333,19 +333,136 @@ test('explicit manual recovery after a single evidence mutation requires fresh r
   assert.equal(plan.patch.publicationCheckpoint, null);
 });
 
-test('manual acceptance releases only the matching stopped Lisa repair for restart', (t) => {
+test('manual acceptance after a declined issue repair continues with fresh validation and review', (t) => {
   const f = fixture(t);
-  const repairId = 'manual-recovery-test';
+  const repairId = 'current-repair';
+  f.store.updateIssue({ lisaRepairId: 'previous-repair' });
   f.store.beginLisaRepair({ repairId, runId: f.store.state.runId, phaseIndex: f.store.state.phaseIndex });
+  assert.equal(f.store.issue.lisaRepairId, repairId);
   f.store.updateLisaRepair(repairId, { status: 'needs-human' });
-  const accept = () => prepareRecovery(f.config, f.store, '--accept-manual-commit', {
+  assert.equal(prepareRecovery(f.config, f.store, '--accept-manual-commit', {
     run: f.run, manualCommit: f.manual, verifyRepository: () => ({}),
-  });
-  assert.throws(accept, /не соответствует остановленному/);
-  assert.equal(f.store.state.lisaRepair.repairId, repairId);
-  f.store.updateIssue({ lisaRepairId: repairId });
-  assert.equal(accept().accepted, f.manual);
+  }).accepted, f.manual);
   assert.equal(f.store.state.lisaRepair, null);
   assert.equal(f.store.issue.phase, 'committed');
   assert.equal(f.store.issue.reviewReceipt, null);
 });
+
+test('an older unaccepted review repair requires its exact trailer and original run, phase and issue', (t) => {
+  const f = fixture(t);
+  const repairId = 'current-repair';
+  f.store.updateIssue({ startingCommit: f.manual, commit: f.manual, reviewedCommit: f.manual,
+    phase: 'review-failed', reviewReceipt: { head: f.manual, result: { verdict: 'fail' } } });
+  f.store.beginLisaRepair({ repairId, runId: f.store.state.runId, phaseIndex: f.store.phaseIndex, failureStep: 'review-failed' });
+  f.store.updateLisaRepair(repairId, { status: 'needs-human' });
+  f.store.updateIssue({ lisaRepairId: 'earlier-repair' });
+  const fix = (id) => f.commit('app.txt', 'review fix ' + id, 'fix: review changes\n\nRalph-Issue: #325\nRalph-Repair: ' + id);
+  const accept = (manualCommit, store = f.store) => prepareRecovery(f.config, store, '--accept-manual-commit', {
+    run: f.run, manualCommit, verifyRepository: () => ({}),
+  });
+  assert.throws(() => accept(f.manual), /не содержит продолжения/);
+  assert.throws(() => accept(fix('earlier-repair')), /остановленному ремонту/);
+  const exact = fix(repairId);
+  const original = readFileSync(f.statePath, 'utf8');
+  for (const mismatch of [{ runId: 'another' }, { phaseIndex: 1 }, { issueNumber: 326 },
+    { failureStep: 'push' }, { status: 'resuming' }, { acceptedTreeHash: 'a'.repeat(64) }]) {
+    const state = JSON.parse(original);
+    Object.assign(state.lisaRepair, mismatch);
+    writeFileSync(f.statePath, JSON.stringify(state));
+    assert.throws(() => accept(exact, createStateStore(f.config, '--check', f.statePath)), /остановленному ремонту/);
+    assert.deepEqual(JSON.parse(readFileSync(f.statePath, 'utf8')), state);
+  }
+  const incomplete = JSON.parse(original);
+  incomplete.issue.commit = incomplete.issue.reviewedCommit = incomplete.issue.reviewReceipt.head = null;
+  writeFileSync(f.statePath, JSON.stringify(incomplete));
+  assert.throws(() => accept(exact, createStateStore(f.config, '--check', f.statePath)), /остановленному ремонту/);
+  assert.deepEqual(JSON.parse(readFileSync(f.statePath, 'utf8')), incomplete);
+  writeFileSync(f.statePath, original);
+  assert.equal(accept(exact).accepted, exact);
+  assert.equal(f.store.state.lisaRepair, null);
+  assert.equal(f.store.issue.phase, 'committed');
+  assert.equal(f.store.issue.reviewReceipt, null);
+  assert.equal(f.store.issue.pushedHead, null);
+  assert.equal(f.store.issue.pendingPublishHead, exact);
+});
+
+for (const scenario of ['exact', 'foreign-base', 'hidden-product', 'merge-edit', 'replaced-kit', 'octopus']) {
+  test(`manual recovery after a base Kit update: ${scenario}`, (t) => {
+    const f = fixture(t);
+    f.git('switch', '-qc', 'update', f.base);
+    if (scenario === 'hidden-product') {
+      const unwanted = f.commit('extra.txt', 'unrelated', 'feat: unrelated');
+      f.git('revert', '--no-edit', unwanted);
+    }
+    const updated = f.commit('scripts/ralph/fix.mjs', 'updated', 'fix: Kit');
+    f.git('update-ref', 'refs/remotes/origin/main', scenario === 'foreign-base' ? f.base : updated);
+    const mergeHeads = [updated];
+    if (scenario === 'octopus') {
+      f.git('switch', '-qc', 'extra-update', f.base);
+      mergeHeads.push(f.commit('scripts/ralph/extra.mjs', 'extra', 'Extra Kit change'));
+    }
+    f.git('switch', '-q', 'feature');
+    f.git('merge', '--no-ff', '--no-commit', ...mergeHeads);
+    if (scenario === 'merge-edit' || scenario === 'replaced-kit') {
+      const file = scenario === 'merge-edit' ? 'app.txt' : 'scripts/ralph/fix.mjs';
+      writeFileSync(path.join(f.root, file), 'unexpected merge resolution');
+      f.git('add', file);
+    }
+    f.git('commit', '-qm', 'Integrate Kit');
+    if (scenario === 'exact') {
+      const plan = f.analyze({ manualCommit: f.manual });
+      assert.equal(plan.patch.commit, f.manual);
+      assert.equal(plan.patch.recoveryHead, f.git('rev-parse', 'HEAD'));
+      assert.equal(plan.patch.reviewReceipt, null);
+      f.git('remote', 'add', 'origin', f.root);
+      f.git('update-ref', 'refs/heads/main', f.base);
+      const accept = () => prepareRecovery(f.config, f.store, '--accept-manual-commit', {
+        run: f.run, runNetwork: f.run, manualCommit: f.manual, verifyRepository: () => ({}),
+      });
+      const original = readFileSync(f.statePath, 'utf8');
+      assert.throws(accept, /Опубликованная база/);
+      assert.equal(readFileSync(f.statePath, 'utf8'), original);
+      f.git('update-ref', 'refs/heads/main', updated);
+      assert.equal(accept().accepted, f.manual);
+    } else {
+      assert.throws(() => f.analyze({ manualCommit: f.manual }), { code: 'RALPH_RECOVERY_BLOCKED' });
+    }
+  });
+}
+
+for (const scenario of ['exact', 'merge-edit', 'only-kit', 'kit-and-product', 'hidden-tagged-product']) {
+  test(`manual recovery with the fix directly after a base Kit update: ${scenario}`, (t) => {
+    const f = fixture(t);
+    f.store.updateIssue({ startingCommit: f.manual, commit: f.manual, phase: 'review-failed' });
+    f.git('switch', '-qc', 'update', f.base);
+    if (scenario === 'hidden-tagged-product') {
+      const old = f.commit('foreign.txt', 'foreign', 'feat: unrelated\n\nRalph-Issue: #325');
+      f.git('revert', '--no-commit', old);
+      f.git('commit', '-qm', 'revert: unrelated\n\nRalph-Issue: #325');
+    }
+    const update = f.commit('scripts/ralph/fix.mjs', 'updated', 'fix: Kit');
+    f.git('update-ref', 'refs/remotes/origin/main', update);
+    f.git('switch', '-q', 'feature');
+    f.git('merge', '--no-ff', '--no-commit', update);
+    if (scenario === 'merge-edit') {
+      writeFileSync(path.join(f.root, 'app.txt'), 'not an update to the Kit');
+      f.git('add', 'app.txt');
+    }
+    f.git('commit', '-qm', 'Install Kit');
+    if (scenario === 'kit-and-product') {
+      writeFileSync(path.join(f.root, 'scripts/ralph/fix.mjs'), 'unexpected change after install');
+      f.git('add', 'scripts/ralph/fix.mjs');
+    }
+    const fix = scenario === 'only-kit'
+      ? f.commit('scripts/ralph/test.mjs', 'extra', 'fix: empty product fix\n\nRalph-Issue: #325')
+      : f.commit('app.txt', 'review correction', 'fix: review correction\n\nRalph-Issue: #325');
+    if (scenario === 'exact') {
+      const plan = f.analyze({ manualCommit: fix });
+      assert.equal(plan.patch.commit, fix);
+      assert.equal(plan.patch.recoveryHead, fix);
+      assert.equal(plan.patch.reviewReceipt, null);
+    } else {
+      assert.throws(() => f.analyze({ manualCommit: fix }), { code: 'RALPH_RECOVERY_BLOCKED' });
+    }
+  });
+}

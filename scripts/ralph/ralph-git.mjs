@@ -640,17 +640,18 @@ export function verifiedIssueCommit(commit, issue) {
   return resolved.stdout;
 }
 
+export function readRemoteBranchHead(config, branch, execute = runNetwork) {
+  const ref = `refs/heads/${branch}`;
+  const output = execute('git', ['ls-remote', '--heads', networkRemote(config), ref]).stdout;
+  const [head, name] = output.trim().split(/\s+/u);
+  return name === ref ? head : '';
+}
+
 export function verifyPushedHead(config, expectedHead) {
   const currentBranch = run('git', ['branch', '--show-current']).stdout;
   const localHead = run('git', ['rev-parse', 'HEAD']).stdout;
   const changes = run('git', ['status', '--porcelain']).stdout;
-  const remote = runNetwork('git', [
-    'ls-remote',
-    '--heads',
-    networkRemote(config),
-    `refs/heads/${config.branch}`,
-  ]).stdout;
-  const remoteHead = remote.split(/\s+/)[0] ?? '';
+  const remoteHead = readRemoteBranchHead(config, config.branch);
   if (
     currentBranch !== config.branch ||
     localHead !== expectedHead ||
