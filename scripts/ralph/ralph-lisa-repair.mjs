@@ -10,6 +10,7 @@ import { committedRecoveryPhases } from './ralph-recovery.mjs';
 import { isRalphInfrastructureGitPath } from './ralph-scope.mjs';
 import { issueForeignPaths } from './ralph-state-store.mjs';
 import { agentInstructionFiles } from './ralph-config.mjs';
+import { summarizeCommandFailure } from './ralph-failure-summary.mjs';
 import { prepareLisaRepairConfig } from './ralph-repair-policy.mjs';
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -23,7 +24,8 @@ const externalRepairFailureCodes = new Set([
 ]);
 const protectedModules = new Set([
   'ralph-lifecycle.mjs', 'ralph-lifecycle-host.mjs', 'ralph-lisa-repair.mjs',
-  'ralph-process-packs.mjs', 'ralph-repair-policy.mjs',
+  'ralph-process-packs.mjs', 'ralph-repair-policy.mjs', 'ralph-issue-recheck.mjs',
+  'ralph-validation-changes.mjs', 'ralph-validation-handoff.mjs',
 ]);
 const phaseValidationFailures = new Set(['RALPH_VALIDATION_SCOPE_UNKNOWN', 'RALPH_VALIDATION_FAILED']);
 const beforeCommit = new Set(['agent-running', 'working-tree', 'validating', 'validation-mutated', 'validation-diagnostic', 'review-failed']);
@@ -160,6 +162,13 @@ export async function assessLisaRepair(context, options = {}) {
   delete saved.lastUnknownPlan;
   const treeOptions = { ...options, controlFiles: [...saved.controls.keys()] };
   const after = tree(saved.root, treeOptions);
+  const candidateHash = treeHash(after);
+  const pathKey = JSON.stringify(options.validationPathDirectories ?? []);
+  const rejected = saved.rejectedCandidate;
+  if (rejected?.hash === candidateHash && (rejected.pathKey === undefined || rejected.pathKey === pathKey)) {
+    throw Object.assign(new Error(`Lisa: после замечания повторно предложено прежнее дерево. ${saved.rejectedCandidate.reason}`),
+      { code: 'RALPH_NEEDS_HUMAN' });
+  }
   const paths = changedPaths(saved.baseline, after);
   if (context.phaseRepair && paths.some((file) => !isRalphInfrastructureGitPath(file))) {
     throw new Error('Lisa: изменение продукта за пределами задачи требует отдельного ревью задачи.');
@@ -230,7 +239,10 @@ export async function assessLisaRepair(context, options = {}) {
   checkedContext(context, options);
   if (treeHash(tree(saved.root, treeOptions)) !== treeHash(after)) throw new Error('Lisa: ревью изменило дерево ремонта.');
   if (review.verdict === 'human') throw new Error(`Lisa: ремонт не принят: ${review.reason}.`);
-  if (review.verdict === 'retry') throw repairRetry('review', review.reason);
+  if (review.verdict === 'retry') {
+    saved.rejectedCandidate = { hash: candidateHash, reason: review.reason };
+    throw repairRetry('review', review.reason);
+  }
   if (!options.validate) throw new Error('Lisa: проверки ремонта обязательны.');
   try {
     await options.validate({ context, changedPaths: paths, config: structuredClone(candidate) });
@@ -250,7 +262,16 @@ export async function assessLisaRepair(context, options = {}) {
       }
       saved.lastUnknownPlan = key;
     }
-    throw repairRetry('validation', String(error?.message ?? error), error);
+    const summary = summarizeCommandFailure(error);
+    const reason = summary.error || String(error?.message ?? error);
+    const failure = repairRetry('validation', reason, error);
+    failure.repairFeedback.failedTests = summary.failedTests.map(name => name.slice(0, 320));
+    failure.repairFeedback.command = summary.command;
+    failure.repairFeedback.exitCode = summary.exitCode;
+    if (error.code === 'RALPH_VALIDATION_FAILED' && summary.failedTests.length > 0) {
+      saved.rejectedCandidate = { hash: candidateHash, reason, pathKey };
+    }
+    throw failure;
   }
   checkedContext(context, options);
   if (treeHash(tree(saved.root, treeOptions)) !== treeHash(after)) throw new Error('Lisa: проверки изменили дерево ремонта.');

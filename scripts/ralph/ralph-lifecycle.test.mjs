@@ -357,7 +357,7 @@ test('an accepted no-op repair freshly reviews the complete task at the same HEA
     const result = await runAgentOnIssue(config, 'owner/repository', lifecycleIssue(), 'rules');
     assert.equal(result.review.verdict, 'fail');
     assert.deepEqual(agentInvocations(stand.reviewOutputPath), ['review']);
-    assert.equal(result.parked, true);
+    assert.equal(result.parked, undefined);
     const prompt = readFileSync(`${stand.reviewOutputPath}.review-prompt`, 'utf8');
     assert.match(prompt, /NOOP_PRIOR_FINDING/);
     assert.match(prompt, /complete set of changes made for this issue/);
@@ -370,7 +370,7 @@ test('an accepted no-op repair freshly reviews the complete task at the same HEA
   });
 });
 
-test('a product FAIL after accepted Lisa repair returns to Lisa before another development session', async () => {
+test('a product finding after accepted Lisa repair returns to the normal developer budget', async () => {
   await withLifecycleStand('ralph/lifecycle-lisa-fail', failVerdict, async (stand) => {
     const store = recordingStateStore({ number: issueNumber, title: issueTitle, body: issueBody,
       phase: 'committed', commit: stand.repository.commit, recoveryHead: stand.repository.commit,
@@ -384,7 +384,8 @@ test('a product FAIL after accepted Lisa repair returns to Lisa before another d
     config.supervisor.enabled = true;
     config.maxReviewFixAttempts = 10;
     const result = await runAgentOnIssue(config, 'owner/repository', lifecycleIssue(), 'rules');
-    assert.equal(result.parked, true);
+    assert.equal(result.parked, undefined);
+    assert.equal(store.issue.phase, 'review-failed');
     assert.equal(store.issue.reviewFixAttempts, 1);
     assert.equal(stand.gh.issueState().state, 'open');
     assert.deepEqual(agentInvocations(stand.reviewOutputPath), ['review']);
@@ -523,6 +524,40 @@ test('already-fixed issue validates the linked commit instead of an empty HEAD d
     assert.deepEqual(JSON.parse(readFileSync(reportPath, 'utf8')), {
       scope: 'issue', base: git(stand.repository.workTree, ['rev-parse', 'HEAD^']),
     });
+  });
+});
+
+test('focused reproduction of an unchanged failed issue stops without a second broad command', async () => {
+  await withLifecycleStand('ralph/lifecycle-focused-failure', passVerdict, async (stand) => {
+    const store = recordingStateStore();
+    setActiveStateStore(store);
+    const config = lifecycleConfig(stand.repository, stand.reviewOutputPath);
+    const validationPath = path.join(stand.repository.root, 'issue-check.cjs');
+    const callsFile = path.join(stand.repository.root, 'issue-checks.jsonl');
+    const selector = 'spec/file.test.ts:12 › displays a value';
+    writeFileSync(validationPath, [
+      "const fs = require('node:fs');",
+      "const tests = JSON.parse(process.env.RALPH_FAILED_TESTS || 'null');",
+      "fs.appendFileSync(process.env.ISSUE_TEST_LOG, JSON.stringify(tests) + '\\n');",
+      "console.log('1) ' + process.env.ISSUE_TEST_ID);",
+      'process.exit(1);',
+    ].join('\n'));
+    config.validationEnvironment = [
+      'ISSUE_CHECK=' + validationPath, 'ISSUE_TEST_LOG=' + callsFile, 'ISSUE_TEST_ID=' + selector,
+    ];
+    const command = process.platform === 'win32' ? 'node -e require(process.env.ISSUE_CHECK)'
+      : "node -e 'require(process.env.ISSUE_CHECK)'";
+    config.validationProfiles = { issue: [command], phase: [command], baseSync: [command], issueRecheck: [command] };
+    config.maxTestFixAttempts = 3;
+    assert.deepEqual(await runAgentOnIssue(config, 'owner/repository', lifecycleIssue(), 'rules'),
+      { completed: false, validationFailed: true });
+    assert.deepEqual(store.issue.lastFailureSummary.failedTests, [selector]);
+    await assert.rejects(runAgentOnIssue(config, 'owner/repository', lifecycleIssue(), 'rules'),
+      error => error.code === 'RALPH_NEEDS_HUMAN' && error.message.includes(selector));
+    assert.deepEqual(readFileSync(callsFile, 'utf8').trim().split('\n').map(line => JSON.parse(line)), [null, [selector]]);
+    assert.equal(store.issue.phase, 'working-tree');
+    assert.deepEqual(store.issue.lastFailureSummary.failedTests, [selector]);
+    assert.equal(stand.gh.issueState().state, 'open');
   });
 });
 

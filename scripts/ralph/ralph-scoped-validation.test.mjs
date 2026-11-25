@@ -16,6 +16,11 @@ const config = {
   ],
 };
 
+// Each subprocess exercises a role and scope on a disposable repository.
+// Running this suite inside a consumer's validation must not supply either.
+const fixtureEnvironment = Object.fromEntries(Object.entries(process.env)
+  .filter(([name]) => !name.toUpperCase().startsWith('RALPH_')));
+
 function fixture(t, validation = config) {
   const cwd = mkdtempSync(join(tmpdir(), 'ralph-scoped-'));
   t.after(() => rmSync(cwd, { recursive: true, force: true }));
@@ -39,7 +44,7 @@ function fixture(t, validation = config) {
     run(scope = 'issue', sha = base) {
       return spawnSync(process.execPath, [cli, configFile], {
         cwd, encoding: 'utf8', timeout: 15000,
-        env: { ...process.env, RALPH_VALIDATION_SCOPE: scope, RALPH_VALIDATION_BASE_COMMIT: sha },
+        env: { ...fixtureEnvironment, RALPH_VALIDATION_SCOPE: scope, RALPH_VALIDATION_BASE_COMMIT: sha },
       });
     },
   };
@@ -127,7 +132,7 @@ test('rejects shell chains that could hide a failed command', (t) => {
 test('preview, emergency permission and once-per-commit acceptance', t => {
   const f = fixture(t);
   const run = (entry, args, env = {}) => spawnSync(process.execPath, [entry, ...args], {
-    cwd: f.cwd, encoding: 'utf8', env: { ...process.env, ...env },
+    cwd: f.cwd, encoding: 'utf8', env: { ...fixtureEnvironment, ...env },
   });
   const accept = fileURLToPath(new URL('./ralph-final-acceptance.mjs', import.meta.url));
   f.write('prd.md', '# Example\n');

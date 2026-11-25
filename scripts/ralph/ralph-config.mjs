@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { fail, isAgentInstructionFileName } from './ralph-scope.mjs';
+import { repoPath } from './ralph-validation-changes.mjs';
 import {
   applyGitHubAccount,
   applyRuntimeSettings,
@@ -327,6 +328,7 @@ const configFields = new Set([
   'approvedIssueSnapshotsHash',
   'autoApproveConfiguredIssues',
   'baseBranch',
+  'browserValidationPaths',
   'browserValidationScripts',
   'developmentEffort',
   'developmentFast',
@@ -354,6 +356,7 @@ const configFields = new Set([
   'trustedIssueAuthors',
   'validationArtifactPaths',
   'validationEnvironment',
+  'validationHandoffInputs',
   'validationProfiles',
   'validationScripts',
 ]);
@@ -688,7 +691,8 @@ function validateValidationCommands(config) {
   const profiles = config.validationProfiles;
   if (profiles !== undefined && (
     typeof profiles !== 'object' || profiles === null || Array.isArray(profiles) ||
-    Object.keys(profiles).some((scope) => !['issue', 'phase', 'baseSync'].includes(scope)) ||
+    Object.keys(profiles).some((scope) => !['issue', 'phase', 'baseSync', 'issueRecheck'].includes(scope)) ||
+    (profiles.issueRecheck !== undefined && (!Array.isArray(profiles.issueRecheck) || !profiles.issueRecheck.length)) ||
     ['issue', 'phase', 'baseSync'].some((scope) =>
       !Array.isArray(profiles[scope]) || profiles[scope].length === 0)
   )) {
@@ -698,8 +702,13 @@ function validateValidationCommands(config) {
       !Array.isArray(config.browserValidationScripts)) {
     fail('Поля "preflightScripts", "validationScripts" и "browserValidationScripts" должны быть массивами команд.');
   }
+  const paths = config.browserValidationPaths;
+  if (paths !== undefined && (!Array.isArray(paths) || paths.length === 0 || !config.browserValidationScripts.length ||
+      paths.some(value => !repoPath(value, true) || value.trim() !== value || /[*?[\]{}]/u.test(value)))) {
+    fail('browserValidationPaths требует непустой список путей относительно репозитория и команды browserValidationScripts.');
+  }
   const profileCommands = profiles
-    ? [...profiles.issue, ...profiles.phase, ...profiles.baseSync]
+    ? [...profiles.issue, ...profiles.phase, ...profiles.baseSync, ...(profiles.issueRecheck ?? [])]
     : [];
   const allCommands = [...config.preflightScripts, ...config.validationScripts, ...profileCommands, ...config.browserValidationScripts];
   // Команда выполняется оболочкой как есть. От подстановки произвольной команды
@@ -738,6 +747,11 @@ function validateValidationCommands(config) {
       'Поле "validationArtifactPaths" должно быть массивом относительных путей внутри проекта, ' +
         'вне каталога .git.',
     );
+  }
+  const handoffInputs = config.validationHandoffInputs ?? [];
+  if (!Array.isArray(handoffInputs) || handoffInputs.some(name =>
+    !repoPath(name) || name.split('/').some(part => /[. ]$/u.test(part)))) {
+    fail('validationHandoffInputs принимает относительные пути к обычным файлам внутри проекта.');
   }
   const gitArtifact = config.validationArtifactPaths.find(isGitWorktreeMarkerPath);
   if (gitArtifact !== undefined) {
@@ -1067,6 +1081,9 @@ function collectTrustedControlFileHashes(config) {
     path.join(scriptDirectory, 'ralph-lisa-repair.mjs'),
     path.join(scriptDirectory, 'ralph-repair-policy.mjs'),
     path.join(scriptDirectory, 'ralph-validation-runner.mjs'),
+    path.join(scriptDirectory, 'ralph-validation-changes.mjs'),
+    path.join(scriptDirectory, 'ralph-validation-handoff.mjs'),
+    path.join(scriptDirectory, 'ralph-issue-recheck.mjs'),
     path.join(scriptDirectory, 'ralph-version.mjs'),
     path.join(projectRoot, '.agents', 'RALPH.md'),
     ...agentInstructionFiles(),

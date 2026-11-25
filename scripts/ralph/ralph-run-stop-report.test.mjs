@@ -112,7 +112,8 @@ test('real --run reports both review parks and Lisa restart in one safe file', a
       const result = launch();
       assert.equal(result.status, 1, result.stdout + result.stderr);
       assert.match(result.stderr, /лимит вмешательств|бюджет вызовов/iu);
-      assert.equal(readFileSync(path.join(runtime, 'fixture-review-count'), 'utf8'), '3');
+      // Each worker gets two reviews. The developer handles the first finding after the accepted repair.
+      assert.equal(readFileSync(path.join(runtime, 'fixture-review-count'), 'utf8'), '4');
       const state = JSON.parse(readFileSync(statePath, 'utf8'));
       assert.equal(state.status, 'active');
       assert.equal(state.lisaRepair.status, 'needs-human');
@@ -122,6 +123,7 @@ test('real --run reports both review parks and Lisa restart in one safe file', a
       assert.equal(state.issue.reviewedCommit, localHead);
       assert.equal(state.issue.reviewReceipt.head, localHead);
       assert.equal(state.issue.reviewReceipt.result.verdict, 'fail');
+      assert.equal(state.issue.reviewFixAttempts, config.maxReviewFixAttempts);
       assert.equal(state.issue.pendingPublishHead, localHead);
 
       const names = readdirSync(reports);
@@ -133,9 +135,9 @@ test('real --run reports both review parks and Lisa restart in one safe file', a
         assert.ok(report.includes(fact), fact);
       }
       assert.match(report, /\| 1 \| 1 \| #12 \| 3 → 1 \| да \|/u);
-      assert.match(report, /\| 2 \| 1 \| #12 \| 1 \| да \|/u);
+      assert.match(report, /\| 2 \| 1 \| #12 \| 1 → 1 \| да \|/u);
       assert.ok(report.includes('Исчерпан сохранённый бюджет вызовов Lisa.'));
-      assert.ok(report.includes('Почему задача отложена — продуктовый результат отклонён после ремонта Lisa'));
+      assert.ok(report.includes('Почему задача отложена — достигнут лимит отказов ревью'));
       assert.match(result.stdout, /достигнут лимит отказов ревью/u);
       assert.ok(report.includes('`needs-human`, код выхода `1`'));
       assert.ok(report.includes('`state.status` — `active`'));

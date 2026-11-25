@@ -312,3 +312,65 @@ test('committed repair cannot bless inconsistent HEAD or commit ancestry', async
     } finally { f.cleanup(); }
   }
 });
+
+test('a repair cannot replace the inventory or the helpers deciding whether to run mandatory checks', async () => {
+  const f = fixture();
+  try {
+    for (const name of ['ralph-validation-changes.mjs', 'ralph-validation-handoff.mjs', 'ralph-issue-recheck.mjs']) {
+      const file = 'scripts/ralph/' + name;
+      writeFileSync(path.join(f.root, file), '// changed');
+      await assert.rejects(assessLisaRepair(f.context, { ...f.options, files: () => [...f.options.files(), file] }),
+        /механизм восстановления/u);
+    }
+  } finally { f.cleanup(); }
+});
+
+test('failed validation names the failing test and an unchanged repair stops before another broad check', async () => {
+  const f = fixture();
+  try {
+    const target = path.join(f.root, 'scripts/ralph/ralph-loop.mjs');
+    writeFileSync(target, 'incomplete();');
+    let checks = 0;
+    const options = {
+      ...f.options,
+      review: async () => ({ verdict: 'pass', reason: 'Review completed' }),
+      validate: async () => {
+        checks += 1;
+        throw Object.assign(new Error('Child exited with code 1'), {
+          code: 'RALPH_VALIDATION_FAILED', status: 1, script: 'node verify.mjs',
+          stdout: '1) tests/dialog.spec.ts:7:3 › saves draft\nError: draft missing',
+        });
+      },
+    };
+    await assert.rejects(assessLisaRepair(f.context, options), error => {
+      assert.equal(error.code, 'RALPH_LISA_RETRY');
+      assert.deepEqual(error.repairFeedback.failedTests, ['tests/dialog.spec.ts:7:3 › saves draft']);
+      assert.match(error.repairFeedback.reason, /draft missing/u);
+      return true;
+    });
+    await assert.rejects(assessLisaRepair(f.context, options), { code: 'RALPH_NEEDS_HUMAN' });
+    assert.equal(checks, 1);
+    const withTools = { ...options, validationPathDirectories: [path.join(f.root, 'tools')] };
+    await assert.rejects(assessLisaRepair(f.context, withTools), { code: 'RALPH_LISA_RETRY' });
+    await assert.rejects(assessLisaRepair(f.context, withTools), { code: 'RALPH_NEEDS_HUMAN' });
+    assert.equal(checks, 2);
+    writeFileSync(target, 'fixed();');
+    const result = await assessLisaRepair(f.context, { ...options, validate: async () => { checks += 1; } });
+    assert.equal(result.review.verdict, 'pass');
+    assert.equal(checks, 3);
+  } finally { f.cleanup(); }
+});
+
+test('a repair returned unchanged after review does not ask the reviewer the same question twice', async () => {
+  const f = fixture();
+  try {
+    let reviews = 0;
+    const options = { ...f.options,
+      review: async () => { reviews += 1; return { verdict: 'retry', reason: 'Missing assertion' }; },
+      validate: async () => assert.fail('rejected review'),
+    };
+    await assert.rejects(assessLisaRepair(f.context, options), { code: 'RALPH_LISA_RETRY' });
+    await assert.rejects(assessLisaRepair(f.context, options), { code: 'RALPH_NEEDS_HUMAN' });
+    assert.equal(reviews, 1);
+  } finally { f.cleanup(); }
+});

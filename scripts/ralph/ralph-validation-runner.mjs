@@ -336,6 +336,11 @@ export function runConfiguredScripts(config, scripts, label, options = {}) {
   const environment = hostValidationEnvironment(config, options.environmentSource ?? process.env,
     options.validationPathDirectories ?? activeStateStore()?.validationPathDirectories ?? []);
   environment.RALPH_AGENT_ROLE = 'validation-host';
+  // A regular issue/phase profile must never inherit the diagnostic subset.
+  for (const key of Object.keys(environment)) {
+    if (key.toUpperCase() === 'RALPH_FAILED_TESTS') delete environment[key];
+  }
+  if (options.failedTests) environment.RALPH_FAILED_TESTS = JSON.stringify(options.failedTests);
   if (options.scope) {
     if (options.scope === 'issue' && options.issueNumber) {
       const body = config.approvedIssueSnapshots?.[options.issueNumber]?.body ?? activeStateStore()?.issue?.body ?? '';
@@ -609,7 +614,7 @@ export function runConfiguredValidation(config, options = {}) {
   )) {
     fail('Выборочная проверка требует scope и полный SHA базового коммита.');
   }
-  const scripts = validationScriptsFor(config, options.scope, options.issueNumber);
+  const scripts = validationScriptsFor(config, options.scope, options.issueNumber, options);
   // Уборка идёт до preflight: он готовит то, что нужно проверкам, и уборка
   // после него снесла бы собственную подготовку прогона.
   removeValidationArtifacts(config, options);
