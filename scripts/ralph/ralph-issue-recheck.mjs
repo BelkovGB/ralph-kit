@@ -3,7 +3,7 @@ import { runConfiguredScripts } from './ralph-validation-runner.mjs';
 
 // Test names come from command output. Only trusted, configured commands may
 // run them, as JSON data. A successful diagnostic never satisfies validation.
-function failedTests(summary) {
+export function failedTests(summary) {
   if (summary?.code !== 'RALPH_VALIDATION_FAILED' || !Array.isArray(summary.failedTests)) return [];
   const tests = summary.failedTests;
   if (!tests.length || tests.length > 10 || !tests.every(test => typeof test === 'string' && test.trim()) ||
@@ -35,6 +35,7 @@ export function validateIssueAttempt(config, options, savedIssue, fingerprint, v
         { cause: error },
       );
       stopped.code = 'RALPH_NEEDS_HUMAN';
+      stopped.repeatedValidationTest = repeatedTest;
       throw stopped;
     }
     throw error;

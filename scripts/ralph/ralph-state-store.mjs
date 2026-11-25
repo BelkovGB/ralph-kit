@@ -223,6 +223,16 @@ export function createStateStore(config, selectedMode, statePath = runtimeStateP
       Object.assign(state.issue, values);
       persist();
     },
+    reserveDevelopmentEscalation() {
+      const issue = state?.issue;
+      const pending = issue?.pendingDevelopmentEscalation;
+      if (!pending || state.developmentEscalations?.[issue.number]) return false;
+      state.developmentEscalations ??= {};
+      state.developmentEscalations[issue.number] = pending;
+      delete issue.pendingDevelopmentEscalation;
+      persist();
+      return true;
+    },
     recordIssueProcess(event) {
       if (!state?.issue) return;
       const identity = { scope: 'issue', runId: state.runId, phaseIndex: state.phaseIndex,

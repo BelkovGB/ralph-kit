@@ -26,6 +26,7 @@ const protectedModules = new Set([
   'ralph-lifecycle.mjs', 'ralph-lifecycle-host.mjs', 'ralph-lisa-repair.mjs',
   'ralph-process-packs.mjs', 'ralph-repair-policy.mjs', 'ralph-issue-recheck.mjs',
   'ralph-validation-changes.mjs', 'ralph-validation-handoff.mjs',
+  'ralph-development-escalation.mjs', 'ralph-review-recurrence.mjs',
 ]);
 const phaseValidationFailures = new Set(['RALPH_VALIDATION_SCOPE_UNKNOWN', 'RALPH_VALIDATION_FAILED']);
 const beforeCommit = new Set(['agent-running', 'working-tree', 'validating', 'validation-mutated', 'validation-diagnostic', 'review-failed']);

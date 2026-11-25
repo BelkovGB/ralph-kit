@@ -55,7 +55,9 @@ import {
 } from './ralph-state-store.mjs';
 
 import { clearedFailure, recordedFailure, recoveryPrompt } from './ralph-failure-summary.mjs';
-import { validateIssueAttempt } from './ralph-issue-recheck.mjs';
+import { failedTests, validateIssueAttempt } from './ralph-issue-recheck.mjs';
+import { developmentFeedback, developmentRetryDecision, developmentSessionConfig } from './ralph-development-escalation.mjs';
+import { reviewFindingKeys } from './ralph-review-recurrence.mjs';
 
 import {
   beginIssueMetrics,
@@ -532,6 +534,8 @@ async function reviewAndCloseCommittedIssue(config, repository, issue, commit, e
   const scope = `independent review of issue #${issue.number} at commit ${expectedHead}`;
   if (review.verdict !== 'pass') {
     const reviewFixAttempts = (store?.issue?.reviewFixAttempts ?? 0) + 1;
+    const escalation = developmentRetryDecision(config, store,
+      { kind: 'review', keys: reviewFindingKeys(review) }, reviewFixAttempts < config.maxReviewFixAttempts);
     // Следующая сессия читает замечания из состояния, даже если GitHub недоступен.
     store?.updateIssue({
       phase: 'review-failed',
@@ -546,6 +550,7 @@ async function reviewAndCloseCommittedIssue(config, repository, issue, commit, e
       commitMessage: null,
       validationFixAttempts: 0,
       reviewFixAttempts,
+      ...(config.developmentEscalation && { addressedDevelopmentFeedback: null, pendingDevelopmentEscalation: escalation.pending ?? null }),
       reviewFindings: reviewContextText(review),
       ...clearedFailure,
     });
@@ -560,6 +565,10 @@ async function reviewAndCloseCommittedIssue(config, repository, issue, commit, e
       console.error(`Issue #${issue.number}: замечания сохранены локально, GitHub недоступен. ${error.message}`);
     }
 
+    if (escalation.stop) {
+      throw Object.assign(new Error(`Issue #${issue.number}: после усиленной попытки разработчика ревью повторило прежнее замечание. Работа сохранена.`),
+        { code: 'RALPH_NEEDS_HUMAN' });
+    }
     if (reviewFixAttempts >= config.maxReviewFixAttempts) {
       console.error(
         `Issue #${issue.number}: ревью отклонило работу ${reviewFixAttempts} раз подряд. ` +
@@ -653,16 +662,26 @@ function validateIssueAfterDevelopment(config, issue, baseCommit, validate) {
 
 function retryIssueValidation(config, issue, error) {
   if (error.code === 'RALPH_RUNTIME_STORAGE') throw error;
-  const attempts = (activeStateStore()?.issue?.validationFixAttempts ?? 0) + 1;
+  const store = activeStateStore();
+  const attempts = (store?.issue?.validationFixAttempts ?? 0) + 1;
   const failure = error.code === 'RALPH_NEEDS_HUMAN' && error.cause ? error.cause : error;
-  activeStateStore()?.updateIssue({
+  const recorded = recordedFailure(failure);
+  const namedCheck = error === failure || error.repeatedValidationTest;
+  const keys = namedCheck && failure.validationFailureFingerprint ? failedTests(recorded.lastFailureSummary) : [];
+  const escalation = developmentRetryDecision(config, store, { kind: 'validation', keys }, attempts < config.maxTestFixAttempts);
+  store?.updateIssue({
     phase: 'working-tree',
     validationFixAttempts: attempts,
     validationFailureFingerprint: failure.validationFailureFingerprint ?? null,
-    ...recordedFailure(failure),
+    ...recorded,
+    ...(config.developmentEscalation && { addressedDevelopmentFeedback: null, pendingDevelopmentEscalation: escalation.pending ?? null }),
   });
   observeIssue('validation-fail');
-  if (error.code === 'RALPH_NEEDS_HUMAN' || attempts >= config.maxTestFixAttempts) throw error;
+  if (escalation.stop) {
+    throw Object.assign(new Error(`Issue #${issue.number}: проверка «${escalation.key}» повторно упала после усиленной попытки разработчика. Работа сохранена.`, { cause: failure }),
+      { code: 'RALPH_NEEDS_HUMAN' });
+  }
+  if ((!escalation.pending && error.code === 'RALPH_NEEDS_HUMAN') || attempts >= config.maxTestFixAttempts) throw error;
   console.error(
     `Issue #${issue.number}: validation не прошла (${attempts}/${config.maxTestFixAttempts}). ` +
       'Ralph передаст ошибку агенту на следующей итерации.',
@@ -978,6 +997,7 @@ export async function runAgentOnIssue(config, repository, issue, rules, validati
   // beginIssue переводит сохранённую issue в agent-running. Recovery-prompt
   // нужно собрать раньше, пока в состоянии ещё видна причина продолжения.
   const continuationPrompt = continuation ? recoveryPrompt(storedIssue) : '';
+  const feedback = config.developmentEscalation ? developmentFeedback(storedIssue) : null;
   // База уже сдвинута в начале фазы, до проверки рабочего дерева; здесь
   // остаётся простое сравнение.
   const startingCommit = storedIssue?.startingCommit ?? currentHead;
@@ -1009,7 +1029,7 @@ export async function runAgentOnIssue(config, repository, issue, rules, validati
   recordProcess({ type: 'stage-start', stage: 'implementation' });
   const endImplementation = startStage('implementation');
   try {
-    codexResult = await observedRepairStep('development', () => runDevelopmentSession(config, {
+    codexResult = await observedRepairStep('development', () => runDevelopmentSession(developmentSessionConfig(config, activeStateStore(), feedback), {
       input: renderPrompt(config, issue, rules) + continuationPrompt,
       maxTurns: config.developmentMaxTurns ?? config.maxTurns,
       timeoutMs: config.runtime.agentTimeoutMs,
@@ -1051,6 +1071,7 @@ export async function runAgentOnIssue(config, repository, issue, rules, validati
     throw error;
   }
 
+  if (config.developmentEscalation) activeStateStore()?.updateIssue({ addressedDevelopmentFeedback: feedback });
   return commitAndCompleteIssue(
     config,
     repository,
@@ -1174,6 +1195,9 @@ export function printCheck(
   console.log(`Лимит шагов реализации: ${config.developmentMaxTurns ?? config.maxTurns}, ревью issue: ${config.maxTurns}`);
   console.log(`Лимит исправлений тестов: ${config.maxTestFixAttempts}`);
   console.log(`Модель разработки: ${config.developmentModel} (effort=${config.developmentEffort})`);
+  if (config.developmentEscalation) {
+    console.log(`При повторном отказе: один вызов разработчика на задачу с effort=${config.developmentEscalation.effort}.`);
+  }
   if (config.supervisor?.enabled) {
     console.log(
       `Lisa: ${config.supervisor.agentCli} / ${config.supervisor.model} (effort=${config.supervisor.effort}), ` +

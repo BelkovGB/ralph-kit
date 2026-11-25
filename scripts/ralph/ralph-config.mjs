@@ -331,6 +331,7 @@ const configFields = new Set([
   'browserValidationPaths',
   'browserValidationScripts',
   'developmentEffort',
+  'developmentEscalation',
   'developmentFast',
   'developmentModel',
   'developmentMaxTurns',
@@ -881,16 +882,24 @@ function validateAgentRoles(config) {
     fail('Поле "milestoneReview.enabled" должно быть true или false.');
   }
   config.milestoneReview.effort ??= 'high';
+  const efforts = reasoningEffortsFor(config.agentCli);
   for (const [field, value] of [
     ['developmentEffort', config.developmentEffort],
     ['review.effort', config.review.effort],
     ['milestoneReview.effort', config.milestoneReview.effort],
   ]) {
-    const efforts = reasoningEffortsFor(config.agentCli);
     if (typeof value !== 'string' || !efforts.includes(value)) {
       fail(
         `Поле "${field}" при agentCli=${config.agentCli} должно быть одним из: ${efforts.join(', ')}.`,
       );
+    }
+  }
+  if (config.developmentEscalation !== undefined) {
+    const target = config.developmentEscalation;
+    if (!target || typeof target !== 'object' || Array.isArray(target) ||
+        Object.keys(target).length !== 1 || !Object.hasOwn(target, 'effort') ||
+        efforts.indexOf(target.effort) <= efforts.indexOf(config.developmentEffort)) {
+      fail('Поле "developmentEscalation" принимает только effort выше обычного effort разработчика для выбранного CLI.');
     }
   }
   if (
@@ -1084,6 +1093,8 @@ function collectTrustedControlFileHashes(config) {
     path.join(scriptDirectory, 'ralph-validation-changes.mjs'),
     path.join(scriptDirectory, 'ralph-validation-handoff.mjs'),
     path.join(scriptDirectory, 'ralph-issue-recheck.mjs'),
+    path.join(scriptDirectory, 'ralph-development-escalation.mjs'),
+    path.join(scriptDirectory, 'ralph-review-recurrence.mjs'),
     path.join(scriptDirectory, 'ralph-version.mjs'),
     path.join(projectRoot, '.agents', 'RALPH.md'),
     ...agentInstructionFiles(),
