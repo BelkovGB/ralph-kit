@@ -145,24 +145,25 @@ test('a failed revalidation retains the unpublished barrier when the issue is cl
   assert.equal(store.issue.pendingPublishHead, 'local-head');
 });
 
-test('review failure after an accepted repair returns directly to Lisa', async () => {
+test('an exhausted product review budget is remembered when resuming after a repair', async () => {
   const store = repairStore();
-  Object.assign(store.issue, { phase: 'review-failed', commit: 'reviewed-head' });
+  Object.assign(store.issue, { phase: 'review-failed', commit: 'reviewed-head', reviewFixAttempts: 3 });
   let iterations = 0;
   store.reserveIteration = () => ++iterations;
-  const result = await runContinuousLoop(context({ config: { stopAfterFirstIssue: true }, stateStore: store }), actions({
+  const result = await runContinuousLoop(context({ config: { maxReviewFixAttempts: 3, stopAfterFirstIssue: true }, stateStore: store }), actions({
     openIssues: () => [store.issue], issueState: () => 'OPEN',
-    runAgentOnIssue: async () => assert.fail('A rejected Lisa repair must not return to the ordinary developer'),
+    runAgentOnIssue: async () => assert.fail('Review budget exhausted'),
   }));
   assert.equal(result.verdict, 'parked');
   assert.equal(iterations, 0);
   assert.equal(store.issue.commit, 'reviewed-head');
 });
 
-test('review failure after an infrastructure repair returns to the ordinary developer', async () => {
+for (const changedFile of ['.claude/scripts/check.ps1', 'product/model.mjs']) {
+test(`review failure after repairing ${changedFile} returns to the ordinary developer`, async () => {
   const store = repairStore();
   Object.assign(store.issue, { phase: 'review-failed', commit: 'reviewed-head' });
-  store.state.lisaRepair.changedPaths = ['.claude/scripts/check.ps1'];
+  store.state.lisaRepair.changedPaths = [changedFile];
   let iterations = 0;
   store.reserveIteration = () => ++iterations;
   const result = await runContinuousLoop(context({ config: { stopAfterFirstIssue: true }, stateStore: store }), actions({
@@ -172,6 +173,7 @@ test('review failure after an infrastructure repair returns to the ordinary deve
   assert.equal(result.completed, 1);
   assert.equal(iterations, 1);
 });
+}
 
 test('a ready accepted Lisa repair passes the exhausted development budget without reserving an iteration', async () => {
   const store = repairStore();

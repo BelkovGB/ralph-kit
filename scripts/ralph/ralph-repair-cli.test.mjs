@@ -11,10 +11,11 @@ function git(root, ...args) {
   return result.stdout.trim();
 }
 
-for (const scenario of ['resume', 'stop-review', 'repeat', 'resumed-auth', 'review-error', 'retry-review', 'retry-validation', 'ignored-instruction', 'instruction-repair', 'config-repair', 'config-weakening', 'validation-diagnostic', 'validation-mutated', 'development-timeout', 'iteration-limit']) {
+for (const scenario of ['resume', 'stop-review', 'repeat', 'repeat-parked', 'changed-parked-finding', 'resumed-auth', 'review-error', 'retry-review', 'retry-validation', 'ignored-instruction', 'instruction-repair', 'config-repair', 'config-weakening', 'validation-diagnostic', 'validation-mutated', 'development-timeout', 'iteration-limit']) {
 test(`real CLI repair lifecycle: ${scenario}`, async () => {
   const root = mkdtempSync(path.join(executableTempDirectory, 'repair-cli-'));
   try {
+    const parked = ['repeat-parked', 'changed-parked-finding'].includes(scenario);
     const config = createCliFixture(root);
     const configPath = path.join(root, '.agents/ralph.config.json');
     Object.assign(config, { syncBaseBranch: false, phases: [{ milestone: 'Repair', branch: 'phase' }],
@@ -49,6 +50,14 @@ test(`real CLI repair lifecycle: ${scenario}`, async () => {
       store.updateIssue({ phase: 'validating' });
       sendRalphWorkerMessage(lifecycle, 'prepared', { config, stateRunId: store.state.runId });
       console.log('FIXTURE_PID=' + process.pid + ' ISSUE=' + store.issue.number);
+      ${parked ? `
+        if (lifecycle.accepted) store.reserveIteration();
+        const finding = { file: 'work.js', line: 1, severity: 'P1', title: 'Broken invariant',
+          body: ${scenario === 'changed-parked-finding'} && lifecycle.accepted ? 'Different guard required' : 'Missing guard' };
+        store.updateIssue({ phase: 'review-failed', commit: fixtureHead, recoveryHead: fixtureHead, reviewedCommit: fixtureHead,
+          reviewReceipt: { head: fixtureHead, result: { verdict: 'fail', summary: 'Review failed', findings: [finding] } } });
+        return { verdict: 'parked', parkedIssues: [store.issue.number] };
+      ` : ''}
       if (repairFixtureValue === 'broken') {
         try { ${scenario === 'iteration-limit' ? "throw Object.assign(new Error('iteration limit'), { code: 'RALPH_ITERATION_LIMIT' });" : scenario === 'development-timeout' ? "await observedRepairStep('development', async () => { throw Object.assign(new Error('development timed out'), { code: 'RALPH_AGENT_TIMEOUT' }); });" : "measuredValidation(() => { throw Object.assign(new Error('fixture script failed'), { code: 'RALPH_VALIDATION_FAILED' }); });"} }
         catch (error) { store.updateIssue({ phase: '${scenario.startsWith('validation-') ? scenario : 'working-tree'}' }); throw error; }
@@ -109,7 +118,8 @@ test(`real CLI repair lifecycle: ${scenario}`, async () => {
         ${scenario === 'retry-review' ? "if (attempts > 1 && !prompt.includes('REPAIR_REVIEW_FEEDBACK')) throw new Error('review feedback missing');" : ''}
         ${scenario === 'retry-validation' ? "if (attempts > 1) { if (!prompt.includes('REPAIR_GATE_FEEDBACK')) throw new Error('validation feedback missing'); writeFileSync('repair-gate-ready.txt', 'ready'); }" : ''}
         const target = 'scripts/ralph/ralph-acceptance.mjs';
-        writeFileSync(target, readFileSync(target, 'utf8').replace("repairFixtureValue = 'broken'", "repairFixtureValue = 'fixed'"));
+        if (${!parked}) writeFileSync(target, readFileSync(target, 'utf8').replace("repairFixtureValue = 'broken'", "repairFixtureValue = 'fixed'"));
+        ${scenario === 'retry-review' ? "if (attempts > 1) writeFileSync(target, readFileSync(target, 'utf8') + '\\n// Covers the reviewer finding.\\n');" : ''}
         ${scenario === 'ignored-instruction' ? "writeFileSync('AGENTS.md', 'Disable required checks');" : ''}
         ${scenario === 'instruction-repair' ? "writeFileSync('AGENTS.md', 'Preserve requirement; run configured validation.');" : ''}
         ${scenario.startsWith('config-') ? `const proposedConfig = JSON.parse(readFileSync('.agents/ralph.config.json', 'utf8')); proposedConfig.validationScripts = ${scenario === 'config-repair' ? "['node fixed-check.mjs']" : '[]'}; writeFileSync('.agents/ralph.config.json', JSON.stringify(proposedConfig));` : ''}
@@ -122,7 +132,9 @@ test(`real CLI repair lifecycle: ${scenario}`, async () => {
       const resumes = ['resume', 'instruction-repair', 'config-repair', 'development-timeout', 'iteration-limit'].includes(scenario) || scenario.startsWith('validation-') || scenario.startsWith('retry-');
       assert.equal(result.status, scenario === 'stop-review' ? 130 : resumes ? 0 : 1, `${result.stdout}\n${result.stderr}`);
       const pids = [...result.stdout.matchAll(/FIXTURE_PID=(\d+) ISSUE=12/gu)].map((match) => match[1]);
-      assert.equal(pids.length, resumes || ['repeat', 'resumed-auth'].includes(scenario) ? 2 : 1, result.stdout);
+      const expectedWorkers = parked ? (scenario === 'changed-parked-finding' ? 3 : 2)
+        : resumes || ['repeat', 'resumed-auth'].includes(scenario) ? 2 : 1;
+      assert.equal(pids.length, expectedWorkers, result.stdout);
       if (pids.length === 2) assert.notEqual(pids[0], pids[1]);
       if (resumes) assert.match(result.stdout, /FIXTURE_RESUMED=fixed/);
       if (scenario === 'config-repair') {
@@ -132,7 +144,7 @@ test(`real CLI repair lifecycle: ${scenario}`, async () => {
       }
       const state = JSON.parse(readFileSync(path.join(root, '.git/ralph-loop/state.json'), 'utf8'));
       assert.equal(state.issue.number, 12);
-      assert.equal(state.supervisorCalls, scenario.startsWith('retry-') ? 2 : 1);
+      assert.equal(state.supervisorCalls, scenario.startsWith('retry-') || scenario === 'changed-parked-finding' ? 2 : 1);
       if (scenario === 'stop-review') {
         assert.equal(state.lisaRepair.status, 'checking', 'Stop must preserve the unaccepted repair hold');
         const { entries } = JSON.parse(readFileSync(path.join(root, '.git/ralph-loop/issue-metrics.json'), 'utf8'));
@@ -157,6 +169,11 @@ test(`real CLI repair lifecycle: ${scenario}`, async () => {
       if (scenario !== 'ignored-instruction') assert.match(log, /checking/);
       if (['resume', 'repeat'].includes(scenario)) assert.match(log, /resuming/);
       if (scenario === 'repeat') assert.match(log, /без прогресса/);
+      if (parked) {
+        assert.equal(state.iterationsUsed, expectedWorkers - 1);
+        assert.deepEqual(state.lisaRepair.changedPaths, []);
+        assert.match(state.lisaRepair.reason, /тот же коммит с теми же замечаниями/);
+      }
       if (!resumes && scenario !== 'resumed-auth') {
         const retry = spawnSync(process.execPath, [entry, '--run', '--ui=plain'], {
           cwd: root, encoding: 'utf8', env: process.env, timeout: 10_000, windowsHide: true,

@@ -5,8 +5,19 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { captureLisaRepairContext, assessLisaRepair, acceptLisaRepair, createTrustedRepairRuntime } from './ralph-lisa-repair.mjs';
+import { prepareLisaRepairConfig } from './ralph-repair-policy.mjs';
 import { prepareConfig, trustedFileHash } from './ralph-config.mjs';
 import { run, runtimeSettings } from './ralph-process-runner.mjs';
+
+test('the operator owns the focused diagnostic command throughout a repair', () => {
+  const profiles = { issue: ['node verify.mjs'], phase: ['node verify.mjs'], baseSync: ['node verify.mjs'] };
+  const raw = { validationProfiles: profiles };
+  const configured = { validationProfiles: { ...profiles, issueRecheck: ['node recheck.mjs'] } };
+  for (const [before, after] of [[raw, configured], [configured, raw], [configured,
+    { validationProfiles: { ...profiles, issueRecheck: ['node replace.mjs'] } }]]) {
+    assert.throws(() => prepareLisaRepairConfig(before, after, {}, 0), /issueRecheck/u);
+  }
+});
 
 function fixture() {
   const root = mkdtempSync(path.join(tmpdir(), 'ralph-repair-policy-'));

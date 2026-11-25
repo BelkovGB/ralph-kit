@@ -11,9 +11,10 @@ import { resolveIssueProcess } from './ralph-process-packs.mjs';
 import { createStateStore, setActiveStateStore } from './ralph-state-store.mjs';
 import { runReviewSession } from './ralph-agent-backends.mjs';
 import { reviewWithIdleRetry, proposalRetry, requestLisa, supervisorAgentConfig, supervisorPhaseConfig, prepareLisaResume, lisaValidationPathDirectories } from './ralph-supervisor.mjs';
-import { validatedLisaPathDirectories, runConfiguredValidation, assertTrustedControlFilesUnchanged } from './ralph-validation-runner.mjs';
+import { validatedLisaPathDirectories, assertTrustedControlFilesUnchanged } from './ralph-validation-runner.mjs';
 import { captureLisaRepairContext, assessLisaRepair, acceptLisaRepair, isPhaseValidationFailure,
   createTrustedRepairRuntime, updateLisaRepairContextState, lisaFailureFingerprint, lisaRepairTreeHash, lisaRepairIndexHash } from './ralph-lisa-repair.mjs';
+import { validateForHandoff } from './ralph-validation-handoff.mjs';
 import { runRalphLifecycle, startRalphWorker, repairStepPassed } from './ralph-lifecycle.mjs';
 import { clearLatestRunStopReport, parkedReviewPhase, writeRunStopReport } from './ralph-run-stop-report.mjs';
 import { publishLiveStatus, readLiveStatus, reportActivity, resetLiveStatus, subscribeLiveStatus } from './ralph-live-status.mjs';
@@ -22,6 +23,16 @@ import { parseUiOption } from './ralph-terminal.mjs';
 import { recordLisaRepairOutcome } from './ralph-run-metrics.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+
+function parkedReviewKey(issue) {
+  const receipt = issue?.reviewReceipt;
+  if (issue?.phase !== 'review-failed' || !/^[a-f0-9]{40}$/u.test(receipt?.head ?? '') ||
+      receipt.head !== issue.reviewedCommit || receipt.result?.verdict !== 'fail' ||
+      !Array.isArray(receipt.result.findings) || !receipt.result.findings.length) return null;
+  const findings = receipt.result.findings.map(({ file, line, severity, title, body }) =>
+    JSON.stringify([file, line, severity, title, body])).sort();
+  return JSON.stringify([receipt.head, findings]);
+}
 
 export async function runRalphLifecycleCli() {
   const started = Date.now();
@@ -135,16 +146,22 @@ export async function runRalphLifecycleCli() {
             !['RALPH_ITERATION_LIMIT', 'RALPH_PARKED'].includes(result.failure?.code)) {
           result.kind = 'needs-human';
         }
-        if (result.kind === 'repair-needed' && result.failure?.code !== 'RALPH_PARKED' &&
+        const parked = result.failure?.code === 'RALPH_PARKED';
+        if (result.kind === 'repair-needed' &&
             pendingFailure && !pendingFailure.proved && pendingFailure.issueNumber === (current?.issue?.number ?? null) &&
             pendingFailure.phaseIndex === current?.phaseIndex && pendingFailure.failureStep === failedStep &&
             pendingFailure.failureCode === result.failure?.code &&
-            (pendingFailure.failureFingerprint === lisaFailureFingerprint(result.failure, failedStep) || worker.observations.length === 0) &&
+            (parked
+              ? pendingFailure.parkedReview && pendingFailure.parkedReview === parkedReviewKey(current?.issue)
+              : pendingFailure.failureFingerprint === lisaFailureFingerprint(result.failure, failedStep) || worker.observations.length === 0) &&
             pendingFailure.acceptedTreeHash === lisaRepairTreeHash({ controlFiles: config.trustedControlFileHashes?.keys() })) {
-          updateRepair(pendingFailure.repairId, { status: 'needs-human', reason: 'Повтор прежнего отказа без прогресса.' });
-          recordLisaRepairOutcome(config, store, { repairId: pendingFailure.repairId, verdict: 'human', reason: 'Повтор прежнего отказа без прогресса.' });
+          const reason = parked
+            ? 'После ремонта без изменений повторно отложен тот же коммит с теми же замечаниями ревью.'
+            : 'Повтор прежнего отказа без прогресса.';
+          updateRepair(pendingFailure.repairId, { status: 'needs-human', reason });
+          recordLisaRepairOutcome(config, store, { repairId: pendingFailure.repairId, verdict: 'human', reason });
           stopReason = 'repeat-without-progress';
-          return { kind: 'needs-human', reason: 'Повтор прежнего отказа без прогресса; работа сохранена.' };
+          return { kind: 'needs-human', reason };
         }
         const provedRepair = pendingFailure?.proved ? pendingFailure : null;
         if (pendingFailure?.proved) {
@@ -198,6 +215,7 @@ export async function runRalphLifecycleCli() {
           phaseIndex: store.phaseIndex, failureStep, failureCode: error.code,
           failureFingerprint: lisaFailureFingerprint(error, failureStep),
           accepted: false, restarted: false, proved: false, feedback: repairFeedback };
+        const parkedReview = error.code === 'RALPH_PARKED' ? parkedReviewKey(store.issue) : null;
         let context;
         let reportRepair;
         let proposalRetryUsed = false;
@@ -236,7 +254,9 @@ export async function runRalphLifecycleCli() {
               if (answer.verdict !== 'resume') throw new Error([answer.reason, answer.operatorAction].filter(Boolean).join(' '));
               const paths = validatedLisaPathDirectories([...store.validationPathDirectories, ...lisaValidationPathDirectories(answer)]);
               updateLisaRepairContextState(context, () => updateRepair(repairId, { status: 'checking' }));
+              let validationKey = null;
               const assessment = await assessLisaRepair(context, {
+                validationPathDirectories: paths,
                 review: async (inventory) => {
                   snapshot.assertUnchanged();
                   const lisaConfig = supervisorAgentConfig(repairConfig);
@@ -292,7 +312,7 @@ export async function runRalphLifecycleCli() {
                     target.baseCommit = verifyBaseHistory(candidate);
                     target.skipPreflight = Boolean(candidate.validationProfiles);
                   }
-                  runConfiguredValidation(candidate, { ...target, validationPathDirectories: paths });
+                  validationKey = validateForHandoff(candidate, store.state, target, paths);
                   verifyConfiguredGitHubOrigin(candidate, { expectedRemoteUrl: prepared.githubRemoteUrl });
                 },
               });
@@ -310,7 +330,8 @@ export async function runRalphLifecycleCli() {
               recordLisaRepairOutcome(repairConfig, store, { repairId, verdict: 'accepted', reason: answer.reason });
               console.log(`Lisa: файлы ремонта: ${receipt.changedPaths.join(', ') || 'нет изменений'}. Проверки пройдены.`);
               config = { ...receipt.config, ...receipt.controlPlane };
-              accepted = receipt;
+              accepted = { ...receipt, validationKey, issueHead: context.head };
+              if (receipt.changedPaths.length === 0) lastRepair.parkedReview = parkedReview;
               lastRepair.accepted = true;
               lastRepair.acceptedTreeHash = receipt.acceptedTreeHash;
               pendingFailure = lastRepair;

@@ -55,6 +55,7 @@ import {
 } from './ralph-state-store.mjs';
 
 import { clearedFailure, recordedFailure, recoveryPrompt } from './ralph-failure-summary.mjs';
+import { validateIssueAttempt } from './ralph-issue-recheck.mjs';
 
 import {
   beginIssueMetrics,
@@ -133,6 +134,7 @@ import {
   hasAcceptedLisaIssueRepair, hasAcceptedLisaProductRepair, prepareRecovery, resumeAcceptedIssue, savedIssueReview,
 } from './ralph-recovery.mjs';
 
+import { canUseValidationHandoff, validationHandoffKey } from './ralph-validation-handoff.mjs';
 import { KIT_VERSION } from './ralph-version.mjs';
 import { effectiveLisaIterationReserve, runWithSupervisor } from './ralph-supervisor.mjs';
 import { parseUiOption, renderRunSummary } from './ralph-terminal.mjs';
@@ -558,8 +560,7 @@ async function reviewAndCloseCommittedIssue(config, repository, issue, commit, e
       console.error(`Issue #${issue.number}: замечания сохранены локально, GitHub недоступен. ${error.message}`);
     }
 
-    const lisaOwnsIssue = hasAcceptedLisaProductRepair(store?.state, issue);
-    if (lisaOwnsIssue || reviewFixAttempts >= config.maxReviewFixAttempts) {
+    if (reviewFixAttempts >= config.maxReviewFixAttempts) {
       console.error(
         `Issue #${issue.number}: ревью отклонило работу ${reviewFixAttempts} раз подряд. ` +
           (alreadyPublished
@@ -568,7 +569,7 @@ async function reviewAndCloseCommittedIssue(config, repository, issue, commit, e
       );
       if (alreadyPublished && !config.supervisor?.enabled) store?.clearIssue();
       return { completed: false, parked: true, publicationBlocked: !alreadyPublished, commit, review,
-        reviewParkReason: lisaOwnsIssue ? 'lisa-product-repair' : 'review-limit' };
+        reviewParkReason: 'review-limit' };
     }
     return { completed: false, commit, review };
   }
@@ -638,16 +639,30 @@ export function validateIssueWorkingTree(config, foreignPaths, dependencies = {}
   return prepared.filter((entry) => !isForeignEntry(entry, foreignKeys));
 }
 
+function validateIssueAfterDevelopment(config, issue, baseCommit, validate) {
+  const store = activeStateStore();
+  const fingerprint = () => {
+    const plan = publicationValidationFingerprint(config, store, baseCommit);
+    if (!plan) return null;
+    const head = run('git', ['rev-parse', 'HEAD']).stdout;
+    return createHash('sha256').update(JSON.stringify([plan, head, hostWorkingTreeHash(), lisaRepairIndexHash()])).digest('hex');
+  };
+  return measuredValidation(() => validateIssueAttempt(config, { scope: 'issue', baseCommit, issueNumber: issue.number },
+    store?.issue, fingerprint, validate));
+}
+
 function retryIssueValidation(config, issue, error) {
   if (error.code === 'RALPH_RUNTIME_STORAGE') throw error;
   const attempts = (activeStateStore()?.issue?.validationFixAttempts ?? 0) + 1;
+  const failure = error.code === 'RALPH_NEEDS_HUMAN' && error.cause ? error.cause : error;
   activeStateStore()?.updateIssue({
     phase: 'working-tree',
     validationFixAttempts: attempts,
-    ...recordedFailure(error),
+    validationFailureFingerprint: failure.validationFailureFingerprint ?? null,
+    ...recordedFailure(failure),
   });
   observeIssue('validation-fail');
-  if (attempts >= config.maxTestFixAttempts) throw error;
+  if (error.code === 'RALPH_NEEDS_HUMAN' || attempts >= config.maxTestFixAttempts) throw error;
   console.error(
     `Issue #${issue.number}: validation не прошла (${attempts}/${config.maxTestFixAttempts}). ` +
       'Ralph передаст ошибку агенту на следующей итерации.',
@@ -662,7 +677,7 @@ function shouldCommitAcceptedRepair(state, issue) {
     Boolean(state.issue.lisaPublishedProductHead && state.issue.lisaPublishedProductHead === state.issue.startingCommit);
 }
 
-async function commitAndCompleteIssue(config, repository, issue, startingCommit, lastAgentMessage) {
+async function commitAndCompleteIssue(config, repository, issue, startingCommit, lastAgentMessage, validationReceipt) {
   assertTrustedControlFilesUnchanged(config);
   const currentBranch = run('git', ['branch', '--show-current']).stdout;
   const currentCommit = run('git', ['rev-parse', 'HEAD']).stdout;
@@ -722,7 +737,7 @@ async function commitAndCompleteIssue(config, repository, issue, startingCommit,
     const pending = storedIssue?.pushedHead === currentCommit ? {} : holdIssuePublication(storedIssue, currentCommit);
     activeStateStore()?.updateIssue({ phase: 'validating', ...pending });
     try {
-      measuredValidation(() => runConfiguredValidation(config, {
+      validateIssueAfterDevelopment(config, issue, parent.stdout, () => runConfiguredValidation(config, {
         scope: 'issue', baseCommit: parent.stdout,
         issueNumber: issue.number,
         skipPreflight: Boolean(config.validationProfiles),
@@ -753,7 +768,20 @@ async function commitAndCompleteIssue(config, repository, issue, startingCommit,
   activeStateStore()?.updateIssue({ phase: 'validating' });
   let validatedEntries;
   try {
-    validatedEntries = measuredValidation(() => validateIssueWorkingTree(config, foreignPaths, {
+    let reuseValidation = false;
+    if (validationReceipt?.validationKey && shouldCommitAcceptedRepair(recoveryState, issue)) {
+      const key = validationHandoffKey(config, recoveryState, activeStateStore().validationPathDirectories);
+      if (key === validationReceipt.validationKey) {
+        reuseValidation = canUseValidationHandoff(validationReceipt, key, {
+          head: currentCommit, tree: lisaRepairTreeHash({ controlFiles: config.trustedControlFileHashes.keys() }),
+          index: lisaRepairIndexHash(),
+        });
+      }
+    }
+    validatedEntries = validateIssueAfterDevelopment(config, issue, startingCommit, () => validateIssueWorkingTree(config, foreignPaths, {
+      runConfiguredValidation: reuseValidation
+        ? () => console.log(`Issue #${issue.number}: принята успешная адресная проверка этого ремонта Lisa.`)
+        : undefined,
       baseCommit: startingCommit,
       issueNumber: issue.number,
     }));
@@ -886,7 +914,7 @@ export function recoverHostValidationMutation(
   return true;
 }
 
-export async function runAgentOnIssue(config, repository, issue, rules) {
+export async function runAgentOnIssue(config, repository, issue, rules, validationReceipt) {
   issue = assertTrustedIssue(config, issue, repository);
   issue.processPack = resolveIssueProcess(config, issue.number);
   if (issue.processPack) console.log(`Issue #${issue.number}: режим ${issue.processPack.kind}.`);
@@ -898,7 +926,7 @@ export async function runAgentOnIssue(config, repository, issue, rules) {
   recoverHostValidationMutation(storedIssue);
   if (shouldCommitAcceptedRepair(activeStateStore()?.state, issue)) {
     return commitAndCompleteIssue(config, repository, issue, storedIssue.startingCommit,
-      `fix: repair issue #${issue.number} with Lisa`);
+      `fix: repair issue #${issue.number} with Lisa`, validationReceipt);
   }
   if (storedIssue?.commit && committedRecoveryPhases.includes(storedIssue.phase)) {
     assertCleanTree(`Issue #${issue.number}: committed recovery требует чистое рабочее дерево.`);
@@ -1572,8 +1600,9 @@ export async function runContinuousLoop(context, actions) {
       stateStore?.issue?.number === currentIssue.number ? stateStore.issue.phase : null;
     const linkedCommit = storedPhase ? null : actions.linkedCommitForIssue?.(currentIssue);
     if (linkedCommit) currentIssue.linkedCommit = linkedCommit;
-    if (storedPhase === 'review-failed' && hasAcceptedLisaProductRepair(stateStore?.state, currentIssue)) {
-      return { mode: 'run', verdict: 'parked', parkedIssues: [currentIssue.number], reviewParkReason: 'lisa-product-repair' };
+    if (storedPhase === 'review-failed' && hasAcceptedLisaProductRepair(stateStore?.state, currentIssue) &&
+        stateStore.issue.reviewFixAttempts >= config.maxReviewFixAttempts) {
+      return { mode: 'run', verdict: 'parked', parkedIssues: [currentIssue.number], reviewParkReason: 'review-limit' };
     }
     const needsDevelopmentIteration =
       !shouldCommitAcceptedRepair(stateStore?.state, currentIssue) &&
@@ -1703,7 +1732,7 @@ export async function executeMode(context, actions) {
   return runContinuousLoop({ ...context, deferredPreflight }, actions);
 }
 
-function defaultActions() {
+function defaultActions(validationReceipt) {
   return {
     closeMilestone,
     clearIssueCompletionState,
@@ -1712,7 +1741,11 @@ function defaultActions() {
     refreshIssue,
     printCheck,
     runPreflight,
-    runAgentOnIssue,
+    runAgentOnIssue(...args) {
+      const handoff = validationReceipt;
+      validationReceipt = null;
+      return runAgentOnIssue(...args, handoff);
+    },
     resumeAcceptedIssue,
     hasPhaseValidation: config => validationScriptsFor(config, 'phase').length > 0,
     validatePhaseForPullRequest,
@@ -1909,7 +1942,7 @@ async function main(lifecycle = null) {
       }
       return { repository, milestone: milestones[phaseConfig.phaseIndex], publicationStatus, localRepository };
     };
-    const actions = defaultActions();
+    const actions = defaultActions(lifecycle?.accepted);
     const runPhase = async (phaseConfig) => {
       publishPhaseConfig(phaseConfig);
       reportActivity('phase-preparation', `Подготовка ветки фазы: ${phaseConfig.branch}`);

@@ -1355,11 +1355,19 @@ test('scoped validation requires all profiles and rejects command chains', () =>
   for (const validationProfiles of [
     { issue: ['check-issue'] },
     { ...valid, phase: [] },
+    { ...valid, issueRecheck: [] },
+    { ...valid, issueRecheck: 'check-failed' },
     { ...valid, extra: ['check-extra'] },
   ]) {
     assert.throws(() => withPatchedRalphConfig({ validationProfiles }, () => {}),
       /validationProfiles/u);
   }
+  withPatchedRalphConfig({ validationProfiles: { ...valid, issueRecheck: ['check-failed'] } }, (config) => {
+    assert.deepEqual(config.validationProfiles.issueRecheck, ['check-failed']);
+  });
+  assert.throws(() => withPatchedRalphConfig({
+    validationProfiles: { ...valid, issueRecheck: ['check-failed && check-all'] },
+  }, () => {}), /одну команду на элемент/u);
   assert.throws(() => withPatchedRalphConfig({
     validationProfiles: { ...valid, issue: ['check-issue && check-phase'] },
   }, () => {}), /одну команду на элемент/u);

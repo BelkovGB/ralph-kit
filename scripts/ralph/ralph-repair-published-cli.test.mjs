@@ -11,8 +11,10 @@ function git(root, ...args) {
   return result.stdout.trim();
 }
 
-for (const scenario of ['pushed', 'closing', 'closing-foreign', 'closing-staged']) {
-  test(`published repair completes through real CLI: ${scenario}`, async () => {
+for (const scenario of ['pushed', 'closing', 'closing-foreign', 'closing-staged', 'working-tree-handoff']) {
+  test(`issue repair completes through real CLI: ${scenario}`, async () => {
+    const handoff = scenario === 'working-tree-handoff';
+    const issueIsOpen = handoff || scenario === 'pushed';
     const root = mkdtempSync(path.join(executableTempDirectory, 'repair-published-'));
     const remote = mkdtempSync(path.join(executableTempDirectory, 'repair-remote-'));
     try {
@@ -20,19 +22,26 @@ for (const scenario of ['pushed', 'closing', 'closing-foreign', 'closing-staged'
       const configPath = path.join(root, '.agents/ralph.config.json');
       Object.assign(config, { syncBaseBranch: false, phases: [{ milestone: 'Repair', branch: 'phase' }],
         stopAfterFirstIssue: true,
-        review: { enabled: scenario === 'closing', model: 'fixture-model',
+        review: { enabled: scenario === 'closing' || handoff, model: 'fixture-model',
           schemaFile: '.agents/review.schema.json', outputFile: '.agents/last-review.json' },
         supervisor: { enabled: true, agentCli: 'codex', model: 'fixture-model' } });
+      if (handoff) {
+        config.validationProfiles = { issue: ['node check.mjs'], phase: ['node check.mjs'], baseSync: ['node check.mjs'] };
+        config.validationHandoffInputs = ['test-environment.json'];
+        writeFileSync(path.join(root, 'test-environment.json'), '{"version":1}');
+        writeFileSync(path.join(root, 'check.mjs'), "import { appendFileSync } from 'node:fs'; appendFileSync('.git/check-count', 'x');");
+      }
       writeFileSync(configPath, JSON.stringify(config));
-      const target = path.join(root, 'scripts/ralph/ralph-acceptance.mjs');
-      writeFileSync(target, readFileSync(target, 'utf8') + "\nexport const repairFixtureValue = 'broken';\n");
+      const repairFile = handoff ? 'product-rule.mjs' : 'scripts/ralph/ralph-acceptance.mjs';
+      const target = path.join(root, repairFile);
+      writeFileSync(target, (handoff ? '' : readFileSync(target, 'utf8')) + "\nexport const repairFixtureValue = 'broken';\n");
       const entry = path.join(root, 'scripts/ralph/ralph-loop.mjs');
       const workersPath = path.join(root, '.git/ralph-loop/fixture-workers.jsonl');
       let source = readFileSync(entry, 'utf8').replace("import path from 'node:path';",
         `import path from 'node:path';
 import { randomUUID as createFixtureWorkerId } from 'node:crypto';
 import { appendFileSync as recordFixtureWorker } from 'node:fs';
-import { repairFixtureValue } from './ralph-acceptance.mjs';`);
+import { repairFixtureValue } from '../../${repairFile}';`);
       // Inject the initial failure, retaining real recovery, queue, validation,
       // staging, commit, push, close, lifecycle, state, and agent transport.
       source = source.replace('    verifyTools(config);', `
@@ -43,18 +52,19 @@ import { repairFixtureValue } from './ralph-acceptance.mjs';`);
           if (!store.issue) {
             const head = run('git', ['rev-parse', 'HEAD']).stdout;
             const base = run('git', ['rev-parse', 'HEAD^']).stdout;
-            store.beginIssue(issue, base, ${['closing-foreign', 'closing-staged'].includes(scenario) ? "['user.txt']" : '[]'});
-            store.updateIssue({ phase: '${scenario === 'pushed' ? 'pushed' : 'closing'}', commit: head, recoveryHead: head, pushedHead: head, reviewedCommit: head });
+            store.beginIssue(issue, ${handoff ? 'head' : 'base'}, ${['closing-foreign', 'closing-staged'].includes(scenario) ? "['user.txt']" : '[]'});
+            store.updateIssue(${handoff ? "{ phase: 'working-tree' }" :
+              `{ phase: '${scenario === 'pushed' ? 'pushed' : 'closing'}', commit: head, recoveryHead: head, pushedHead: head, reviewedCommit: head }`});
           }
           sendRalphWorkerMessage(lifecycle, 'prepared', { config: phaseConfig, stateRunId: store.state.runId });
           const fixtureKey = Symbol.for('ralph.publishedFixture.worker');
           const workerId = process[fixtureKey] ??= createFixtureWorkerId();
           recordFixtureWorker(${JSON.stringify(workersPath)}, JSON.stringify({ workerId, code: repairFixtureValue }) + '\\n', 'utf8');
-          if (repairFixtureValue === 'broken') await observedRepairStep('${scenario === 'pushed' ? 'push' : 'close'}', () => { throw new Error('fixture external step failed'); });
+          if (repairFixtureValue === 'broken') await observedRepairStep('${handoff ? 'validation' : scenario === 'pushed' ? 'push' : 'close'}', () => { throw new Error('fixture external step failed'); });
           console.log('PUBLISHED_BUDGET=' + store.supervisorCalls + ' ITERATIONS=' + store.iterationsUsed);
-          return await runContinuousLoop({ mode: '--run', config: phaseConfig, repository: 'owner/repo', milestone: { number: 1 },
+          return await executeMode({ mode: '--run', config: phaseConfig, repository: 'owner/repo', milestone: { number: 1 },
             rules: 'Preserve requirement', stateStore: store, repositoryState: { clean: false } },
-            { ...defaultActions(), openIssues: () => [] });
+            { ...defaultActions(lifecycle.accepted), openIssues: () => ${handoff ? '[issue]' : '[]'} });
         }
         verifyTools(config);`);
       writeFileSync(entry, source);
@@ -86,7 +96,7 @@ import { repairFixtureValue } from './ralph-acceptance.mjs';`);
         }
         else {
           if (!prompt.includes('Ты Lisa')) throw new Error('accepted repair unexpectedly started development');
-          const target = 'scripts/ralph/ralph-acceptance.mjs';
+          const target = ${JSON.stringify(repairFile)};
           fs.writeFileSync(target, fs.readFileSync(target, 'utf8').replace("repairFixtureValue = 'broken'", "repairFixtureValue = 'fixed'"));
           console.log(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: JSON.stringify({ verdict: 'resume', reason: 'fixed module' }) } }));
         }
@@ -98,7 +108,7 @@ import { repairFixtureValue } from './ralph-acceptance.mjs';`);
         if (joined.includes('/comments')) console.log(joined.includes('POST') ? '{}' : '[]');
         else if (joined.includes('PATCH')) { fs.appendFileSync(patchCount, 'x'); console.log(JSON.stringify({ state: 'closed' })); }
         else if (joined.includes('repos/owner/repo/issues/12')) console.log(JSON.stringify({ number: 12, title: 'Preserved product task', body: 'Preserve requirement',
-          state: ${JSON.stringify(scenario === 'pushed' ? 'open' : 'closed')}, user: { login: 'owner' }, milestone: { number: 1 } }));
+          state: ${JSON.stringify(issueIsOpen ? 'open' : 'closed')}, user: { login: 'owner' }, milestone: { number: 1 } }));
         else throw new Error(joined);
       `, async ({ directory }) => {
         const result = spawnSync(process.execPath, [entry, '--run', '--ui=plain'], {
@@ -106,6 +116,10 @@ import { repairFixtureValue } from './ralph-acceptance.mjs';`);
         });
         const failed = ['closing-foreign', 'closing-staged'].includes(scenario);
         assert.equal(result.status, failed ? 1 : 0, result.stdout + result.stderr);
+        if (handoff) {
+          assert.equal(readFileSync(path.join(root, '.git/check-count'), 'utf8'), 'x', result.stdout);
+          assert.match(result.stdout, /принята успешная адресная проверка/u);
+        }
         // Windows can reuse a PID once the previous worker has exited.
         // Verify both worker starts and the module version each process loaded.
         const workers = readFileSync(workersPath, 'utf8').trimEnd().split('\n').map((line) => JSON.parse(line));
@@ -117,7 +131,7 @@ import { repairFixtureValue } from './ralph-acceptance.mjs';`);
         } else {
           assert.notEqual(git(root, 'rev-parse', 'HEAD'), before);
           assert.equal(git(root, 'rev-list', '--count', before + '..HEAD'), '1');
-          assert.equal(git(root, 'show', '--format=', '--name-only', 'HEAD'), 'scripts/ralph/ralph-acceptance.mjs');
+          assert.equal(git(root, 'show', '--format=', '--name-only', 'HEAD'), repairFile);
         }
         assert.match(result.stdout, /PUBLISHED_BUDGET=1 ITERATIONS=0/);
         const statePath = path.join(root, '.git/ralph-loop/state.json');
@@ -131,12 +145,12 @@ import { repairFixtureValue } from './ralph-acceptance.mjs';`);
         } else {
           assert.equal(existsSync(statePath), false);
           assert.match(result.stdout, /ремонт завершён/);
-          if (scenario === 'closing') assert.match(result.stdout, /Independent review for issue #12/);
+          if (config.review.enabled) assert.match(result.stdout, /Independent review for issue #12/);
           assert.equal(git(remote, 'rev-parse', 'refs/heads/phase'), git(root, 'rev-parse', 'HEAD'));
         }
         let patches = '';
         try { patches = readFileSync(path.join(directory, 'patch-count'), 'utf8'); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-        assert.equal(patches.length, scenario === 'pushed' ? 1 : 0);
+        assert.equal(patches.length, issueIsOpen ? 1 : 0);
       }));
     } finally {
       rmSync(root, { recursive: true, force: true });

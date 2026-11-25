@@ -22,6 +22,9 @@ export function prepareLisaRepairConfig(before, after, originalConfig, phaseInde
     throw new Error('Lisa: нельзя менять режим обязательных проверок validationProfiles.');
   }
   if (before.validationProfiles) {
+    if (!isDeepStrictEqual(before.validationProfiles.issueRecheck, after.validationProfiles?.issueRecheck)) {
+      throw new Error('Lisa: адресная диагностика issueRecheck задаётся оператором.');
+    }
     for (const scope of ['issue', 'phase', 'baseSync']) {
       if (!Array.isArray(after.validationProfiles?.[scope]) ||
           after.validationProfiles[scope].length < before.validationProfiles[scope].length) {

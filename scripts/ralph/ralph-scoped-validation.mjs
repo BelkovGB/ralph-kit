@@ -2,7 +2,8 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { lstatSync, readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import { isAbsolute, resolve, win32 } from 'node:path';
+import { resolve } from 'node:path';
+import { repoPath, validationChanges } from './ralph-validation-changes.mjs';
 import { hasValidationCommandShape, usesValidationControlOperator } from './ralph-config.mjs';
 import { verifyVisualContract, writesEvidence } from './ralph-route-evidence.mjs';
 import { assertScopedHostCommands, hostShellCommand } from './ralph-validation-runner.mjs';
@@ -11,13 +12,6 @@ function git(root, args) {
   return execFileSync('git', args, {
     cwd: root, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024, windowsHide: true,
   });
-}
-
-function repoPath(value, prefix = false) {
-  if (typeof value !== 'string' || isAbsolute(value) || win32.isAbsolute(value)
-    || /[:\\]/u.test(value) || [...value].some((character) => character.charCodeAt(0) < 32)) return false;
-  const path = prefix ? value.replace(/\/$/u, '') : value;
-  return path.split('/').every((part) => part && !['.', '..', '.git'].includes(part.toLowerCase()));
 }
 
 function isCommandList(value) {
@@ -41,24 +35,7 @@ function readRules(root, base, file, changes) {
 }
 
 function changedFiles(root, base) {
-  git(root, ['merge-base', '--is-ancestor', base, 'HEAD']);
-  if (git(root, ['ls-files', '--unmerged', '-z'])) throw new Error('В индексе есть конфликт слияния.');
-  const changes = new Map();
-  const diffOptions = [
-    '--name-status', '-z', '--no-renames', '--no-ext-diff', '--ignore-submodules=none',
-  ];
-  for (const comparison of [[base, 'HEAD'], ['--cached', base], [base]]) {
-    const fields = git(root, ['diff', ...diffOptions, ...comparison, '--']).split('\0');
-    for (let index = 0; index + 1 < fields.length; index += 2) {
-      const [status, file] = fields.slice(index, index + 2);
-      if (!changes.has(file)) changes.set(file, new Set());
-      changes.get(file).add(status);
-    }
-  }
-  for (const path of git(root, ['ls-files', '--others', '--exclude-standard', '-z']).split('\0').filter(Boolean)) {
-    if (!changes.has(path)) changes.set(path, new Set(['?']));
-  }
-  return changes;
+  return validationChanges(base, args => git(root, args));
 }
 
 function planChecks({ full, rules }, changes, root, scope) {

@@ -1,5 +1,6 @@
 import { run } from './ralph-process-runner.mjs';
 import { isAncestorCommit } from './ralph-git.mjs';
+import { validationChanges } from './ralph-validation-changes.mjs';
 
 const packs = {
   bugfix: {
@@ -61,11 +62,35 @@ export function resolveIssueProcess(config, issueNumber, body = config.approvedI
   return { kind, development, review, reportPath: `docs/ralph-reports/issue-${issueNumber}.md` };
 }
 
-export function validationScriptsFor(config, scope, issueNumber) {
+function browserPathsChanged(paths, base, execute = run) {
+  // Prompt previews may have no base yet. A missing/ambiguous inventory must
+  // never remove the configured browser checks from publication.
+  if (!base) return true;
+  try {
+    const changes = validationChanges(base, args => {
+      const result = execute('git', args, { rawStdout: true });
+      if (result.status !== 0) throw new Error('Git diff unavailable');
+      return result.stdout;
+    });
+    for (const file of changes.keys()) {
+      // Git reports a submodule or a type change at its root, which may be
+      // an ancestor of a configured UI file.
+      if (paths.some(entry => entry === file || entry.startsWith(file + '/') ||
+          entry.endsWith('/') && file.startsWith(entry))) return true;
+    }
+    return false;
+  } catch {
+    console.warn('Не удалось подтвердить состав diff. Включены браузерные проверки.');
+    return true;
+  }
+}
+
+export function validationScriptsFor(config, scope, issueNumber, options = {}) {
   const scripts = baseValidationScripts(config, scope);
-  const browserRequired = scope === 'phase' || (
-    scope === 'issue' && resolveIssueProcess(config, issueNumber)?.kind === 'ui-change'
-  );
+  const uiIssue = scope === 'issue' && resolveIssueProcess(config, issueNumber)?.kind === 'ui-change';
+  const browserRequired = uiIssue || (config.browserValidationPaths
+    ? browserPathsChanged(config.browserValidationPaths, options.baseCommit, options.run)
+    : scope === 'phase');
   return browserRequired ? [...scripts, ...(config.browserValidationScripts ?? [])] : scripts;
 }
 
