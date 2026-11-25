@@ -316,7 +316,8 @@ test('committed repair cannot bless inconsistent HEAD or commit ancestry', async
 test('a repair cannot replace the inventory or the helpers deciding whether to run mandatory checks', async () => {
   const f = fixture();
   try {
-    for (const name of ['ralph-validation-changes.mjs', 'ralph-validation-handoff.mjs', 'ralph-issue-recheck.mjs']) {
+    for (const name of ['ralph-validation-changes.mjs', 'ralph-validation-handoff.mjs', 'ralph-issue-recheck.mjs',
+      'ralph-development-escalation.mjs', 'ralph-review-recurrence.mjs']) {
       const file = 'scripts/ralph/' + name;
       writeFileSync(path.join(f.root, file), '// changed');
       await assert.rejects(assessLisaRepair(f.context, { ...f.options, files: () => [...f.options.files(), file] }),

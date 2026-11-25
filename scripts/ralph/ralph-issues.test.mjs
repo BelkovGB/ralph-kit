@@ -1401,6 +1401,19 @@ test('the instruction boundary takes .agents/skills and skips dependency directo
   }
 });
 
+test('development escalation is optional and accepts only a higher effort for the configured CLI', () => {
+  const config = { agentCli: 'codex', developmentEffort: 'medium' };
+  withPatchedRalphConfig({ ...config, developmentEscalation: undefined }, parsed =>
+    assert.equal(parsed.developmentEscalation, undefined));
+  for (const value of [null, [], {}, { effort: 'unknown' }, { effort: 'low' }, { effort: 'medium' },
+    { effort: 'high', model: 'other' }]) {
+    assert.throws(() => withPatchedRalphConfig({ ...config, developmentEscalation: value }, () => {}),
+      /developmentEscalation/u);
+  }
+  withPatchedRalphConfig({ ...config, developmentEscalation: { effort: 'high' } }, parsed =>
+    assert.deepEqual(parsed.developmentEscalation, { effort: 'high' }));
+});
+
 test('an unsupported reasoning effort is rejected before a run starts', () => {
   for (const [patch, expected] of [
     // Сообщение называет выбранный CLI, потому что словари усилий у Codex и

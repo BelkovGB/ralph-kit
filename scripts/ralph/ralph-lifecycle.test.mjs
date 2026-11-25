@@ -10,7 +10,7 @@ import { createIssueProcess, updateIssueProcess } from './ralph-process.mjs';
 import { loadConfig } from './ralph-config.mjs';
 import { repairStepPassed } from './ralph-lifecycle.mjs';
 import { readLiveStatus, resetLiveStatus, subscribeLiveStatus } from './ralph-live-status.mjs';
-import { setActiveStateStore } from './ralph-state-store.mjs';
+import { createStateStore, setActiveStateStore } from './ralph-state-store.mjs';
 import { prepareLisaResume } from './ralph-supervisor.mjs';
 import { withFakeClaude, withFakeCodex, withFakeGh } from './ralph-test-support.mjs';
 
@@ -229,6 +229,8 @@ if (isReview) {
     message('Review recorded.');
   }
 } else {
+  const effort = process.argv.find(argument => argument.startsWith('model_reasoning_effort='));
+  if (effort) appendFileSync(reviewOutputPath + '.efforts', JSON.parse(effort.split('=')[1]) + '\\n');
   writeFileSync(reviewOutputPath + '.development-prompt', readFileSync(0, 'utf8'), 'utf8');
   message('ALREADY_FIXED: ${repository.commit}');
 }
@@ -561,6 +563,54 @@ test('focused reproduction of an unchanged failed issue stops without a second b
   });
 });
 
+for (const fixed of [true, false]) {
+  test(`a repeated test gets one higher development effort across restart: fixed=${fixed}`, async () => {
+    await withLifecycleStand('ralph/one-effort', passVerdict, async stand => {
+      const config = lifecycleConfig(stand.repository, stand.reviewOutputPath);
+      const script = path.join(stand.repository.root, 'gate.cjs');
+      const attemptsPath = path.join(stand.repository.root, 'checks.txt');
+      const effortsPath = stand.reviewOutputPath + '.efforts';
+      const selector = 'spec/save.test.ts:7 › retains a value';
+      writeFileSync(script, [
+        "const fs = require('node:fs');",
+        "const gate = process.env.RALPH_FAILED_TESTS ? 'focused' : 'required';",
+        "fs.appendFileSync(process.env.CHECKS_PATH, gate + '\\n');",
+        "const raised = fs.existsSync(process.env.EFFORTS_PATH) && fs.readFileSync(process.env.EFFORTS_PATH, 'utf8').includes('high');",
+        "if (!raised || !process.env.EXPECT_FIX) { console.log('1) ' + process.env.TEST_NAME); process.exit(1); }",
+      ].join('\n'));
+      const command = process.platform === 'win32' ? 'node -e require(process.env.CHECK_SCRIPT)' : "node -e 'require(process.env.CHECK_SCRIPT)'";
+      Object.assign(config, {
+        developmentEffort: 'medium', developmentEscalation: { effort: 'high' }, maxTestFixAttempts: 3,
+        validationProfiles: { issue: [command], phase: [command], baseSync: [command], issueRecheck: [command] },
+        validationEnvironment: ['CHECK_SCRIPT=' + script, 'CHECKS_PATH=' + attemptsPath, 'EFFORTS_PATH=' + effortsPath,
+          'TEST_NAME=' + selector, ...(fixed ? ['EXPECT_FIX=1'] : [])],
+      });
+      const restore = () => createStateStore(config, '--run', path.join(stand.repository.root, 'run-state.json'));
+      let store = restore();
+      setActiveStateStore(store);
+      const attempt = () => runAgentOnIssue(config, 'owner/repository', lifecycleIssue(), 'rules');
+      assert.equal((await attempt()).validationFailed, true); // previously committed implementation
+      assert.equal((await attempt()).validationFailed, true); // ordinary developer repair
+      store = restore();
+      setActiveStateStore(store);
+      if (fixed) {
+        assert.equal((await attempt()).completed, true);
+        assert.deepEqual(agentInvocations(stand.reviewOutputPath), ['development', 'development', 'review']);
+        assert.equal(stand.gh.issueState().state, 'closed');
+      } else {
+        await assert.rejects(attempt(), error => error.code === 'RALPH_NEEDS_HUMAN');
+        assert.equal(stand.gh.issueState().state, 'open');
+        assert.equal(remoteHeads(stand.repository), '');
+      }
+      assert.deepEqual(readFileSync(effortsPath, 'utf8').trim().split('\n'), ['medium', 'high']);
+      const gates = readFileSync(attemptsPath, 'utf8').trim().split('\n');
+      assert.deepEqual(gates, fixed ? ['required', 'focused', 'focused', 'required'] : ['required', 'focused', 'focused']);
+      assert.equal(store.state.supervisorCalls, 0);
+      assert.equal(config.developmentEffort, 'medium');
+    });
+  });
+}
+
 test('a declared UI issue cannot push or close without configured browser checks', async () => {
   await withLifecycleStand('ralph/lifecycle-ui', passVerdict, async (stand) => {
     setActiveStateStore(recordingStateStore());
@@ -611,6 +661,45 @@ test('a report-only issue closes after its report is published and reviewed', as
     assert.deepEqual(agentInvocations(stand.reviewOutputPath), ['review']);
     assert.equal(git(stand.repository.workTree, ['show', `${result.commit}:${reportPath}`]), '# Findings');
   }, { files: { [reportPath]: '# Findings\n' } });
+});
+
+test('the same review finding at new commits gets one high-effort repair before a human stop', async () => {
+  await withLifecycleStand('ralph/repeated-finding', failVerdict, async stand => {
+    const { repository, reviewOutputPath } = stand;
+    const config = lifecycleConfig(repository, reviewOutputPath);
+    Object.assign(config, { developmentEffort: 'medium', developmentEscalation: { effort: 'high' },
+      maxReviewFixAttempts: 3, supervisor: { ...config.supervisor, enabled: true } });
+    const restore = () => createStateStore(config, '--run', path.join(repository.root, 'run-state.json'));
+    let store = restore();
+    setActiveStateStore(store);
+
+    // Each developer changes real tracked bytes. The reviewer still finds the same defect on each new HEAD.
+    const agent = reviewerSource(reviewOutputPath, failVerdict, repository).replace(
+      `message('ALREADY_FIXED: ${repository.commit}');`,
+      `appendFileSync(${JSON.stringify(path.join(repository.workTree, 'work.txt'))}, 'attempt\\n'); message('fix: address finding');`,
+    );
+    await withFakeCodex(agent, async () => {
+      const attempt = () => runAgentOnIssue(config, 'owner/repository', lifecycleIssue(), 'rules');
+      assert.equal((await attempt()).review.verdict, 'fail');
+      assert.equal((await attempt()).review.verdict, 'fail');
+      const mediumHead = store.issue.reviewedCommit;
+      assert.notEqual(mediumHead, repository.commit);
+      store = restore();
+      setActiveStateStore(store);
+      await assert.rejects(attempt(), { code: 'RALPH_NEEDS_HUMAN' });
+      const highHead = git(repository.workTree, ['rev-parse', 'HEAD']);
+      assert.notEqual(highHead, mediumHead);
+      assert.equal(store.issue.reviewedCommit, highHead);
+      assert.equal(store.issue.pendingPublishHead, highHead);
+      assert.equal(store.issue.reviewReceipt.result.verdict, 'fail');
+      assert.equal(store.issue.phase, 'review-failed');
+      assert.equal(store.state.supervisorCalls, 0);
+      assert.equal(remoteHeads(repository), '');
+      assert.equal(stand.gh.issueState().state, 'open');
+      assert.deepEqual(agentInvocations(reviewOutputPath), ['review', 'development', 'review', 'development', 'review']);
+      assert.deepEqual(readFileSync(reviewOutputPath + '.efforts', 'utf8').trim().split('\n'), ['medium', 'high']);
+    });
+  });
 });
 
 test('отказ ревью оставляет коммит локально и сохраняет задачу при исчерпании попыток', async () => {
